@@ -1,0 +1,83 @@
+import { memo } from 'react'
+import type { PermissionDecision } from '../types'
+import type { PermissionRequest } from '../hooks/useChat'
+
+export interface PermissionDialogProps {
+  request: PermissionRequest
+  onRespond: (decision: PermissionDecision) => void
+}
+
+function ShieldIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />
+      <path d="M9.5 12.5 11 14l3.5-3.5" />
+    </svg>
+  )
+}
+
+function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
+  const argsJson = JSON.stringify(request.args, null, 2)
+
+  const secondaryClass =
+    'h-8 rounded border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="presentation">
+      <div className="absolute inset-0 bg-zinc-950/30" aria-hidden="true" />
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label="Permission required"
+        className="relative w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_rgba(0,0,0,0.16)]"
+        data-testid="permission-dialog"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-600">
+            <ShieldIcon />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-zinc-900">Permission required</h2>
+            <p className="truncate text-xs text-zinc-500">{request.label}</p>
+          </div>
+          <span className="ml-auto shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600">
+            {request.name}
+          </span>
+        </div>
+
+        {request.reason && <p className="mt-3 text-xs leading-5 text-zinc-600">{request.reason}</p>}
+
+        <pre className="mt-3 max-h-40 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-5 text-zinc-700">
+          {argsJson}
+        </pre>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button type="button" onClick={() => onRespond('deny')} className={secondaryClass}>
+            Deny
+          </button>
+          <button type="button" onClick={() => onRespond('allowSession')} className={secondaryClass}>
+            Allow session
+          </button>
+          <button
+            type="button"
+            onClick={() => onRespond('allowOnce')}
+            className="h-8 rounded bg-zinc-900 px-3 text-xs font-medium text-white transition-colors hover:bg-zinc-700 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2"
+          >
+            Allow once
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default memo(PermissionDialog)

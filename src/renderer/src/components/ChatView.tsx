@@ -1,0 +1,443 @@
+import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import type { ChatItem } from '../hooks/useChat'
+import { WavyProgress } from './WavyProgress'
+
+export interface ChatViewProps {
+  items: ChatItem[]
+  running?: boolean
+  onRegenerate?: () => void
+}
+
+type Block =
+  | { kind: 'code'; code: string; lang: string }
+  | { kind: 'para'; text: string }
+
+function parseTextBlocks(text: string): Block[] {
+  const blocks: Block[] = []
+  const parts = text.split('```')
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]
+    if (i % 2 === 0) {
+      const paragraphs = part.split(/\n{2,}/)
+      for (const para of paragraphs) {
+        if (para.trim().length > 0) {
+          blocks.push({ kind: 'para', text: para })
+        }
+      }
+    } else {
+      const newlineIdx = part.indexOf('\n')
+      if (newlineIdx === -1) {
+        blocks.push({ kind: 'code', code: part, lang: '' })
+      } else {
+        const lang = part.slice(0, newlineIdx).trim()
+        const code = part.slice(newlineIdx + 1).replace(/\n$/, '')
+        blocks.push({ kind: 'code', code, lang })
+      }
+    }
+  }
+  return blocks
+}
+
+const InlineText = memo(function InlineText({ text }: { text: string }): ReactElement {
+  const segments = text.split(/`([^`]+)`/g)
+  return (
+    <>
+      {segments.map((seg, i) =>
+        i % 2 === 1 ? (
+          <code
+            key={i}
+            className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.85em] text-zinc-800"
+          >
+            {seg}
+          </code>
+        ) : (
+          <span key={i}>{seg}</span>
+        ),
+      )}
+    </>
+  )
+})
+
+const AssistantContent = memo(function AssistantContent({ content }: { content: string }): ReactElement {
+  const blocks = parseTextBlocks(content)
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, bi) =>
+        block.kind === 'code' ? (
+          <pre
+            key={bi}
+            className="overflow-x-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-5 text-zinc-800"
+            data-lang={block.lang || undefined}
+          >
+            <code>{block.code}</code>
+          </pre>
+        ) : (
+          <p key={bi} className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+            <InlineText text={block.text} />
+          </p>
+        ),
+      )}
+    </div>
+  )
+})
+
+type ToolItem = Extract<ChatItem, { kind: 'tool' }>
+
+function fallbackCopyText(text: string): void {
+  let textarea: HTMLTextAreaElement | null = null
+  try {
+    textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.top = '0'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    textarea.setSelectionRange(0, text.length)
+    document.execCommand('copy')
+  } catch {
+    // execCommand unavailable or blocked — copy is best-effort.
+  } finally {
+    if (textarea?.parentNode) textarea.parentNode.removeChild(textarea)
+  }
+}
+
+function copyTextToClipboard(text: string): void {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).catch(() => {
+        fallbackCopyText(text)
+      })
+      return
+    }
+  } catch {
+    // Clipboard access threw — fall back below.
+  }
+  fallbackCopyText(text)
+}
+
+const CopyButton = memo(function CopyButton({ text }: { text: string }): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const resetTimerRef = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    },
+    []
+  )
+
+  const handleClick = useCallback((): void => {
+    copyTextToClipboard(text)
+    setCopied(true)
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = window.setTimeout(() => setCopied(false), 1600)
+  }, [text])
+
+  return (
+    <button
+      type="button"
+      data-testid="message-actions-copy"
+      onClick={handleClick}
+      aria-label={copied ? 'Copied' : 'Copy message'}
+      title={copied ? 'Copied' : 'Copy message'}
+      className="inline-flex h-6 w-6 items-center justify-center rounded border border-transparent text-zinc-400 transition-colors hover:border-zinc-200 hover:bg-white hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+    >
+      {copied ? (
+        <svg
+          className="h-3.5 w-3.5 text-emerald-600"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          aria-hidden="true"
+        >
+          <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg
+          className="h-3.5 w-3.5"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          aria-hidden="true"
+        >
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+          <path
+            d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      )}
+    </button>
+  )
+})
+
+function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
+  return (
+    <button
+      type="button"
+      data-testid="message-actions-regenerate"
+      onClick={onClick}
+      aria-label="Regenerate response"
+      title="Regenerate response"
+      className="inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-200 hover:bg-white hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+    >
+      <svg
+        className="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        aria-hidden="true"
+      >
+        <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" strokeLinecap="round" />
+        <path d="M13.5 2.5V5H11" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      Regenerate
+    </button>
+  )
+}
+
+const TOOL_STATUS: Record<ToolItem['status'], { dot: string; label: string; text: string }> = {
+  waiting: {
+    dot: 'bg-amber-400 animate-pulse',
+    label: 'Waiting for approval',
+    text: 'text-amber-700'
+  },
+  running: { dot: 'bg-sky-500 animate-pulse', label: 'Running', text: 'text-zinc-500' },
+  done: { dot: 'bg-emerald-500', label: 'Done', text: 'text-zinc-400' },
+  error: { dot: 'bg-red-500', label: 'Failed', text: 'text-red-600' }
+}
+
+const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const status = TOOL_STATUS[item.status]
+  const isError = item.status === 'error'
+  const content = item.chunks.join('')
+  const isLongOutput = content.length > 0 && (content.split('\n').length > 8 || content.length > 600)
+
+  const handleToggleExpanded = useCallback((): void => {
+    setExpanded((value) => !value)
+  }, [])
+
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2 ${
+        isError ? 'border-red-200 bg-red-50' : 'border-zinc-200 bg-zinc-50'
+      }`}
+      data-testid="tool-card"
+    >
+      {(item.status === 'waiting' || item.status === 'running') && (
+        <div className="mb-2" aria-hidden="true">
+          <WavyProgress width={64} height={6} label={status.label} />
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} aria-hidden="true" />
+        <span className="truncate text-xs font-medium text-zinc-800">{item.label}</span>
+        <span className="shrink-0 rounded border border-zinc-200 bg-white px-1 py-px font-mono text-[10px] text-zinc-500">
+          {item.name}
+        </span>
+        <span className={`ml-auto shrink-0 text-[11px] ${status.text}`}>{status.label}</span>
+      </div>
+      {item.chunks.length > 0 && (
+        <>
+          <pre
+            className={`mt-2 rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] leading-4 text-zinc-600 ${
+              isLongOutput
+                ? expanded
+                  ? 'overflow-auto'
+                  : 'max-h-40 overflow-hidden'
+                : 'max-h-40 overflow-auto'
+            }`}
+          >
+            {content}
+          </pre>
+          {isLongOutput && (
+            <button
+              type="button"
+              data-testid="tool-card-expand"
+              onClick={handleToggleExpanded}
+              aria-expanded={expanded}
+              className="-ml-1 mt-1 rounded px-1 py-0.5 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+            >
+              {expanded ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </>
+      )}
+      {item.summary && <p className="mt-1.5 text-[11px] text-zinc-500">{item.summary}</p>}
+    </div>
+  )
+})
+
+type ErrorItem = Extract<ChatItem, { kind: 'error' }>
+
+const ErrorBlock = memo(function ErrorBlock({ item }: { item: ErrorItem }): ReactElement {
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2" data-testid="error-block">
+      <span className="font-mono text-[11px] font-semibold text-red-700">{item.code}</span>
+      <p className="mt-0.5 whitespace-pre-wrap text-sm text-red-700">{item.message}</p>
+    </div>
+  )
+})
+
+function Caret({ block = false }: { block?: boolean }): ReactElement {
+  return (
+    <span
+      className={`inline-block animate-pulse bg-zinc-400 align-middle ${
+        block ? 'h-4 w-2' : 'ml-0.5 h-3.5 w-1.5 align-baseline'
+      }`}
+      aria-label="Assistant is responding"
+    />
+  )
+}
+
+function chatRowKey(item: ChatItem, index: number): string {
+  switch (item.kind) {
+    case 'message':
+      return item.message.id
+    case 'partial':
+      return 'partial'
+    case 'tool':
+      return item.toolCallId
+    case 'error':
+      return `error-${index}`
+  }
+}
+
+const ChatRow = memo(function ChatRow({
+  item,
+  running,
+  isLatestAssistant = false,
+  onRegenerate
+}: {
+  item: ChatItem
+  running?: boolean
+  isLatestAssistant?: boolean
+  onRegenerate?: () => void
+}): ReactElement {
+  switch (item.kind) {
+    case 'message': {
+      const { message } = item
+      if (message.role === 'user') {
+        return (
+          <div className="group flex items-start justify-end gap-1.5">
+            <div className="max-w-[75%] rounded-xl border border-zinc-200 bg-zinc-100 px-4 py-2.5 text-sm leading-6 text-zinc-900">
+              <span className="whitespace-pre-wrap">{message.content}</span>
+            </div>
+            <div className="mt-1.5 flex shrink-0 items-center opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+              <CopyButton text={message.content} />
+            </div>
+          </div>
+        )
+      }
+      return (
+        <div className="flex justify-start">
+          <div className="w-full min-w-0 max-w-[92%]">
+            <div className="group">
+              <AssistantContent content={message.content} />
+              {isLatestAssistant && (
+                <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                  <CopyButton text={message.content} />
+                  {onRegenerate && <RegenerateButton onClick={onRegenerate} />}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )
+    }
+    case 'partial':
+      return (
+        <div className="flex justify-start">
+          <div className="w-full min-w-0 max-w-[92%]">
+            <AssistantContent content={item.content} />
+            {running && <Caret />}
+          </div>
+        </div>
+      )
+    case 'tool':
+      return (
+        <div className="flex justify-start">
+          <div className="w-full min-w-0 max-w-[92%]">
+            <ToolCard item={item} />
+          </div>
+        </div>
+      )
+    case 'error':
+      return (
+        <div className="flex justify-start">
+          <div className="w-full min-w-0 max-w-[92%]">
+            <ErrorBlock item={item} />
+          </div>
+        </div>
+      )
+  }
+})
+
+export function ChatView({ items, running = false, onRegenerate }: ChatViewProps): ReactElement {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const lastItem = items.length > 0 ? items[items.length - 1] : null
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+    // Scroll when the tail item identity or list length changes (streaming
+    // replaces the tail partial each token). Avoids JSON.stringify per render.
+  }, [lastItem, items.length])
+
+  const trailingPartial = items.length > 0 && items[items.length - 1].kind === 'partial'
+
+  let lastAssistantIndex = -1
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const candidate = items[index]
+    if (candidate.kind === 'message' && candidate.message.role === 'assistant') {
+      lastAssistantIndex = index
+      break
+    }
+  }
+
+  function renderItems(): ReactElement[] {
+    return items.map((item, index) => {
+      const isLatestAssistant = index === lastAssistantIndex
+      return (
+        <ChatRow
+          key={chatRowKey(item, index)}
+          item={item}
+          running={item.kind === 'partial' ? running : undefined}
+          isLatestAssistant={isLatestAssistant}
+          onRegenerate={isLatestAssistant && onRegenerate ? onRegenerate : undefined}
+        />
+      )
+    })
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      className="h-full overflow-y-auto overscroll-contain"
+      role="log"
+      aria-live="polite"
+      aria-label="Chat messages"
+    >
+      {items.length === 0 ? (
+        <div className="flex h-full items-center justify-center px-6">
+          <p className="text-sm text-zinc-400">Send a message to start.</p>
+        </div>
+      ) : (
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6">
+          {renderItems()}
+          {running && !trailingPartial && <Caret block />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default ChatView

@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+*.log
+.tmp-*/
+*.png
+*_probe.txt
+accept_perm.txt
+robot-gardener-story.md
