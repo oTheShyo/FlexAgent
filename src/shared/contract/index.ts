@@ -164,6 +164,40 @@ export interface ApplyFileChangesResult {
   failed: Array<{ path: string; reason: string }>
 }
 
+/** PI thinking levels (session-scoped; clamped to model capability on set). */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Minimal model identity exposed to the UI (no PI types). */
+export interface ModelOption {
+  provider: string
+  id: string
+  /** Optional display label (falls back to `id` in UI if absent). */
+  label?: string
+}
+
+/** Effective model/thinking config for one session. */
+export interface ModelConfig {
+  /** `null` when the session has no model selected yet. */
+  model: ModelOption | null
+  thinkingLevel: ThinkingLevel
+  /** Levels the current model accepts (PI `getAvailableThinkingLevels`). Omitted when no model. */
+  availableThinkingLevels?: ThinkingLevel[]
+}
+
+export interface SetModelInput {
+  sessionId: SessionId
+  provider: string
+  /** Model id as listed by `listModels`. */
+  id: string
+  /** Optional thinking level applied atomically with the model switch. */
+  thinkingLevel?: ThinkingLevel
+}
+
+export interface SetThinkingLevelInput {
+  sessionId: SessionId
+  level: ThinkingLevel
+}
+
 // ─── Events (kernel → renderer), one discriminated union ─────────────────────
 
 /** Every event is stamped with session + monotonic per-session sequence. */
@@ -316,6 +350,17 @@ export interface CodexApi {
    * Per-file failures land in `result.failed` (not a whole-call reject).
    */
   applyFileChanges(input: ApplyFileChangesInput): Promise<ApplyFileChangesResult>
+
+  /** Available models (provider auth OK). Not session-scoped. */
+  listModels(): Promise<ModelOption[]>
+  /** Current session's effective model + thinking config. */
+  getModelConfig(sessionId: SessionId): Promise<ModelConfig>
+  /** Switch model for one session (session-only; does not persist PI defaults). */
+  setModel(input: SetModelInput): Promise<ModelConfig>
+  /** Set thinking level for one session (session-only; clamped to model capability). */
+  setThinkingLevel(input: SetThinkingLevelInput): Promise<ModelConfig>
+  /** Native directory picker for Choose project. Resolves `null` when cancelled. */
+  pickDirectory(): Promise<string | null>
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -334,6 +379,11 @@ export const IPC = {
   terminalResize: 'codex:terminalResize',
   terminalKill: 'codex:terminalKill',
   applyFileChanges: 'codex:applyFileChanges',
+  listModels: 'codex:listModels',
+  getModelConfig: 'codex:getModelConfig',
+  setModel: 'codex:setModel',
+  setThinkingLevel: 'codex:setThinkingLevel',
+  pickDirectory: 'codex:pickDirectory',
   /** main → renderer push for KernelEvent (per webContents). */
   kernelEvent: 'codex:kernelEvent'
 } as const

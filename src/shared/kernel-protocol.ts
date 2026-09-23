@@ -1,4 +1,11 @@
-import type { ContractErrorCode, KernelEvent, PromptDisposition, SessionId, ToolCallId } from './contract/index'
+import type {
+  ContractErrorCode,
+  KernelEvent,
+  PromptDisposition,
+  SessionId,
+  ThinkingLevel,
+  ToolCallId
+} from './contract/index'
 
 /**
  * Internal main ↔ worker protocol (NOT part of the renderer contract).
@@ -20,6 +27,10 @@ export type WorkerRequest =
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }
   | { requestId: string; type: 'disposeSession'; sessionId: SessionId }
+  | { requestId: string; type: 'listModels' }
+  | { requestId: string; type: 'getModelConfig'; sessionId: SessionId }
+  | { requestId: string; type: 'setModel'; sessionId: SessionId; provider: string; id: string; thinkingLevel?: ThinkingLevel }
+  | { requestId: string; type: 'setThinkingLevel'; sessionId: SessionId; level: ThinkingLevel }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>
