@@ -272,7 +272,7 @@ export default function App({ children }: AppProps) {
         <TerminalDrawer
           open={showTerminal}
           onClose={handleCloseTerminal}
-          sessionId={activeSessionId ?? ''}
+          sessionId={activeSessionId}
         />
         {pendingPermission && (
           <PermissionDialog
