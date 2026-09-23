@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { ChatItem } from '../hooks/useChat'
 import { WavyProgress } from './WavyProgress'
+import { Markdown } from './Markdown'
 
 export interface ChatViewProps {
   items: ChatItem[]
@@ -8,77 +9,14 @@ export interface ChatViewProps {
   onRegenerate?: () => void
 }
 
-type Block =
-  | { kind: 'code'; code: string; lang: string }
-  | { kind: 'para'; text: string }
-
-function parseTextBlocks(text: string): Block[] {
-  const blocks: Block[] = []
-  const parts = text.split('```')
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i]
-    if (i % 2 === 0) {
-      const paragraphs = part.split(/\n{2,}/)
-      for (const para of paragraphs) {
-        if (para.trim().length > 0) {
-          blocks.push({ kind: 'para', text: para })
-        }
-      }
-    } else {
-      const newlineIdx = part.indexOf('\n')
-      if (newlineIdx === -1) {
-        blocks.push({ kind: 'code', code: part, lang: '' })
-      } else {
-        const lang = part.slice(0, newlineIdx).trim()
-        const code = part.slice(newlineIdx + 1).replace(/\n$/, '')
-        blocks.push({ kind: 'code', code, lang })
-      }
-    }
-  }
-  return blocks
-}
-
-const InlineText = memo(function InlineText({ text }: { text: string }): ReactElement {
-  const segments = text.split(/`([^`]+)`/g)
-  return (
-    <>
-      {segments.map((seg, i) =>
-        i % 2 === 1 ? (
-          <code
-            key={i}
-            className="rounded bg-[var(--surface-raised)] px-1 py-0.5 font-mono text-[0.85em] text-[var(--text)]"
-          >
-            {seg}
-          </code>
-        ) : (
-          <span key={i}>{seg}</span>
-        ),
-      )}
-    </>
-  )
-})
-
-const AssistantContent = memo(function AssistantContent({ content }: { content: string }): ReactElement {
-  const blocks = parseTextBlocks(content)
-  return (
-    <div className="space-y-3">
-      {blocks.map((block, bi) =>
-        block.kind === 'code' ? (
-          <pre
-            key={bi}
-            className="overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] p-3 font-mono text-xs leading-5 text-[var(--text)]"
-            data-lang={block.lang || undefined}
-          >
-            <code>{block.code}</code>
-          </pre>
-        ) : (
-          <p key={bi} className="whitespace-pre-wrap text-sm leading-6 text-[var(--text)]">
-            <InlineText text={block.text} />
-          </p>
-        ),
-      )}
-    </div>
-  )
+const AssistantContent = memo(function AssistantContent({
+  content,
+  streaming = false
+}: {
+  content: string
+  streaming?: boolean
+}): ReactElement {
+  return <Markdown content={content} streaming={streaming} />
 })
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>
@@ -355,7 +293,7 @@ const ChatRow = memo(function ChatRow({
       return (
         <div className="flex justify-start">
           <div className="w-full min-w-0 max-w-[92%]">
-            <AssistantContent content={item.content} />
+            <AssistantContent content={item.content} streaming />
             {running && <Caret />}
           </div>
         </div>

@@ -57,3 +57,66 @@
     --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
   }
 }
+
+[data-md-root] pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 0;
+  background: transparent;
+}
+
+[data-md-root] .hljs-comment,
+[data-md-root] .hljs-quote {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+[data-md-root] .hljs-keyword,
+[data-md-root] .hljs-selector-tag,
+[data-md-root] .hljs-literal,
+[data-md-root] .hljs-doctag,
+[data-md-root] .hljs-formula {
+  color: var(--danger);
+}
+
+[data-md-root] .hljs-string,
+[data-md-root] .hljs-title,
+[data-md-root] .hljs-name,
+[data-md-root] .hljs-section,
+[data-md-root] .hljs-attribute,
+[data-md-root] .hljs-regexp,
+[data-md-root] .hljs-symbol {
+  color: var(--success);
+}
+
+[data-md-root] .hljs-number,
+[data-md-root] .hljs-bullet,
+[data-md-root] .hljs-link,
+[data-md-root] .hljs-meta,
+[data-md-root] .hljs-selector-id {
+  color: var(--warning);
+}
+
+[data-md-root] .hljs-built_in,
+[data-md-root] .hljs-class .hljs-title {
+  color: var(--accent);
+}
+
+[data-md-root] .hljs-attr,
+[data-md-root] .hljs-variable,
+[data-md-root] .hljs-template-variable,
+[data-md-root] .hljs-type,
+[data-md-root] .hljs-selector-class,
+[data-md-root] .hljs-selector-attr,
+[data-md-root] .hljs-selector-pseudo,
+[data-md-root] .hljs-params {
+  color: var(--text-secondary);
+}
+
+[data-md-root] .hljs-deletion {
+  color: var(--danger);
+}
+
+[data-md-root] .hljs-addition {
+  color: var(--success);
+}
