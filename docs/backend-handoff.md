@@ -7,22 +7,34 @@
 
 ---
 
-## 0. 对齐状态快照（2026-09-23 · 内核轨）
+## 0. 对齐状态快照（2026-09-23 · 内核轨 · 2026-09-24 迁移后复核）
 
 | 项 | 状态 | 证据 / 备注 |
 |----|------|-------------|
-| 契约 | **v1.2 冻结候选**（只增不改） | `applyFileChanges` + IPC + contract.md §2 已双表同步 |
-| typecheck | ✅ 双 tsconfig exit 0 | `npm run typecheck` |
-| 真链路桥 | ✅ | `window.electron.codex.prompt` 为 function |
-| M1–M5 smoke | ✅ 曾全绿 | `scripts/accept-smoke.mjs` → `ACCEPT_SMOKE_PASS` |
-| M6 真 PTY | ✅ PASS（独立复核） | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS` 7/7 |
-| mock fallback | ✅ | `scripts/accept-mock-fallback.mjs` → `MOCK_FALLBACK_PASS` |
+| **项目根** | ✅ **`D:\2026\FlexAgent`** | 2026-09-24 自 `D:\2026\2026\codex-clone` 迁移；package name **`flex-agent`** |
+| **git** | ✅ 首提交 `c4db5fc` | `Initial import: FlexAgent (migrated from codex-clone)` |
+| 契约 | **v1.3 只增已落地**（model/thinking + `pickDirectory`） | `listModels`/`getModelConfig`/`setModel`/`setThinkingLevel` + IPC；contract.md §2/§8 已同步 |
+| typecheck | ✅ 双 tsconfig exit 0 | `npm run typecheck`（迁移后复跑 exit 0） |
+| 真链路桥 | ✅ | CDP page title=`FlexAgent`；`window.electron.codex.prompt` 为 function |
+| M1–M5 smoke | ⚠️ **M1/M5/M4 绿；M2/M3 依赖模型速度** | 150s 阈值下 M2/M3 可能未 idle；`diag-m3` 独立 112s PASS；非 v1.3 回归（拍板：不改脚本） |
+| M6 真 PTY | ✅ **迁移后复跑 PASS；v1.3 后串行复跑** | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS` 7/7（echo `M6_ECHO_OK` · cwd=`D:\2026\FlexAgent`） |
+| mock fallback | ✅ **迁移后全绿；v1.3 后串行复跑** | `scripts/accept-mock-fallback.mjs` → `MOCK_FALLBACK_PASS` |
 | §7.2.2 断连语义 | ✅ 内核已实现 | worker 死 → `error`+`idle` fanOut → `seq.clear` → 自动重启；`openSession` 幂等保持 |
-| §7.3 断连走查 | ✅ **内核 + UI 双 PASS** | 内核 `ACCEPT_DISCONNECT_PASS`（8/8）· UI `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
+| §7.3 断连走查 | ✅ **迁移后双 PASS；v1.3 后串行复跑** | 内核 `ACCEPT_DISCONNECT_PASS`（8/8）· UI `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
 | `applyFileChanges` | ✅ 契约 v1.2 已只增 | main 独占 `src/main/applyChanges.ts`；preload/ipc 已接 |
+| **模型/思考 + pickDirectory** | ✅ **契约 v1.3 已只增 + CDP 冒烟 PASS**（2026-09-24） | worker `ModelRuntime` + `session.setModel/setThinkingLevel`；ipc/preload 已接；`scripts/accept-model.mjs` → `ACCEPT_MODEL_PASS` **11/11**；见 §7.5C |
 | `listFiles` / `rename` / `archive` | ⏸️ 按 §7.1 现不做 | 前端 localStorage 覆盖层 / fixture |
 
-**给前端的一句话：** 契约 v1.2 + M1–M6 真链路 + apply + §7.3 断连走查（内核 8/8 · UI 6/6）**全绿，可联调**。§7.3 已关闭：kill 后 banner「Connection lost — reconciling…」→ error-block(`KERNEL_INTERNAL`) → ~3s「Reconnected」，无 ErrorBoundary 崩溃。
+### 0.0.1 仓库迁移（2026-09-24）
+
+- **旧根：** `D:\2026\2026\codex-clone`（**保留未删**，归档待拍板）
+- **新根：** `D:\2026\FlexAgent`；**应用名 FlexAgent**；`package.json` `name: flex-agent`
+- **改动范围：** 路径硬编码（`scripts/*.mjs` CWD、docs 引用、renderer 内路径字面量）+ 品牌字符串；**契约语义 / `CodexApi` 类型名未动**
+- **git：** `c4db5fc`（64 files）；`.gitignore`：`node_modules/` `out/` `dist/` `*.log` `.tmp-*/` `*.png` 等
+- **迁移后全绿（本机复跑）：** typecheck 0 · pong · **smoke PASS** · **mock-fallback PASS** · **disconnect 8/8** · **disconnect-ui 6/6** · **M6 PASS 7/7**
+- **apply：** ✅ **新根复跑 `ACCEPT_APPLY_PASS`（11/11，exit 0）**
+
+**给前端的一句话：** 项目根已迁 **`D:\2026\FlexAgent`**。契约 **v1.3 只增**已落地且 **`ACCEPT_MODEL_PASS` 11/11**；typecheck / mock / 断连 / M6 / apply / model **全绿，可开工**。smoke M2/M3 依赖模型速度（`qwen-chat` 长回复可能超 150s），**非回归、验收阈值不改**。§7.3 已关闭。你的待办：① **§7.5C 接线** — Choose project→`pickDirectory`→`createSession`；模型 chip→`listModels`/`setModel`/`setThinkingLevel`（label 用返回 `ModelConfig`）；+ 菜单先做壳；② assistant 气泡 **markdown 渲染**；③ **§7.5 终端 xterm + Composer 死按钮**（你侧 TerminalDrawer 已换 xterm，按 §7.5A 收尾）。
 
 ### 0.1.5 断连走查（§7.3）— 已关闭（双侧）
 
@@ -52,6 +64,8 @@ node scripts/accept-m6.mjs           # 期望 ACCEPT_M6_PASS
 node scripts/accept-mock-fallback.mjs # 期望 MOCK_FALLBACK_PASS
 node scripts/accept-disconnect.mjs   # 期望 ACCEPT_DISCONNECT_PASS（§7.3 内核）
 node scripts/accept-disconnect-ui.mjs # 期望 ACCEPT_DISCONNECT_UI_PASS（§7.3 UI；串行）
+node scripts/accept-model.mjs        # 期望 ACCEPT_MODEL_PASS（契约 v1.3；串行）
+# smoke：M2/M3 对 qwen-chat 可能 >150s；独立 diag-m3 可 112s PASS——按速度备注，非失败判据
 ```
 
 细节与修复清单：[`docs/acceptance-report.md`](./acceptance-report.md)。
@@ -223,3 +237,90 @@ preload 暴露 `electron.codex` 后，renderer **自动**走真链路；无需�
 - LLM（qwen-chat）偶发慢/空回；`ack` 始终 ms 级、不依赖 LLM。smoke settle 超时已放宽。  
 - 真 PTY resize 后 ConPTY 可能重绘 shell（多条 `pty_output`）；断言「成功即可 / 无非 `pty_*` 协议事件」。  
 - M6/错误码曾因 `Object.assign` 盖 message、Error 过 contextBridge 丢 code 而全变 `KERNEL_INTERNAL`——已修；前端若见裸 `KERNEL_INTERNAL` 且无 details，属异常，报内核轨。
+
+### 7.5 前端轨待修（内核轨只读诊断 · 2026-09-24）
+
+用户报了两处 UI 问题。内核轨读了 `src/renderer/**` 做根因定位，**未改任何 renderer 文件**（§6 边界）。前端轨按此修。
+
+#### A. 终端抽屉 ANSI 乱码
+
+| 层 | 结论 |
+|----|------|
+| 内核 | ✅ 正确。`pty.ts` `onData` 原样 `fanOut` ConPTY 字节流；契约 §4 = `pty_output` append 字节流。`accept-m6` 7/7（新根复跑），样例数据本身含 `ESC[K` / `ESC[?25h` 等转义——**这是正常 PTY 输出**。 |
+| 前端 | ❌ `TerminalDrawer.tsx:92` 把 `event.data` 当纯文本 `setBuffer(prev => prev + event.data)`；`:205` 渲染 `{buffer}` 到 `<div>`。**无终端模拟器** → ANSI 被原样显示成乱码。 |
+
+**修法（前端轨）：**
+1. 引入 `@xterm/xterm`（+ `@xterm/addon-fit`）。`package.json` 当前**无** xterm 依赖。
+2. `pty_output` → `term.write(event.data)`；`pty_exit` → 标记 dead。
+3. ResizeObserver → `fitAddon.fit()` → 再 `terminalResize({ terminalId, cols, rows })`。
+4. `terminalInput`：`onData` 键盘流写回（或保留现输入行，但 xterm 自带输入更正确）。
+5. 降级方案（可先上）：`strip-ansi` / `ansi-to-html` 清转义——仅止乱码，**不是**真终端（无光标/清屏/颜色）。
+
+**勿改：** 内核不要 strip 后再发——真终端需要原始字节流（契约 §4）。
+
+#### B. Composer 部分按钮点击无响应
+
+`Composer.tsx` 读码（行号基于当前文件）：
+
+| 控件 | 有无 handler | 说明 |
+|------|-------------|------|
+| Choose project（L402–410） | ❌ **无 `onClick`** | 纯展示 stub，点了没反应 = 预期（未实装） |
+| `+` 附件（L431–438） | ❌ **无 `onClick`** | 同上 |
+| 模型选择 chip（L471–474） | ❌ **无 `onClick`** | 同上 |
+| Manual/Auto/Full access | ✅ `cycleApproval`（L443） | 应可切换文案 |
+| 发送 ↑（L476–491） | ✅ `submit` | 需 `text.trim()` 非空且 `!disabled` |
+| Queue（running 时） | ✅ | 仅 `running &&` 渲染 |
+
+**全局 disabled 源：** `App.tsx:259` → `disabled={!activeSessionId}`。无选中会话时 **整个 composer disabled**，Manual/发送也会变灰（`disabled:opacity-40`）。
+
+**用户症状 → 根因：**
+- Choose project / `+` / 模型 chip 点不动 → **从未接线**（前端决策：v1 做不做这些入口）。
+- 若 Manual、发送在**有会话**时也无反应 → 查 `activeSessionId` 是否为 null；有会话仍无反应 → 查 HMR/React 事件被 overlay 截获（z-index），再报内核轨。
+- 截图里手动输入了文本，发送按钮若灰 → `disabled` prop 为 true（无 session）优先查这个。
+
+**修法建议（前端轨，按优先级）：**
+1. 有 session 时 Manual/发送必须可点——验证 `activeSessionId` 传入。
+2. Choose project / `+` / 模型 chip：实装或先 `disabled` + tooltip「Not yet」，避免死按钮观感。
+3. 模型 chip 文案 `mimo-v2.6 Flash` 与后端模型解耦（展示用 UI 配置即可，**无需**新契约命令）。
+
+**契约影响：** **无。** 两问题均纯 renderer；内核/契约零动作。
+
+**验收（前端修完）：**
+- 终端：开抽屉 → 看到 cmd 提示符而非 `@[K`；`echo hi` 回显正常；resize 后不断行。
+- Composer：有 session → Manual 可循环、有文本时 ↑ 可发送；无 session → composer 整体灰且不响应（符合 `disabled`）。
+
+#### C. 产品意图 vs 当前差距（2026-09-24 · 契约 v1.3 开工）
+
+用户确认的三项产品意图，对照现契约与内核能力：
+
+| 入口 | 产品意图 | v1.2 现状 | 差距 | 分轨动作 |
+|------|----------|-----------|------|----------|
+| **Choose project** | 选会话工作区（= `createSession` 的 `cwd`；切换项目 = 新会话） | 契约已有 `CreateSessionInput.cwd`；UI 硬编码 `WORKSPACE_CWD` | 缺**原生目录选择器** | **内核：** `pickDirectory()`（Electron dialog，`openDirectory`）→ 返回 `string \| null`。**前端：** 点击 → `pickDirectory` → `createSession({ cwd })` / 展示 basename |
+| **模型 chip** | 切换可用模型 + **思考强度** | 契约/`CodexApi` **无**任何 model/thinking 命令；worker `createAgentSession({cwd,sessionManager})` 未暴露 PI 运行时切换 | **整块缺失** | **内核（v1.3 只增）：** `listModels` / `getModelConfig` / `setModel` / `setThinkingLevel` + IPC。PI：`ModelRuntime.getAvailable()`、`session.setModel(model,{persist:false})`、`session.setThinkingLevel(level)`、`session.model`/`thinkingLevel`/`getAvailableThinkingLevels()`。**前端：** chip 打开菜单（模型列表 + 思考档）→ 调上述命令 → 用返回值刷新 label |
+| **+ 菜单** | Codex 式：添加文件 / 模式 Plan·Ask / 技能 / 连接器（见用户截图） | 无入口；`PromptMode`（steer/followUp）**≠** Plan/Ask agent 模式 | 菜单壳 + 若干子能力 | **前端：** 菜单 UI 可先落地。子项：① **附件** → v1.3 **只增** `PromptInput.attachments?: Array<{ path, kind: 'file' }>`（文本内联路径，无 `listFiles`）或纯前端把路径拼进 `text`（零契约）；② **Plan/Ask** → **本轮不做**（需 PI plan-mode/扩展，契约另开只增）；③ 技能/连接器 → **本轮不做**（等 PI skill API 接入） |
+
+**契约影响（v1.3 只增，不改已有语义）：**
+
+```ts
+type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+interface ModelOption { provider: string; id: string; label?: string }
+interface ModelConfig {
+  model: ModelOption | null
+  thinkingLevel: ThinkingLevel
+  availableThinkingLevels?: ThinkingLevel[]
+}
+// CodexApi 追加：
+listModels(): Promise<ModelOption[]>                    // 可用模型（有鉴权）
+getModelConfig(sessionId): Promise<ModelConfig>        // 当前会话生效配置
+setModel({ sessionId, provider, id, thinkingLevel? }): Promise<ModelConfig>
+setThinkingLevel({ sessionId, level }): Promise<ModelConfig>
+pickDirectory(): Promise<string | null>                 // 取消 → null
+// IPC 追加：codex:listModels | getModelConfig | setModel | setThinkingLevel | pickDirectory
+```
+
+- 运行时语义：`persist: false`（**仅本会话**，不写 PI 全局 default）；`setModel` 后 `thinkingLevel` 由 PI 按模型能力 clamp，返回值以 **实际生效** 的 `ModelConfig` 为准。
+- `listModels` 不依赖 active session（worker 缓存一个 `ModelRuntime`）；`get/set*` 需要已 `createSession`/`openSession` 的 session。
+- **Plan/Ask、技能、连接器：** 明确 **v1.3 不做**；前端菜单可先 disabled + tooltip。
+- **Mock：** `MockCodexApi` 同步实现上述方法（fixture 模型列表 + 会话内内存配置），保证 `typecheck` 双绿；真数据以 `window.electron.codex` 为准。
+
+**给前端的一句话（§7.5C）：** 契约升 **v1.3** 后，Choose project 接 `pickDirectory`→`createSession`；模型 chip 接 `listModels`/`setModel`/`setThinkingLevel`（label 用返回的 `ModelConfig`）；+ 菜单可先做壳（附件可文本内联，Plan/Ask/技能/连接器 disabled）。详见 `docs/contract.md` §2 / §8。

@@ -1,4 +1,4 @@
-# FlexAgent 跨进程契约 v1.2
+# FlexAgent 跨进程契约 v1.3
 
 **权威类型源：** [`src/shared/contract/index.ts`](../src/shared/contract/index.ts)  
 **状态：** 冻结候选 — 双轨（前端 / 内核）共同遵守  
@@ -43,8 +43,29 @@ Renderer (React)          Main (orchestration)         Worker (kernel)
 | `terminalResize({ terminalId, cols, rows })` | 调整 PTY 窗口 | `void` | `TERMINAL_NOT_FOUND`、`INVALID_INPUT` |
 | `terminalKill(terminalId)` | 杀掉 PTY；对已死 id 幂等成功 | `void` | `TERMINAL_NOT_FOUND` |
 | `applyFileChanges({ sessionId, files })` | Diff Accept：把 `FileChange.patch` 写到 session `cwd` 下（main 独占 fs，不进 transcript）；**幂等**（已是目标内容 → `alreadyApplied`） | `{ applied, alreadyApplied, failed[] }` | `SESSION_NOT_FOUND`、`SESSION_BUSY`（run 中）、`INVALID_INPUT` |
+| `listModels()` | 可用模型（provider 已鉴权）；**不依赖** session | `ModelOption[]` | `KERNEL_INTERNAL` |
+| `getModelConfig(sessionId)` | 当前会话生效的 model + thinking | `ModelConfig` | `SESSION_NOT_FOUND` |
+| `setModel({ sessionId, provider, id, thinkingLevel? })` | **仅本会话**切换模型（`persist: false`）；可选同切 thinking | 生效后的 `ModelConfig` | `SESSION_NOT_FOUND`、`INVALID_INPUT`（未知 model） |
+| `setThinkingLevel({ sessionId, level })` | **仅本会话**设思考强度（PI 按模型能力 clamp） | 生效后的 `ModelConfig` | `SESSION_NOT_FOUND`、`INVALID_INPUT` |
+| `pickDirectory()` | 原生目录选择器（Choose project）；取消 → `null` | `string \| null` | `KERNEL_INTERNAL` |
 
 **PTY 安全边界（有意为之）：** 真 PTY **不经过** agent 权限门——用户手动输入即以应用进程的 OS 权限执行完整 shell。Agent 的 `bash` 工具调用仍是另一条路径（`tool_*` + `permission_request`）。`cwd` 默认取所属 session 的工作目录。
+
+### 2.0 模型与思考（v1.3）
+
+```ts
+type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+interface ModelOption { provider: string; id: string; label?: string }
+interface ModelConfig {
+  model: ModelOption | null
+  thinkingLevel: ThinkingLevel
+  availableThinkingLevels?: ThinkingLevel[]
+}
+```
+
+- **会话作用域：** `setModel` / `setThinkingLevel` 不写 PI 全局 default（session-only）。
+- **返回值权威：** 以调用后返回的 `ModelConfig` 为准（含 PI clamp 后的 `thinkingLevel`、`availableThinkingLevels`）。
+- **不新增事件：** 变更通过命令 ack 同步；UI 乐观更新后用返回值对账即可。
 
 ### 2.1 `prompt` 的 steer / followUp（对齐 PI 硬约束）
 
@@ -226,3 +247,4 @@ terminalKill → pty_exit
 | v1 | 2026-09-23 | 初版冻结候选：命令 6、事件 10、IPC 通道 7 |
 | v1.1 | 2026-09-23 | Terminal 改为**真 PTY（node-pty @ main）**：+4 命令、+2 事件（`pty_output`/`pty_exit`）、+2 错误码、+4 IPC 通道；废除「工具时间线」方案；Mock 增 M6 |
 | v1.2 | 2026-09-23 | +1 命令 `applyFileChanges`、+1 IPC 通道；Diff Accept 实装（幂等写盘、`SESSION_BUSY` while running）；Reject = UI-only 不回滚 |
+| v1.3 | 2026-09-24 | +4 命令 `listModels`/`getModelConfig`/`setModel`/`setThinkingLevel`、+1 UI 工具 `pickDirectory`、+5 IPC 通道、+类型 `ThinkingLevel`/`ModelOption`/`ModelConfig`；模型 chip 与 Choose project 原生目录选择器（见 backend-handoff §7.5C）；Plan/Ask·技能·连接器 **不在本版** |

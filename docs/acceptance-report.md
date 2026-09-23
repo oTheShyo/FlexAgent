@@ -1,8 +1,8 @@
 # §5 对接验收报告（内核轨）
 
-**日期：** 2026-09-23（含同日复核：apply / M6 / smoke / mock 回归）  
-**范围：** `docs/backend-handoff.md` §5；契约 **v1.2**（`src/shared/contract/index.ts` + `docs/contract.md`）  
-**环境：** Windows · Electron 44 · TS 7 · PI 0.87.1 · `npm run dev -- --remote-debugging-port=9222`  
+**日期：** 2026-09-23（同日复核：apply / M6 / smoke / mock）· **2026-09-24 迁移后全量复跑**  
+**范围：** `docs/backend-handoff.md` §5；契约 **v1.3**（`src/shared/contract/index.ts` + `docs/contract.md`）  
+**环境：** Windows · Electron 44 · TS 7 · PI 0.87.1 · **根 `D:\2026\FlexAgent`** · `npm run dev -- --remote-debugging-port=9222`  
 **执行者：** 后端 / 内核轨会话 · **复核：** 前端验收（CDP 串行）
 
 ---
@@ -12,18 +12,21 @@
 | 条目 | 结果 | 证据 |
 |------|------|------|
 | `npm run typecheck` 双 tsconfig exit 0 | ✅ PASS | `tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json` → exit 0 |
-| renderer 走 `window.electron.codex` | ✅ PASS | CDP：`typeof window.electron?.codex.prompt === 'function'` |
-| M1–M5 真链路 | ✅ PASS | `scripts/accept-smoke.mjs` → `ACCEPT_SMOKE_PASS`（CHECKS M1–M5 全 true） |
-| M6 真 PTY | ✅ PASS | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS`（7/7） |
-| **applyFileChanges（v1.2 Diff Accept）** | ✅ PASS | `scripts/accept-apply.mjs` → `ACCEPT_APPLY_PASS`（11/11） |
+| renderer 走 `window.electron.codex` | ✅ PASS | CDP：page title=`FlexAgent`；`typeof window.electron?.codex.prompt === 'function'` |
+| M1–M5 真链路 | ⚠️ **部分依赖模型速度（2026-09-24 v1.3 后）** | `scripts/accept-smoke.mjs`：**M1/M5/M4 全绿**；**M2/M3 150s 内未 idle → FAIL**。根因非回归：`diag-pong` 2.3s idle；`diag-m3` 独立 **112s PASS**（`M3_FULL_PASS`）；M2 `steerHit=true` + `userMessageCount=2` 协议正确。当前唯一模型 `USTC/qwen-chat` 长回复常 >150s。**按拍板：不改验收阈值，接受此备注。** |
+| M6 真 PTY | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS`（7/7；cwd=`D:\2026\FlexAgent`） |
+| **applyFileChanges（v1.2 Diff Accept）** | ✅ PASS（**2026-09-24 新根复跑**） | `scripts/accept-apply.mjs` → `ACCEPT_APPLY_PASS`（11/11；exit 0） |
+| **v1.3 model/thinking + pickDirectory** | ✅ **PASS 11/11**（2026-09-24 新根） | `scripts/accept-model.mjs` → `ACCEPT_MODEL_PASS`；`listModels` len=1（`USTC/qwen-chat`）；`setThinkingLevel high` 被 PI clamp → `off`（该模型仅 `["off"]`，**返回值权威**符合契约 §2.0）；`INVALID_INPUT`/`SESSION_NOT_FOUND` 正确 |
 | seq / `::` 标记 / 错误码枚举 | ✅ PASS | 各 phase `collectInvariants` 全绿 |
-| mock fallback（`window.electron` 缺失） | ✅ PASS | `scripts/accept-mock-fallback.mjs` → `MOCK_FALLBACK_PASS` |
+| mock fallback（`window.electron` 缺失） | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-mock-fallback.mjs` → `MOCK_FALLBACK_PASS` |
 | **mock M1–M6 回归** | ✅ PASS | `verify_m1_m6.py` → `ALL M1-M6 PASS` |
-| **§7.3 断连走查（内核侧）** | ✅ PASS | `scripts/accept-disconnect.mjs` → `ACCEPT_DISCONNECT_PASS`（8/8） |
-| **§7.3 断连走查（UI）** | ✅ PASS | `scripts/accept-disconnect-ui.mjs` → `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
+| **§7.3 断连走查（内核侧）** | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-disconnect.mjs` → `ACCEPT_DISCONNECT_PASS`（8/8） |
+| **§7.3 断连走查（UI）** | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-disconnect-ui.mjs` → `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
 
-**完成判据（§5.1–5.5 + 契约 v1.2 apply + §7.3 内核/UI）：全绿。**  
-**§7.3 关闭：** 同 kill 场景下 UI 已显示 Connection lost → error-block（KERNEL_INTERNAL）→ Reconnected，无 ErrorBoundary 崩溃。
+**完成判据（§5.1–5.5 + 契约 v1.2/v1.3 + §7.3 内核/UI）：v1.3 全绿；smoke 的 M2/M3 按模型速度备注（见上表）。**  
+**迁移后（`D:\2026\FlexAgent`，2026-09-24）：** typecheck · pong · mock-fallback · disconnect · disconnect-ui · **M6** · apply · **model(11/11)** **全 PASS**；smoke 依赖模型速度（M2/M3 可能超 150s）。  
+**§7.3 关闭：** 同 kill 场景下 UI 已显示 Connection lost → error-block（KERNEL_INTERNAL）→ Reconnected，无 ErrorBoundary 崩溃。  
+**v1.3 备注（2026-09-24）：** `setThinkingLevel('high')` 被 PI clamp → `off`（该模型仅 `["off"]`）— **返回值权威**，符合契约 §2.0。
 
 ---
 
@@ -57,6 +60,10 @@ node scripts/accept-disconnect-ui.mjs
 # 7) applyFileChanges（契约 v1.2，需 dev + CDP :9222；串行）
 node scripts/accept-apply.mjs
 # 期望 stderr: ACCEPT_APPLY_PASS，CHECKS 11/11 true
+
+# 7b) v1.3 model/thinking（需 dev + CDP :9222；串行）
+node scripts/accept-model.mjs
+# 期望 stderr: ACCEPT_MODEL_PASS，CHECKS 11/11 true
 
 # 8) mock M1–M6 回归（独立 Playwright，不依赖 CDP）
 python C:\Users\HP\AppData\Local\Temp\opencode\verify_m1_m6.py
