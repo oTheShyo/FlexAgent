@@ -13,7 +13,7 @@
 |------|------|------|
 | `npm run typecheck` 双 tsconfig exit 0 | ✅ PASS | `tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json` → exit 0 |
 | renderer 走 `window.electron.codex` | ✅ PASS | CDP：page title=`FlexAgent`；`typeof window.electron?.codex.prompt === 'function'` |
-| M1–M5 真链路 | ⚠️ **部分依赖模型速度（2026-09-24 v1.3 后）** | `scripts/accept-smoke.mjs`：**M1/M5/M4 全绿**；**M2/M3 150s 内未 idle → FAIL**。根因非回归：`diag-pong` 2.3s idle；`diag-m3` 独立 **112s PASS**（`M3_FULL_PASS`）；M2 `steerHit=true` + `userMessageCount=2` 协议正确。当前唯一模型 `USTC/qwen-chat` 长回复常 >150s。**按拍板：不改验收阈值，接受此备注。** |
+| M1–M5 真链路 | ⚠️ **部分依赖模型速度（2026-09-24 串行存档）** | `scripts/accept-smoke.mjs` → `ACCEPT_SMOKE_FAIL`（M1/M5/M4/**M2 全绿**；**仅 M3 150s 未 idle → FAIL**）。M3 协议正确：`queueDisposition=queued` · `queuedHit=true` · `followUpUserBeforeIdle=true` · seq 0→72 gapless。`diag-pong` 2.7s idle；`diag-m3` 独立 112s PASS。唯一模型 `USTC/qwen-chat`。**按拍板：不改阈值，接受此备注。** |
 | M6 真 PTY | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS`（7/7；cwd=`D:\2026\FlexAgent`） |
 | **applyFileChanges（v1.2 Diff Accept）** | ✅ PASS（**2026-09-24 新根复跑**） | `scripts/accept-apply.mjs` → `ACCEPT_APPLY_PASS`（11/11；exit 0） |
 | **v1.3 model/thinking + pickDirectory** | ✅ **PASS 11/11**（2026-09-24 新根） | `scripts/accept-model.mjs` → `ACCEPT_MODEL_PASS`；`listModels` len=1（`USTC/qwen-chat`）；`setThinkingLevel high` 被 PI clamp → `off`（该模型仅 `["off"]`，**返回值权威**符合契约 §2.0）；`INVALID_INPUT`/`SESSION_NOT_FOUND` 正确 |
@@ -23,8 +23,8 @@
 | **§7.3 断连走查（内核侧）** | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-disconnect.mjs` → `ACCEPT_DISCONNECT_PASS`（8/8） |
 | **§7.3 断连走查（UI）** | ✅ PASS（**2026-09-24 新根**） | `scripts/accept-disconnect-ui.mjs` → `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
 
-**完成判据（§5.1–5.5 + 契约 v1.2/v1.3 + §7.3 内核/UI）：v1.3 全绿；smoke 的 M2/M3 按模型速度备注（见上表）。**  
-**迁移后（`D:\2026\FlexAgent`，2026-09-24）：** typecheck · pong · mock-fallback · disconnect · disconnect-ui · **M6** · apply · **model(11/11)** **全 PASS**；smoke 依赖模型速度（M2/M3 可能超 150s）。  
+**完成判据（§5.1–5.5 + 契约 v1.2/v1.3 + §7.3 内核/UI）：除 smoke M3（模型速度）外全绿。**  
+**2026-09-24 串行全量存档（commit 后复跑）：** typecheck 0 · mock-fallback · disconnect 8/8 · disconnect-ui 6/6 · **model 11/11** · **M6 7/7** · **apply 11/11** · pong 2.7s **全 PASS**；smoke `ACCEPT_SMOKE_FAIL`（仅 M3 超时，M1/M5/M4/M2 绿）。  
 **§7.3 关闭：** 同 kill 场景下 UI 已显示 Connection lost → error-block（KERNEL_INTERNAL）→ Reconnected，无 ErrorBoundary 崩溃。  
 **v1.3 备注（2026-09-24）：** `setThinkingLevel('high')` 被 PI clamp → `off`（该模型仅 `["off"]`）— **返回值权威**，符合契约 §2.0。
 
@@ -81,15 +81,15 @@ node scripts/probe-resize.mjs   # ConPTY resize 重绘取证
 
 ## M1–M5 结果摘要
 
-来源：`accept-smoke.mjs` 单次全绿运行（每 phase 独立 session，`seq` 各自从 0）。
+来源：`accept-smoke.mjs` **2026-09-24 串行存档运行**（每 phase 独立 session，`seq` 各自从 0）。
 
-| Phase | disposition / ack | 行为断言 | 不变量 |
+| Phase | disposition / ack | 行为断言 | 结果 |
 |-------|-------------------|----------|--------|
-| **M1** | `started` · ack 5ms | `settled` · `ACCEPT_OK` · `file_changes` 非空 · allowSession 自动应答权限 | 13 events · gapless · 0→12 · idsMatch · 0 badCodes · 无 `::` |
-| **M5** | abort 后 re-prompt `started` | `wasRunning` · `settledAfterAbort` · `AFTER_ABORT` 命中 | 14 events · 0→13 · 全绿 |
-| **M4** | `started` | `permission_request` 后 **0** 条该 `toolCallId` tool 事件 · `deny` → `tool_end.isError=true` · run 到 idle | 26 events · 0→25 · 全绿 |
-| **M2** | first `started` · steer `steering` | `settled` · `userMessageCount≥2` · `STEERED_OK` | 708 events · 0→707 · 全绿 |
-| **M3** | first `started` · queue `queued` | `settled` · followUp `user_message` **在 idle 前** · `QUEUED_OK` · `userMessageCount≥2` | 250 events · 0→249 · 全绿 |
+| **M1** | `started` · ack 3ms | `settled` · `expectHit` · `file_changes` | ✅ 13 events · 0→12 全绿 |
+| **M5** | abort 后 re-prompt `started` | `wasRunning` · `settledAfterAbort` · `rePromptHit` | ✅ 14 events · 0→13 全绿 |
+| **M4** | `started` | `hadPermission` · deny → `toolEndIsError` · idle | ✅ 20 events · 0→19 全绿 |
+| **M2** | first `started` · steer `steering` | `settled` · `userMessageCount=2` · `steerHit` | ✅ **780 events · 0→779 全绿** |
+| **M3** | first `started` · queue `queued` | `queuedHit` · `followUpUserBeforeIdle` · `userMessageCount=2` · **`settled=false`（150s）** | ⚠️ **73 events · 0→72 gapless**；协议绿、settle 超时 |
 
 **§5.4 汇总：** 所有 phase `gapless && continuousFromZero && idsMatch && badCodes=[] && !hasColonMarkers`。
 
@@ -200,6 +200,6 @@ PI 在**同一 agent run** 内消费 followUp（`agent-loop.js` 在 `agent_end` 
 
 | 角色 | 状态 |
 |------|------|
-| 内核轨（本文） | §5.1–5.5 绿；§7.2.2 已修；M6 PASS；apply v1.2 PASS；§7.3 内核 PASS |
-| 前端轨（CDP 串行复核） | smoke / M6 / apply / mock-fallback / mock M1–M6 / **§7.3 UI** 全绿；typecheck 0 |
-| 契约 | **v1.2** 冻结候选（仅增 `applyFileChanges`）；§7.3 双侧联调完成 |
+| 内核轨（本文） | §5.1–5.5 绿；§7.2.2 已修；M6 PASS；apply v1.2 PASS；§7.3 内核 PASS；**v1.3 model PASS** |
+| 前端轨（CDP 串行复核） | 2026-09-24 存档：typecheck / mock-fallback / disconnect / disconnect-ui / model / M6 / apply / pong **全绿**；smoke 仅 M3 超时（模型速度） |
+| 契约 | **v1.3** 冻结候选（仅增 model/thinking + pickDirectory）；§7.3 双侧联调完成 |

@@ -16,7 +16,7 @@
 | 契约 | **v1.3 只增已落地**（model/thinking + `pickDirectory`） | `listModels`/`getModelConfig`/`setModel`/`setThinkingLevel` + IPC；contract.md §2/§8 已同步 |
 | typecheck | ✅ 双 tsconfig exit 0 | `npm run typecheck`（迁移后复跑 exit 0） |
 | 真链路桥 | ✅ | CDP page title=`FlexAgent`；`window.electron.codex.prompt` 为 function |
-| M1–M5 smoke | ⚠️ **M1/M5/M4 绿；M2/M3 依赖模型速度** | 150s 阈值下 M2/M3 可能未 idle；`diag-m3` 独立 112s PASS；非 v1.3 回归（拍板：不改脚本） |
+| M1–M5 smoke | ⚠️ **M1/M5/M4/M2 绿；M3 依赖模型速度** | 2026-09-24 串行存档：仅 M3 150s 未 idle（`queuedHit` 协议正确）；`diag-m3` 独立 112s PASS；非 v1.3 回归（拍板：不改脚本） |
 | M6 真 PTY | ✅ **迁移后复跑 PASS；v1.3 后串行复跑** | `scripts/accept-m6.mjs` → `ACCEPT_M6_PASS` 7/7（echo `M6_ECHO_OK` · cwd=`D:\2026\FlexAgent`） |
 | mock fallback | ✅ **迁移后全绿；v1.3 后串行复跑** | `scripts/accept-mock-fallback.mjs` → `MOCK_FALLBACK_PASS` |
 | §7.2.2 断连语义 | ✅ 内核已实现 | worker 死 → `error`+`idle` fanOut → `seq.clear` → 自动重启；`openSession` 幂等保持 |
