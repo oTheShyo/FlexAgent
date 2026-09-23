@@ -5,6 +5,9 @@ import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import EmptyState from './components/EmptyState'
 import Composer from './components/Composer'
+import PluginsPage from './components/PluginsPage'
+import PluginDetailPanel from './components/PluginDetailPanel'
+import { usePlugins } from './hooks/usePlugins'
 import ChatView from './components/ChatView'
 import DiffPanel from './components/DiffPanel'
 import PermissionDialog from './components/PermissionDialog'
@@ -25,7 +28,21 @@ export default function App({ children }: AppProps) {
   const [showTerminal, setShowTerminal] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
+  const [showPlugins, setShowPlugins] = useState(false)
   const sessionMeta = useSessionMeta()
+  const {
+    plugins,
+    loading: pluginsLoading,
+    loadingDetail,
+    detail,
+    error: pluginError,
+    busyId,
+    installFromDirectory,
+    toggleEnabled,
+    openDetail,
+    closeDetail,
+    uninstall
+  } = usePlugins()
   const {
     sessions,
     activeSessionId,
@@ -131,6 +148,35 @@ export default function App({ children }: AppProps) {
     setShowPalette(false)
   }, [])
 
+  const handleOpenPlugins = useCallback((): void => {
+    setShowPlugins(true)
+  }, [])
+
+  const handleUninstallPlugin = useCallback(
+    (id: string): void => {
+      void uninstall(id)
+    },
+    [uninstall]
+  )
+
+  const handleTogglePlugin = useCallback(
+    (id: string, enabled: boolean): void => {
+      void toggleEnabled(id, enabled)
+    },
+    [toggleEnabled]
+  )
+
+  const handleInstallPlugin = useCallback((): void => {
+    void installFromDirectory()
+  }, [installFromDirectory])
+
+  const handleOpenPluginDetail = useCallback(
+    (id: string): void => {
+      void openDetail(id)
+    },
+    [openDetail]
+  )
+
   const handleToggleTerminal = useCallback((): void => {
     setShowTerminal((value) => !value)
   }, [])
@@ -177,6 +223,16 @@ export default function App({ children }: AppProps) {
         setShowPalette(false)
         return
       }
+      if (showPlugins && detail !== null) {
+        event.preventDefault()
+        closeDetail()
+        return
+      }
+      if (showPlugins) {
+        event.preventDefault()
+        setShowPlugins(false)
+        return
+      }
       if (showTerminal) {
         event.preventDefault()
         setShowTerminal(false)
@@ -187,7 +243,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showTerminal, showReview]
+    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail]
   )
 
   useShortcuts([
@@ -255,6 +311,8 @@ export default function App({ children }: AppProps) {
           onNewChat={handleNewChat}
           onSelect={handleSelectSession}
           loading={sessionsLoaded !== true}
+          onOpenPlugins={handleOpenPlugins}
+          pluginsActive={showPlugins}
         />
       </ErrorBoundary>
 
@@ -274,7 +332,21 @@ export default function App({ children }: AppProps) {
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <ErrorBoundary>{content}</ErrorBoundary>
+          <ErrorBoundary>
+            {showPlugins ? (
+              <PluginsPage
+                plugins={plugins}
+                loading={pluginsLoading}
+                error={pluginError}
+                busyId={busyId}
+                installFromDirectory={handleInstallPlugin}
+                toggleEnabled={handleTogglePlugin}
+                onOpenDetail={handleOpenPluginDetail}
+              />
+            ) : (
+              content
+            )}
+          </ErrorBoundary>
         </div>
 
         <Composer
@@ -298,6 +370,14 @@ export default function App({ children }: AppProps) {
           onReject={handleRejectReview}
           onClose={handleCloseReview}
         />
+        <PluginDetailPanel
+          open={showPlugins && (detail !== null || loadingDetail)}
+          detail={detail}
+          loading={loadingDetail}
+          uninstallBusy={busyId !== null && busyId === (detail?.id ?? null)}
+          onClose={closeDetail}
+          onUninstall={handleUninstallPlugin}
+        />
         <TerminalDrawer
           open={showTerminal}
           onClose={handleCloseTerminal}
@@ -316,6 +396,7 @@ export default function App({ children }: AppProps) {
             onNewChat={handleNewChat}
             onOpenSession={handleSelectSession}
             onToggleTerminal={handleToggleTerminal}
+            onOpenPlugins={handleOpenPlugins}
             onClose={handleClosePalette}
           />
         )}

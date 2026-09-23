@@ -7,10 +7,15 @@ import {
   type CreateSessionInput,
   type EventMeta,
   type FileChange,
+  type InstallPluginInput,
   type KernelEvent,
   type ModelConfig,
   type ModelOption,
   type PermissionDecision,
+  type PluginChangeEvent,
+  type PluginDetail,
+  type PluginId,
+  type PluginSummary,
   type PromptAck,
   type PromptInput,
   type RespondPermissionInput,
@@ -101,6 +106,11 @@ function tokenize(reply: string): string[] {
   return reply.match(/\S+\s*/g) ?? []
 }
 
+function dirBasename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter((part) => part.length > 0)
+  return parts.length > 0 ? (parts[parts.length - 1] ?? path) : path
+}
+
 function buildAppFileChange(): FileChange {
   const patch = [
     '--- a/src/App.tsx',
@@ -133,6 +143,8 @@ export class MockCodexApi implements CodexApi {
   private toolCounter = 0
   private terminalCounter = 0
   private readonly sessions = new Map<SessionId, SessionState>()
+  private readonly pluginDetails = new Map<PluginId, PluginDetail>()
+  private readonly pluginListeners = new Set<(event: PluginChangeEvent) => void>()
 
   constructor() {
     this.addFixtureSession('Implement API contract', Date.UTC(2026, 8, 21, 9, 30), [
@@ -141,6 +153,8 @@ export class MockCodexApi implements CodexApi {
     ])
     this.addFixtureSession('Sidebar shell layout', Date.UTC(2026, 8, 21, 15, 0), [])
     this.addFixtureSession('Diff review panel', Date.UTC(2026, 8, 20, 11, 0), [])
+    this.addFixturePlugin('document-skills')
+    this.addFixturePlugin('local-demo')
   }
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -599,6 +613,200 @@ export class MockCodexApi implements CodexApi {
 
   async pickDirectory(): Promise<string | null> {
     return WORKSPACE_CWD
+  }
+
+  async listPlugins(): Promise<PluginSummary[]> {
+    return [...this.pluginDetails.values()].map((detail) => this.pluginSummaryOf(detail))
+  }
+
+  async getPlugin(id: PluginId): Promise<PluginDetail> {
+    const detail = this.pluginDetails.get(id)
+    if (detail === undefined) {
+      throw new ContractError('PLUGIN_NOT_FOUND', `Unknown plugin: ${id}`)
+    }
+    return {
+      ...detail,
+      source: { ...detail.source },
+      componentCounts: { ...detail.componentCounts },
+      components: detail.components.map((component) => ({ ...component }))
+    }
+  }
+
+  async setPluginEnabled(id: PluginId, enabled: boolean): Promise<PluginSummary> {
+    const detail = this.pluginDetails.get(id)
+    if (detail === undefined) {
+      throw new ContractError('PLUGIN_NOT_FOUND', `Unknown plugin: ${id}`)
+    }
+    if (detail.enabled !== enabled) {
+      detail.enabled = enabled
+      this.pushPluginsChanged()
+    }
+    return this.pluginSummaryOf(detail)
+  }
+
+  async installPlugin(input: InstallPluginInput): Promise<PluginSummary> {
+    const path = typeof input?.source?.path === 'string' ? input.source.path.trim() : ''
+    if (path.length === 0) {
+      throw new ContractError('INVALID_INPUT', 'installPlugin requires a non-empty directory path')
+    }
+    const name = dirBasename(path)
+    for (const detail of this.pluginDetails.values()) {
+      if (detail.name === name) {
+        throw new ContractError('PLUGIN_ALREADY_INSTALLED', `Plugin already installed: ${name}`)
+      }
+    }
+    const detail: PluginDetail = {
+      id: `${name}@local`,
+      name,
+      version: '0.1.0',
+      description: `Plugin installed from ${path}.`,
+      enabled: true,
+      source: { kind: 'local', label: 'Local' },
+      componentCounts: { skill: 1 },
+      rootPath: path,
+      components: [
+        {
+          kind: 'skill',
+          name: 'main',
+          description: 'Entry skill discovered in this plugin folder.',
+          path: 'skills/main/SKILL.md'
+        }
+      ],
+      userConfig: [],
+      diagnostics: []
+    }
+    this.pluginDetails.set(detail.id, detail)
+    this.pushPluginsChanged()
+    return this.pluginSummaryOf(detail)
+  }
+
+  async uninstallPlugin(id: PluginId): Promise<void> {
+    if (!this.pluginDetails.delete(id)) {
+      throw new ContractError('PLUGIN_NOT_FOUND', `Unknown plugin: ${id}`)
+    }
+    this.pushPluginsChanged()
+  }
+
+  subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void {
+    this.pluginListeners.add(listener)
+    return () => {
+      this.pluginListeners.delete(listener)
+    }
+  }
+
+  private pluginSummaryOf(detail: PluginDetail): PluginSummary {
+    return {
+      id: detail.id,
+      name: detail.name,
+      version: detail.version,
+      description: detail.description,
+      enabled: detail.enabled,
+      source: { ...detail.source },
+      componentCounts: { ...detail.componentCounts }
+    }
+  }
+
+  private pushPluginsChanged(): void {
+    window.setTimeout(() => {
+      const plugins = [...this.pluginDetails.values()].map((detail) => this.pluginSummaryOf(detail))
+      for (const listener of this.pluginListeners) {
+        listener({ plugins })
+      }
+    }, 120)
+  }
+
+  private addFixturePlugin(name: 'document-skills' | 'local-demo'): void {
+    const details: Record<
+      'document-skills' | 'local-demo',
+      Omit<PluginDetail, 'id' | 'rootPath' | 'source'>
+    > = {
+      'document-skills': {
+        name: 'document-skills',
+        version: '1.0.0',
+        description: 'Built-in skills for generating DOCX and PDF documents.',
+        enabled: true,
+        componentCounts: { skill: 2 },
+        components: [
+          {
+            kind: 'skill',
+            name: 'docx',
+            description: 'Create, read, and edit Word documents.',
+            path: 'skills/docx/SKILL.md'
+          },
+          {
+            kind: 'skill',
+            name: 'pdf',
+            description: 'Merge, split, and extract text from PDF files.',
+            path: 'skills/pdf/SKILL.md'
+          }
+        ],
+        userConfig: [],
+        diagnostics: []
+      },
+      'local-demo': {
+        name: 'local-demo',
+        version: '0.2.1',
+        description: 'Local demo plugin with an extension and one skill.',
+        enabled: false,
+        componentCounts: { extension: 1, skill: 1 },
+        components: [
+          {
+            kind: 'extension',
+            name: 'demo-extension',
+            description: 'Registers a demo renderer extension.',
+            path: 'extension/index.js'
+          },
+          {
+            kind: 'skill',
+            name: 'demo-greet',
+            description: 'Greets the user with a demo phrase.',
+            path: 'skills/demo-greet/SKILL.md'
+          }
+        ],
+        userConfig: [
+          {
+            key: 'greeting_name',
+            title: 'Greeting name',
+            description: 'Name used by the demo skill.',
+            type: 'string',
+            default: 'FlexAgent',
+            required: true
+          },
+          {
+            key: 'api_key',
+            title: 'API key',
+            description: 'Third-party service credential.',
+            type: 'string',
+            required: true,
+            sensitive: true
+          },
+          {
+            key: 'data_dir',
+            title: 'Data directory',
+            type: 'directory'
+          }
+        ],
+        diagnostics: [
+          {
+            code: 'PLUGIN_COMPONENT_INVALID',
+            severity: 'warning',
+            message: 'commands/example.md: frontmatter is missing a description; command skipped.',
+            pluginId: 'local-demo@local'
+          }
+        ]
+      }
+    }
+    const base = details[name]
+    const source =
+      name === 'document-skills'
+        ? { kind: 'bundled' as const, label: 'Bundled' }
+        : { kind: 'local' as const, label: 'Local' }
+    const id = `${name}@${source.kind}`
+    const rootPath =
+      name === 'document-skills'
+        ? '<bundled>/document-skills'
+        : 'D:/2026/FlexAgent/fixtures/local-demo'
+    this.pluginDetails.set(id, { ...base, id, source, rootPath })
   }
 
   private requireSession(sessionId: SessionId): SessionState {

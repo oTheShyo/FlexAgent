@@ -14,6 +14,8 @@ export interface SidebarProps {
   onNewChat: () => void
   onSelect: (sessionId: string) => void
   loading?: boolean
+  onOpenPlugins?: () => void
+  pluginsActive?: boolean
 }
 
 const ICON = 'h-4 w-4 shrink-0'
@@ -131,7 +133,15 @@ function matchesQuery(title: string, query: string): boolean {
 const MENU_ITEM_CLASS =
   'flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]'
 
-function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = false }: SidebarProps) {
+function Sidebar({
+  sessions,
+  activeSessionId,
+  onNewChat,
+  onSelect,
+  loading = false,
+  onOpenPlugins,
+  pluginsActive = false
+}: SidebarProps) {
   const meta = useSessionMeta()
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
@@ -261,7 +271,12 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
 
       <nav className="space-y-1 px-2 pb-4" aria-label="Primary">
         <NavRow icon={<NewChatIcon />} label="New chat" primary onClick={onNewChat} />
-        <NavRow icon={<PluginsIcon />} label="Plugins" />
+        <NavRow
+          icon={<PluginsIcon />}
+          label="Plugins"
+          active={pluginsActive}
+          onClick={onOpenPlugins}
+        />
         <NavRow icon={<ScheduledIcon />} label="Scheduled" />
       </nav>
 

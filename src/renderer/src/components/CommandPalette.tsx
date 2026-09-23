@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import type { SessionSummary } from '../types'
 import { displaySessionTitle, useSessionMeta } from '../lib/sessionMeta'
 import { SHORTCUTS } from '../lib/shortcuts'
+import { PluginIcon } from './pluginIcons'
 
 export interface CommandPaletteProps {
   sessions: SessionSummary[]
@@ -10,6 +11,7 @@ export interface CommandPaletteProps {
   onNewChat: () => void
   onOpenSession: (sessionId: string) => void
   onToggleTerminal: () => void
+  onOpenPlugins: () => void
   onClose: () => void
 }
 
@@ -147,6 +149,7 @@ function CommandPalette({
   onNewChat,
   onOpenSession,
   onToggleTerminal,
+  onOpenPlugins,
   onClose
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
@@ -165,6 +168,11 @@ function CommandPalette({
     onToggleTerminal()
     onClose()
   }, [onToggleTerminal, onClose])
+
+  const runPlugins = useCallback((): void => {
+    onOpenPlugins()
+    onClose()
+  }, [onOpenPlugins, onClose])
 
   const runSettings = useCallback((): void => {
     setShowSettingsNotice(true)
@@ -186,6 +194,7 @@ function CommandPalette({
         shortcut: SHORTCUTS.toggleTerminal.keys,
         run: runToggleTerminal
       },
+      { id: 'plugins', label: 'Manage plugins', hint: 'Action', run: runPlugins },
       { id: 'settings', label: 'Settings', hint: 'Action', run: runSettings }
     ]
     const sessionCommands: PaletteCommand[] = sessions.map((session) => ({
@@ -203,7 +212,7 @@ function CommandPalette({
       }
     }))
     return [...base, ...sessionCommands]
-  }, [sessions, sessionMeta, activeSessionId, runNewChat, runToggleTerminal, runSettings, onOpenSession, onClose])
+  }, [sessions, sessionMeta, activeSessionId, runNewChat, runToggleTerminal, runPlugins, runSettings, onOpenSession, onClose])
 
   const filtered = useMemo(() => {
     const scored: { command: PaletteCommand; score: number }[] = []
@@ -387,6 +396,8 @@ function CommandPalette({
                           <NewChatIcon />
                         ) : command.id === 'toggle-terminal' ? (
                           <TerminalIcon />
+                        ) : command.id === 'plugins' ? (
+                          <PluginIcon />
                         ) : command.id === 'settings' ? (
                           <SettingsIcon />
                         ) : (
