@@ -8,6 +8,8 @@ import {
   type EventMeta,
   type FileChange,
   type KernelEvent,
+  type ModelConfig,
+  type ModelOption,
   type PermissionDecision,
   type PromptAck,
   type PromptInput,
@@ -15,11 +17,14 @@ import {
   type SessionDetail,
   type SessionId,
   type SessionSummary,
+  type SetModelInput,
+  type SetThinkingLevelInput,
   type TerminalCreateAck,
   type TerminalCreateInput,
   type TerminalId,
   type TerminalInputInput,
   type TerminalResizeInput,
+  type ThinkingLevel,
   type ToolCallId
 } from '../types'
 
@@ -52,6 +57,7 @@ interface SessionState {
   allowedTools: Set<string>
   pendingPermission: PendingPermission | null
   terminals: Map<TerminalId, TerminalState>
+  modelConfig: ModelConfig
 }
 
 /** Deterministic per-token delays (ms), cycled to keep streaming inside 50–100ms. */
@@ -59,6 +65,12 @@ const TOKEN_DELAYS_MS = [60, 85, 70, 95] as const
 
 const WORKSPACE_CWD = 'D:/2026/FlexAgent'
 const MAX_TERMINALS_PER_SESSION = 4
+const MOCK_MODEL_OPTIONS: ModelOption[] = [
+  { provider: 'mimo', id: 'mimo-v2.6-flash', label: 'mimo-v2.6 Flash' },
+  { provider: 'qwen', id: 'qwen-max', label: 'Qwen Max' },
+  { provider: 'anthropic', id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }
+]
+const MOCK_THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high']
 
 // Regex: shell-ish prompts trigger the gated bash tool (the M4 permission path).
 const SHELL_PROMPT_RE =
@@ -534,8 +546,65 @@ export class MockCodexApi implements CodexApi {
       followUpQueue: [],
       allowedTools: new Set(),
       pendingPermission: null,
-      terminals: new Map()
+      terminals: new Map(),
+      modelConfig: {
+        model: MOCK_MODEL_OPTIONS[0] ?? null,
+        thinkingLevel: 'medium',
+        availableThinkingLevels: [...MOCK_THINKING_LEVELS]
+      }
     }
+  }
+
+  async listModels(): Promise<ModelOption[]> {
+    return MOCK_MODEL_OPTIONS.map((option) => ({ ...option }))
+  }
+
+  async getModelConfig(sessionId: SessionId): Promise<ModelConfig> {
+    return { ...this.requireSession(sessionId).modelConfig }
+  }
+
+  async setModel(input: SetModelInput): Promise<ModelConfig> {
+    if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+      throw new ContractError('INVALID_INPUT', 'sessionId is required')
+    }
+    if (typeof input.provider !== 'string' || !input.provider || typeof input.id !== 'string' || !input.id) {
+      throw new ContractError('INVALID_INPUT', 'provider and id are required')
+    }
+    const session = this.requireSession(input.sessionId)
+    const model = MOCK_MODEL_OPTIONS.find(
+      (option) => option.provider === input.provider && option.id === input.id
+    )
+    if (!model) {
+      throw new ContractError('INVALID_INPUT', `Unknown model: ${input.provider}/${input.id}`)
+    }
+    session.modelConfig = {
+      model: { ...model },
+      thinkingLevel: input.thinkingLevel ?? session.modelConfig.thinkingLevel,
+      availableThinkingLevels: [...MOCK_THINKING_LEVELS]
+    }
+    return { ...session.modelConfig }
+  }
+
+  async setThinkingLevel(input: SetThinkingLevelInput): Promise<ModelConfig> {
+    if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+      throw new ContractError('INVALID_INPUT', 'sessionId is required')
+    }
+    if (!MOCK_THINKING_LEVELS.includes(input.level)) {
+      throw new ContractError('INVALID_INPUT', `Invalid thinkingLevel: ${String(input.level)}`)
+    }
+    const session = this.requireSession(input.sessionId)
+    session.modelConfig = { ...session.modelConfig, thinkingLevel: input.level }
+    return { ...session.modelConfig }
+  }
+
+  async pickDirectory(): Promise<string | null> {
+    return WORKSPACE_CWD
+  }
+
+  private requireSession(sessionId: SessionId): SessionState {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${sessionId}`)
+    return session
   }
 
   private addFixtureSession(
