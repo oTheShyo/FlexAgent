@@ -5,10 +5,13 @@ import {
   ContractError,
   type ChatMessage,
   type FileChange,
+  type ModelConfig,
+  type ModelOption,
   type PermissionDecision,
   type PromptDisposition,
   type RunState,
   type SessionId,
+  type ThinkingLevel,
   type ToolCallId
 } from '../shared/contract'
 import type { WorkerKernelEvent, WorkerRequest, WorkerResponse } from '../shared/kernel-protocol'
@@ -77,6 +80,61 @@ function requireSession(sessionId: SessionId): HostSession {
   const host = sessions.get(sessionId)
   if (!host) throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${sessionId}`)
   return host
+}
+
+const THINKING_LEVELS = new Set<ThinkingLevel>([
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+])
+
+let modelRuntimePromise: Promise<import('@earendil-works/pi-coding-agent').ModelRuntime> | null =
+  null
+
+async function getModelRuntime(): Promise<import('@earendil-works/pi-coding-agent').ModelRuntime> {
+  modelRuntimePromise ??= (async () => {
+    const { ModelRuntime } = await loadPi()
+    return ModelRuntime.create()
+  })()
+  return modelRuntimePromise
+}
+
+function toModelOption(model: {
+  provider: string
+  id: string
+  name?: string
+  label?: string
+}): ModelOption {
+  const label = model.name ?? model.label
+  return label && label !== model.id
+    ? { provider: model.provider, id: model.id, label }
+    : { provider: model.provider, id: model.id }
+}
+
+function readModelConfig(session: AgentSession): ModelConfig {
+  const model = session.model
+  const base = {
+    model: model ? toModelOption(model) : null,
+    thinkingLevel: session.thinkingLevel
+  }
+  if (!model) return base
+  try {
+    const levels = session.getAvailableThinkingLevels()
+    return levels.length > 0 ? { ...base, availableThinkingLevels: levels } : base
+  } catch {
+    return base
+  }
+}
+
+function assertThinkingLevel(level: unknown): ThinkingLevel {
+  if (typeof level !== 'string' || !THINKING_LEVELS.has(level as ThinkingLevel)) {
+    throw new ContractError('INVALID_INPUT', `Invalid thinkingLevel: ${String(level)}`)
+  }
+  return level as ThinkingLevel
 }
 
 function toPosix(p: string): string {
@@ -500,6 +558,36 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       host.session.dispose()
       sessions.delete(req.sessionId)
       return undefined
+    }
+    case 'listModels': {
+      const runtime = await getModelRuntime()
+      const available = await runtime.getAvailable()
+      return available.map((m) => toModelOption(m))
+    }
+    case 'getModelConfig': {
+      const host = requireSession(req.sessionId)
+      return readModelConfig(host.session)
+    }
+    case 'setModel': {
+      const host = requireSession(req.sessionId)
+      if (typeof req.provider !== 'string' || !req.provider || typeof req.id !== 'string' || !req.id) {
+        throw new ContractError('INVALID_INPUT', 'provider and id are required')
+      }
+      const runtime = host.session.modelRuntime
+      const model = runtime.getModel(req.provider, req.id)
+      if (!model) {
+        throw new ContractError('INVALID_INPUT', `Unknown model: ${req.provider}/${req.id}`)
+      }
+      await host.session.setModel(model, { persist: false })
+      if (req.thinkingLevel !== undefined) {
+        host.session.setThinkingLevel(assertThinkingLevel(req.thinkingLevel), { persist: false })
+      }
+      return readModelConfig(host.session)
+    }
+    case 'setThinkingLevel': {
+      const host = requireSession(req.sessionId)
+      host.session.setThinkingLevel(assertThinkingLevel(req.level), { persist: false })
+      return readModelConfig(host.session)
     }
     case 'shutdown': {
       for (const [id, host] of [...sessions]) {
