@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { PermissionDecision, PromptMode } from './types'
+import type { PermissionDecision, PromptMode, ThinkingLevel } from './types'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import EmptyState from './components/EmptyState'
@@ -41,6 +41,11 @@ export default function App({ children }: AppProps) {
     createSession,
     openSession,
     refreshSessions,
+    pickDirectoryOrNewSession,
+    modelConfig,
+    modelOptions,
+    setModel,
+    setThinkingLevel,
     connectionState,
     connectionMessage,
     sessionsLoaded,
@@ -84,6 +89,24 @@ export default function App({ children }: AppProps) {
   const handleNewChat = useCallback((): void => {
     void createSession()
   }, [createSession])
+
+  const handleChooseProject = useCallback((): void => {
+    void pickDirectoryOrNewSession()
+  }, [pickDirectoryOrNewSession])
+
+  const handleSetModel = useCallback(
+    (provider: string, id: string): void => {
+      void setModel(provider, id)
+    },
+    [setModel]
+  )
+
+  const handleSetThinkingLevel = useCallback(
+    (level: ThinkingLevel): void => {
+      void setThinkingLevel(level)
+    },
+    [setThinkingLevel]
+  )
 
   const handleSelectSession = useCallback(
     (sessionId: string): void => {
@@ -258,6 +281,12 @@ export default function App({ children }: AppProps) {
           onSend={handleSend}
           disabled={!activeSessionId}
           running={isStreaming}
+          cwd={activeSession?.cwd}
+          onChooseProject={handleChooseProject}
+          modelConfig={modelConfig}
+          modelOptions={modelOptions}
+          onSetModel={handleSetModel}
+          onSetThinkingLevel={handleSetThinkingLevel}
         />
 
         <DiffPanel

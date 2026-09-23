@@ -1,21 +1,42 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DragEvent, KeyboardEvent } from 'react'
-import type { PromptMode } from '../types'
+import type { DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
+import type { ModelConfig, ModelOption, PromptMode, ThinkingLevel } from '../types'
 import { filterComposerFiles } from './composerFiles'
 
 export interface ComposerProps {
   onSend: (text: string, mode?: PromptMode) => void
   disabled?: boolean
   running?: boolean
+  cwd?: string
+  onChooseProject?: () => void
+  modelConfig?: ModelConfig | null
+  modelOptions?: ModelOption[]
+  onSetModel?: (provider: string, id: string) => void
+  onSetThinkingLevel?: (level: ThinkingLevel) => void
 }
 
 const APPROVAL_MODES = ['Manual', 'Auto', 'Full access'] as const
+
+const PLUS_MENU_ITEMS = ['Add files', 'Plan', 'Ask', 'Skills', 'Connectors'] as const
 
 const MENTION_BEFORE_CARET = /@[\w./-]*$/
 
 function matchMentionQuery(value: string, caret: number): string | null {
   const match = value.slice(0, caret).match(MENTION_BEFORE_CARET)
   return match === null ? null : match[0].slice(1)
+}
+
+function pathBasename(cwd: string): string {
+  const parts = cwd.split(/[\\/]+/).filter((part) => part.length > 0)
+  return parts.length > 0 ? parts[parts.length - 1] : cwd
+}
+
+function menuItemClass(disabledItem: boolean): string {
+  return `flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+    disabledItem
+      ? 'cursor-not-allowed text-[var(--text-subtle)] opacity-60'
+      : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
+  }`
 }
 
 function PlusIcon() {
@@ -65,6 +86,23 @@ function ChevronDownIcon() {
       aria-hidden="true"
     >
       <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      className="h-3.5 w-3.5 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m5 12 5 5L20 7" />
     </svg>
   )
 }
@@ -174,21 +212,61 @@ function MentionPopup({ files, selectedIndex, onSelect, onPick }: MentionPopupPr
   )
 }
 
-function Composer({ onSend, disabled = false, running = false }: ComposerProps) {
+function Composer({
+  onSend,
+  disabled = false,
+  running = false,
+  cwd,
+  onChooseProject,
+  modelConfig = null,
+  modelOptions = [],
+  onSetModel,
+  onSetThinkingLevel
+}: ComposerProps) {
   const [text, setText] = useState('')
   const [approvalIndex, setApprovalIndex] = useState(0)
   const [queueNext, setQueueNext] = useState(false)
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [dragOver, setDragOver] = useState(false)
+  const [openMenu, setOpenMenu] = useState<'plus' | 'model' | null>(null)
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const mentionQueryRef = useRef<string | null>(null)
   const pendingCaretRef = useRef<number | null>(null)
+  const plusMenuRef = useRef<HTMLDivElement | null>(null)
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
 
   const approvalLabel = APPROVAL_MODES[approvalIndex]
   const canSend = !disabled && text.trim().length > 0
   const mentionOpen = mentionQuery !== null
+
+  const closeMenus = useCallback((): void => {
+    setOpenMenu(null)
+  }, [])
+
+  useEffect(() => {
+    if (disabled) setOpenMenu(null)
+  }, [disabled])
+
+  useEffect(() => {
+    if (openMenu === null) return
+    const container = openMenu === 'plus' ? plusMenuRef : modelMenuRef
+    const handleMouseDown = (event: MouseEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (container.current !== null && !container.current.contains(target)) closeMenus()
+    }
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closeMenus()
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [openMenu, closeMenus])
 
   const mentionFiles = useMemo(
     () => (mentionQuery === null ? [] : filterComposerFiles(mentionQuery)),
@@ -269,7 +347,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
   submitRef.current = submit
 
   const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
       if (event.nativeEvent.isComposing) return
 
       if (event.key === 'Escape') {
@@ -364,6 +442,18 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
     setApprovalIndex((prev) => (prev + 1) % APPROVAL_MODES.length)
   }
 
+  const projectLabel =
+    cwd !== undefined && cwd.length > 0 ? pathBasename(cwd) : 'Choose project'
+
+  const modelLabel = modelConfig?.model?.label ?? modelConfig?.model?.id ?? 'Model'
+  const thinkingSuffix = modelConfig === null ? '' : ` · ${modelConfig.thinkingLevel}`
+  const currentModel = modelConfig?.model ?? null
+  const currentThinking = modelConfig === null ? null : modelConfig.thinkingLevel
+  const thinkingLevels: ThinkingLevel[] =
+    modelConfig === null
+      ? []
+      : (modelConfig.availableThinkingLevels ?? [modelConfig.thinkingLevel])
+
   const chipClass =
     'flex h-8 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--surface)]'
 
@@ -401,11 +491,13 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
         >
           <button
             type="button"
-            disabled={disabled}
+            disabled={disabled || onChooseProject === undefined}
+            onClick={() => onChooseProject?.()}
+            title={cwd !== undefined && cwd.length > 0 ? cwd : undefined}
             className="flex w-full items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <FolderIcon />
-            <span>Choose project</span>
+            <span className="truncate">{projectLabel}</span>
             <ChevronDownIcon />
           </button>
 
@@ -428,14 +520,39 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
           />
 
           <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
-            <button
-              type="button"
-              disabled={disabled}
-              aria-label="Add attachment"
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <PlusIcon />
-            </button>
+            <div ref={plusMenuRef} className="relative">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => setOpenMenu((menu) => (menu === 'plus' ? null : 'plus'))}
+                aria-label="Add attachment"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === 'plus'}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <PlusIcon />
+              </button>
+              {openMenu === 'plus' && (
+                <div
+                  role="menu"
+                  aria-label="Add"
+                  className="absolute bottom-full left-0 z-30 mb-2 w-44 rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-lg)]"
+                >
+                  {PLUS_MENU_ITEMS.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      role="menuitem"
+                      disabled
+                      title="Not yet available"
+                      className={menuItemClass(true)}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"
@@ -468,10 +585,91 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
 
             <div className="flex-1" />
 
-            <button type="button" disabled={disabled} className={chipClass}>
-              mimo-v2.6 Flash
-              <ChevronDownIcon />
-            </button>
+            <div ref={modelMenuRef} className="relative">
+              <button
+                type="button"
+                disabled={disabled || onSetModel === undefined}
+                onClick={() => setOpenMenu((menu) => (menu === 'model' ? null : 'model'))}
+                aria-haspopup="menu"
+                aria-expanded={openMenu === 'model'}
+                className={chipClass}
+              >
+                <span className="truncate">{modelLabel}</span>
+                {thinkingSuffix.length > 0 && (
+                  <span className="font-normal text-[var(--text-subtle)]">{thinkingSuffix}</span>
+                )}
+                <ChevronDownIcon />
+              </button>
+              {openMenu === 'model' && (
+                <div
+                  role="menu"
+                  aria-label="Model and thinking level"
+                  className="absolute bottom-full right-0 z-30 mb-2 w-60 rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-lg)]"
+                >
+                  <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                    Model
+                  </div>
+                  {modelOptions.length === 0 ? (
+                    <div className="px-2.5 py-1.5 text-xs text-[var(--text-muted)]">
+                      No models available
+                    </div>
+                  ) : (
+                    modelOptions.map((option) => {
+                      const isCurrent =
+                        currentModel !== null &&
+                        option.provider === currentModel.provider &&
+                        option.id === currentModel.id
+                      return (
+                        <button
+                          key={`${option.provider}/${option.id}`}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={isCurrent}
+                          disabled={onSetModel === undefined}
+                          onClick={() => {
+                            onSetModel?.(option.provider, option.id)
+                            closeMenus()
+                          }}
+                          className={menuItemClass(onSetModel === undefined)}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {option.label ?? option.id}
+                          </span>
+                          {isCurrent && <CheckIcon />}
+                        </button>
+                      )
+                    })
+                  )}
+                  {modelConfig !== null && (
+                    <>
+                      <div className="mt-1 border-t border-[var(--border)] px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                        Thinking
+                      </div>
+                      {thinkingLevels.map((level) => {
+                        const isCurrent = level === currentThinking
+                        return (
+                          <button
+                            key={level}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={isCurrent}
+                            disabled={onSetThinkingLevel === undefined}
+                            onClick={() => {
+                              onSetThinkingLevel?.(level)
+                              closeMenus()
+                            }}
+                            className={menuItemClass(onSetThinkingLevel === undefined)}
+                          >
+                            <span className="min-w-0 flex-1">{level}</span>
+                            {isCurrent && <CheckIcon />}
+                          </button>
+                        )
+                      })}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"

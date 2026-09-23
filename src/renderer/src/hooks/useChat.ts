@@ -6,10 +6,13 @@ import {
   type ContractErrorCode,
   type FileChange,
   type KernelEvent,
+  type ModelConfig,
+  type ModelOption,
   type PermissionDecision,
   type PromptMode,
   type RunState,
-  type SessionSummary
+  type SessionSummary,
+  type ThinkingLevel
 } from '../types'
 import { codexApi } from '../api'
 
@@ -44,9 +47,15 @@ export interface UseChatResult {
   stop: () => Promise<void>
   respond: (decision: PermissionDecision) => Promise<void>
   applyFiles: (files: FileChange[]) => Promise<ApplyFileChangesResult | null>
-  createSession: () => Promise<SessionSummary | null>
+  createSession: (cwd?: string) => Promise<SessionSummary | null>
   openSession: (sessionId: string) => Promise<void>
   refreshSessions: () => Promise<SessionSummary[]>
+  /** Native directory picker → createSession(picked cwd). No-op when cancelled. */
+  pickDirectoryOrNewSession: () => Promise<void>
+  modelConfig: ModelConfig | null
+  modelOptions: ModelOption[]
+  setModel: (provider: string, id: string) => Promise<ModelConfig | null>
+  setThinkingLevel: (level: ThinkingLevel) => Promise<ModelConfig | null>
   connectionState?: ConnectionState
   connectionMessage?: string
   /** True once the initial listSessions has settled (success or failure). */
@@ -138,6 +147,8 @@ export function useChat(): UseChatResult {
   const [connectionMessage, setConnectionMessage] = useState<string | undefined>(undefined)
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -412,17 +423,92 @@ export function useChat(): UseChatResult {
     }
   }, [applyDegraded])
 
-  const createSession = useCallback(async (): Promise<SessionSummary | null> => {
+  const createSession = useCallback(
+    async (cwd: string = WORKSPACE_CWD): Promise<SessionSummary | null> => {
+      try {
+        const summary = await codexApi.createSession({ cwd })
+        setSessions((prev) => [summary, ...prev])
+        await openSession(summary.id)
+        return summary
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return null
+      }
+    },
+    [openSession]
+  )
+
+  const pickDirectoryOrNewSession = useCallback(async (): Promise<void> => {
     try {
-      const summary = await codexApi.createSession({ cwd: WORKSPACE_CWD })
-      setSessions((prev) => [summary, ...prev])
-      await openSession(summary.id)
-      return summary
+      const dir = await codexApi.pickDirectory()
+      if (dir === null) return
+      await createSession(dir)
     } catch (err) {
       setItems((prev) => [...prev, errorItemFrom(err)])
-      return null
     }
-  }, [openSession])
+  }, [createSession])
+
+  const setModel = useCallback(
+    async (provider: string, id: string): Promise<ModelConfig | null> => {
+      const sessionId = activeIdRef.current
+      if (sessionId === null) return null
+      try {
+        const config = await codexApi.setModel({ sessionId, provider, id })
+        setModelConfig(config)
+        return config
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return null
+      }
+    },
+    []
+  )
+
+  const setThinkingLevel = useCallback(
+    async (level: ThinkingLevel): Promise<ModelConfig | null> => {
+      const sessionId = activeIdRef.current
+      if (sessionId === null) return null
+      try {
+        const config = await codexApi.setThinkingLevel({ sessionId, level })
+        setModelConfig(config)
+        return config
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return null
+      }
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (activeSessionId === null) {
+      setModelConfig(null)
+      return
+    }
+    let disposed = false
+    void codexApi
+      .getModelConfig(activeSessionId)
+      .then((config) => {
+        if (!disposed) setModelConfig(config)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [activeSessionId])
+
+  useEffect(() => {
+    let disposed = false
+    void codexApi
+      .listModels()
+      .then((options) => {
+        if (!disposed) setModelOptions(options)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [])
 
   const send = useCallback(async (text: string, mode?: PromptMode): Promise<void> => {
     const sessionId = activeIdRef.current
@@ -516,6 +602,11 @@ export function useChat(): UseChatResult {
     createSession,
     openSession,
     refreshSessions,
+    pickDirectoryOrNewSession,
+    modelConfig,
+    modelOptions,
+    setModel,
+    setThinkingLevel,
     connectionState,
     connectionMessage,
     sessionsLoaded,
