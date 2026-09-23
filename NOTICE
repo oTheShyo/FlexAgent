@@ -1,0 +1,16 @@
+FlexAgent
+
+This product contains code adapted from lnkiai/m3e-canvas
+(MIT License), Copyright (c) 2026 lnkiai:
+  components/Loading.tsx -> src/renderer/src/components/LoadingIndicator.tsx
+  lib/shapes.ts         -> src/renderer/src/lib/shapes.ts
+
+That port in turn contains code ported from material-components-android
+(Apache License 2.0), Copyright (C) 2024 The Android Open Source Project:
+  https://github.com/material-components/material-components-android
+  LoadingIndicatorAnimatorDelegate / LoadingIndicatorDrawingDelegate
+  via https://github.com/Aler1x/m3-loading-indicator (Apache-2.0)
+
+This product contains SVG shape path data from Material Design assets:
+  Copyright (C) 2024 Google LLC
+  https://m3.material.io/components/loading-indicator

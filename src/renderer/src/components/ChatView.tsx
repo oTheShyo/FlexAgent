@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { ChatItem } from '../hooks/useChat'
-import { WavyProgress } from './WavyProgress'
+import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
 
 export interface ChatViewProps {
@@ -170,7 +170,7 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
     >
       {(item.status === 'waiting' || item.status === 'running') && (
         <div className="mb-2" aria-hidden="true">
-          <WavyProgress width={64} height={6} label={status.label} />
+          <LoadingIndicator size={20} color="var(--text-subtle)" label={status.label} />
         </div>
       )}
       <div className="flex items-center gap-2">
@@ -224,13 +224,17 @@ const ErrorBlock = memo(function ErrorBlock({ item }: { item: ErrorItem }): Reac
 })
 
 function Caret({ block = false }: { block?: boolean }): ReactElement {
+  if (block) {
+    return (
+      <div className="mt-2" aria-label="Assistant is responding">
+        <LoadingIndicator size={28} color="var(--text-subtle)" label="Assistant is responding" />
+      </div>
+    )
+  }
   return (
-    <span
-      className={`inline-block animate-pulse bg-zinc-400 align-middle ${
-        block ? 'h-4 w-2' : 'ml-0.5 h-3.5 w-1.5 align-baseline'
-      }`}
-      aria-label="Assistant is responding"
-    />
+    <span className="ml-1 inline-flex align-middle" aria-label="Assistant is responding">
+      <LoadingIndicator size={18} color="var(--text-subtle)" label="Assistant is responding" />
+    </span>
   )
 }
 

@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import type { ReactNode } from 'react'
-import { WavyProgress } from './WavyProgress'
+import { LoadingIndicator } from './LoadingIndicator'
 
 export interface TopBarProps {
   title?: string
@@ -107,7 +107,7 @@ function TopBar({
         )}
         {running && (
           <span className="shrink-0">
-            <WavyProgress width={72} height={10} label="Run in progress" />
+            <LoadingIndicator size={18} color="var(--text-subtle)" label="Run in progress" />
           </span>
         )}
       </div>
