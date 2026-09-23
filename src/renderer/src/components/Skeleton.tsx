@@ -10,7 +10,7 @@ function pulse(className: string, style?: React.CSSProperties): React.ReactNode 
   return (
     <span
       aria-hidden="true"
-      className={`animate-pulse rounded bg-zinc-200 ${className}`}
+      className={`animate-pulse rounded bg-[var(--active)] ${className}`}
       style={style}
     />
   )
@@ -57,7 +57,7 @@ export function ChatSkeleton() {
           {group.tool && (
             <div
               aria-hidden="true"
-              className="h-12 w-2/3 animate-pulse rounded-lg border border-zinc-200 bg-zinc-100"
+              className="h-12 w-2/3 animate-pulse rounded-lg border border-[var(--border)] bg-[var(--surface-raised)]"
             />
           )}
         </div>

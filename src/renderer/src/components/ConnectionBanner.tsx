@@ -21,7 +21,7 @@ function ConnectionBanner({ message, onRetry }: ConnectionBannerProps) {
         type="button"
         data-testid="connection-retry"
         onClick={onRetry}
-        className="ml-auto shrink-0 rounded border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-800 transition-colors hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-1"
+        className="ml-auto shrink-0 rounded border border-amber-300 bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1"
       >
         Retry now
       </button>

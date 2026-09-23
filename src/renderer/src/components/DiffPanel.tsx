@@ -152,7 +152,7 @@ export function DiffPanel({
           : flash.message
 
   const statusClassName = pending
-    ? 'text-zinc-500 opacity-100'
+    ? 'text-[var(--text-muted)] opacity-100'
     : flash === null
       ? 'opacity-0'
       : flash.kind === 'accepted'
@@ -188,7 +188,7 @@ export function DiffPanel({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex h-7 w-7 items-center justify-center rounded text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+            className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
               <path
@@ -204,7 +204,7 @@ export function DiffPanel({
 
         {files.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-6">
-            <p className="text-sm text-zinc-500">No changes to review</p>
+            <p className="text-sm text-[var(--text-muted)]">No changes to review</p>
           </div>
         ) : (
           <>
@@ -220,13 +220,13 @@ export function DiffPanel({
                     type="button"
                     onClick={() => setSelectedIndex(index)}
                     aria-current={selected ? 'true' : undefined}
-                    className={`flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 ${
-                      selected ? 'bg-[var(--surface-raised)]' : 'hover:bg-zinc-50'
+                    className={`flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
+                      selected ? 'bg-[var(--surface-raised)]' : 'hover:bg-[var(--hover)]'
                     }`}
                   >
                     <span
                       className={`truncate font-mono text-xs ${
-                        selected ? 'text-[var(--text)]' : 'text-zinc-600'
+                        selected ? 'text-[var(--text)]' : 'text-[var(--text-secondary)]'
                       }`}
                       title={file.path}
                     >
@@ -269,7 +269,7 @@ export function DiffPanel({
                   data-testid="diff-reject"
                   onClick={handleReject}
                   disabled={flash?.kind === 'rejected'}
-                  className="h-8 rounded border border-zinc-300 bg-[var(--surface)] px-4 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-8 rounded border border-[var(--border-strong)] bg-[var(--surface)] px-4 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Reject
                 </button>
@@ -279,7 +279,7 @@ export function DiffPanel({
                   onClick={() => void handleAccept()}
                   disabled={pending || acceptDisabled}
                   title={acceptDisabled ? acceptTitle : undefined}
-                  className="h-8 rounded bg-zinc-900 px-4 text-xs font-medium text-white transition-colors hover:bg-zinc-700 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-8 rounded bg-[var(--accent)] px-4 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Accept
                 </button>

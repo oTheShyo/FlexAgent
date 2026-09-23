@@ -92,12 +92,12 @@ function NavRow({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 ${
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
         primary
-          ? 'border border-zinc-300 bg-white font-medium text-zinc-900 shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:bg-zinc-50'
+          ? 'border border-[var(--border-strong)] bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-sm)] hover:bg-[var(--hover)]'
           : active
-            ? 'bg-zinc-200/80 font-medium text-zinc-900'
-            : 'text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900'
+            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
       }`}
     >
       {icon}
@@ -129,7 +129,7 @@ function matchesQuery(title: string, query: string): boolean {
 }
 
 const MENU_ITEM_CLASS =
-  'flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs font-medium text-zinc-700 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400'
+  'flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]'
 
 function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = false }: SidebarProps) {
   const meta = useSessionMeta()
@@ -253,12 +253,10 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
   const archiveToggleLabel = showArchived ? 'Show chats' : 'Archived'
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-zinc-200 bg-[#f7f7f8]">
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-sidebar)]">
       <div className="flex items-center gap-2 px-4 pb-4 pt-4">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-zinc-900 text-[11px] font-semibold text-white">
-          C
-        </span>
-        <span className="text-sm font-semibold tracking-tight text-zinc-900">Codex Clone</span>
+        <img src="/logo.png" alt="" className="h-6 w-6 rounded-md object-cover" />
+        <span className="text-sm font-semibold tracking-tight text-[var(--text)]">FlexAgent</span>
       </div>
 
       <nav className="space-y-1 px-2 pb-4" aria-label="Primary">
@@ -267,11 +265,11 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
         <NavRow icon={<ScheduledIcon />} label="Scheduled" />
       </nav>
 
-      <div className="mx-4 border-t border-zinc-200" />
+      <div className="mx-4 border-t border-[var(--border)]" />
 
       <div className="px-2 pt-3">
         <div className="relative">
-          <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-zinc-400">
+          <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--text-subtle)]">
             <SearchIcon />
           </span>
           <input
@@ -282,7 +280,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
             aria-label="Search chats"
             autoComplete="off"
             spellCheck={false}
-            className="h-8 w-full rounded-md border border-zinc-200 bg-white pl-7 pr-2 text-xs text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+            className="h-8 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] pl-7 pr-2 text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             data-testid="session-search"
           />
         </div>
@@ -290,7 +288,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          <span className="text-[11px] font-medium text-zinc-500">
+          <span className="text-[11px] font-medium text-[var(--text-muted)]">
             {showArchived ? 'Archived' : 'Chats'}
           </span>
           <button
@@ -298,10 +296,10 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
             aria-pressed={showArchived}
             aria-label={archiveToggleLabel}
             onClick={() => setShowArchived((value) => !value)}
-            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
+            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
               showArchived
-                ? 'border-zinc-300 bg-zinc-200/80 text-zinc-900'
-                : 'border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300 hover:text-zinc-800'
+                ? 'border-[var(--border-strong)] bg-[var(--active)] text-[var(--text)]'
+                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
             }`}
             data-testid="session-archive-toggle"
           >
@@ -312,7 +310,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
         {loading ? (
           <SessionListSkeleton />
         ) : emptyMessage !== null ? (
-          <p className="px-2 py-1 text-xs text-zinc-500">{emptyMessage}</p>
+          <p className="px-2 py-1 text-xs text-[var(--text-muted)]">{emptyMessage}</p>
         ) : (
           <ul className="space-y-1">
             {visibleSessions.map(({ session, title, archived }) => {
@@ -332,7 +330,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
                       onBlur={handleRenameBlur}
                       aria-label="Rename session"
                       spellCheck={false}
-                      className="h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+                      className="h-9 w-full rounded-md border border-[var(--border-strong)] bg-[var(--surface)] px-2 text-sm text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                       data-testid="session-rename-input"
                     />
                   ) : (
@@ -341,10 +339,10 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
                         type="button"
                         onClick={() => onSelect(session.id)}
                         aria-current={isActive ? 'true' : undefined}
-                        className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 ${
+                        className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
                           isActive
-                            ? 'bg-zinc-200/80 font-medium text-zinc-900'
-                            : 'text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900'
+                            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
                         }`}
                       >
                         <ChatDotIcon />
@@ -356,7 +354,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
                           title={running ? 'Running' : 'Idle'}
                           aria-label={running ? 'Running' : 'Idle'}
                         />
-                        <span className="shrink-0 text-[11px] text-zinc-500">
+                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
                           {formatWhen(session.updatedAt)}
                         </span>
                       </button>
@@ -370,7 +368,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
                         aria-expanded={isMenuOpen}
                         aria-label={`Session actions: ${title}`}
                         onClick={() => openMenu(session.id)}
-                        className={`shrink-0 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-300/60 hover:text-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
+                        className={`shrink-0 rounded-md p-1.5 text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                           isMenuOpen
                             ? 'opacity-100'
                             : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
@@ -387,7 +385,7 @@ function Sidebar({ sessions, activeSessionId, onNewChat, onSelect, loading = fal
                       ref={menuPanelRef}
                       role="menu"
                       aria-label={`Actions for ${title}`}
-                      className="absolute right-1 top-full z-20 mt-0.5 w-36 rounded-lg border border-zinc-200 bg-white p-1 shadow-[0_12px_40px_rgba(0,0,0,0.16)]"
+                      className="absolute right-1 top-full z-20 mt-0.5 w-36 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[var(--shadow-lg)]"
                     >
                       <button
                         type="button"

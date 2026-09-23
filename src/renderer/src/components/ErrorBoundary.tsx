@@ -44,7 +44,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           data-testid="error-boundary"
           className={`${FALLBACK_BASE} ${size}`}
         >
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-500">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-muted)]">
             <svg
               className="h-5 w-5"
               viewBox="0 0 24 24"
@@ -61,15 +61,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </svg>
           </div>
           <div>
-            <h1 className="text-sm font-semibold tracking-tight text-zinc-900">
+            <h1 className="text-sm font-semibold tracking-tight text-[var(--text)]">
               Something went wrong
             </h1>
-            <p className="mx-auto mt-1 max-w-sm text-sm leading-5 text-zinc-500">
+            <p className="mx-auto mt-1 max-w-sm text-sm leading-5 text-[var(--text-muted)]">
               This part of the app hit an unexpected error. Try again to
               re-render it, or reload the app to start fresh.
             </p>
             {error.message.length > 0 && (
-              <p className="mx-auto mt-2 max-w-sm break-all font-mono text-[11px] leading-4 text-zinc-400">
+              <p className="mx-auto mt-2 max-w-sm break-all font-mono text-[11px] leading-4 text-[var(--text-subtle)]">
                 {error.message}
               </p>
             )}
@@ -79,7 +79,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               type="button"
               data-testid="error-boundary-retry"
               onClick={this.handleRetry}
-              className="h-8 rounded border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+              className="h-8 rounded border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
             >
               Try again
             </button>
@@ -87,7 +87,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               type="button"
               data-testid="error-boundary-reload"
               onClick={this.handleReload}
-              className="h-8 rounded bg-zinc-900 px-3 text-xs font-medium text-white transition-colors hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+              className="h-8 rounded bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
             >
               Reload
             </button>

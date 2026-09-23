@@ -74,10 +74,10 @@ function ToolbarButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 ${
+      className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 ${
         active
-          ? 'border-zinc-300 bg-zinc-100 text-zinc-900'
-          : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900'
+          ? 'border-[var(--border-strong)] bg-[var(--surface-raised)] text-[var(--text)]'
+          : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
       }`}
     >
       {icon}
@@ -96,9 +96,9 @@ function TopBar({
   onStop
 }: TopBarProps) {
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4">
+    <header className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4">
       <div className="flex min-w-0 items-center gap-2">
-        <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-900">{title}</h1>
+        <h1 className="truncate text-sm font-semibold tracking-tight text-[var(--text)]">{title}</h1>
         {running && (
           <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" aria-hidden="true" />
@@ -116,7 +116,7 @@ function TopBar({
           <button
             type="button"
             onClick={onStop}
-            className="flex h-8 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
             aria-label="Stop run"
           >
             <StopIcon />

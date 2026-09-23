@@ -54,7 +54,7 @@ function fuzzyScore(query: string, text: string): number | null {
 function SearchIcon() {
   return (
     <svg
-      className="h-4 w-4 shrink-0 text-zinc-400"
+      className="h-4 w-4 shrink-0 text-[var(--text-subtle)]"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -298,20 +298,20 @@ function CommandPalette({
         aria-label="Command palette"
         data-testid="command-palette"
         onClick={handlePanelClick}
-        className="relative w-full max-w-lg overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-[0_12px_40px_rgba(0,0,0,0.16)]"
+        className="relative w-full max-w-lg overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]"
       >
         {showSettingsNotice ? (
           <div className="p-4">
             <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-600">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-secondary)]">
                 <SettingsIcon />
               </span>
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold text-zinc-900">Settings</h2>
-                <p className="text-xs text-zinc-500">Settings coming soon.</p>
+                <h2 className="text-sm font-semibold text-[var(--text)]">Settings</h2>
+                <p className="text-xs text-[var(--text-muted)]">Settings coming soon.</p>
               </div>
             </div>
-            <p className="mt-3 text-xs leading-5 text-zinc-600">
+            <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
               The settings panel is not available in this build yet. No preferences are
               stored at this time.
             </p>
@@ -319,7 +319,7 @@ function CommandPalette({
               <button
                 type="button"
                 onClick={closeSettingsNotice}
-                className="h-8 rounded bg-zinc-900 px-3 text-xs font-medium text-white transition-colors hover:bg-zinc-700 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2"
+                className="h-8 rounded bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
               >
                 Close
               </button>
@@ -327,7 +327,7 @@ function CommandPalette({
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-2 border-b border-zinc-200 px-3">
+            <div className="flex items-center gap-2 border-b border-[var(--border)] px-3">
               <SearchIcon />
               <input
                 ref={inputRef}
@@ -344,16 +344,16 @@ function CommandPalette({
                 aria-autocomplete="list"
                 autoComplete="off"
                 spellCheck={false}
-                className="h-11 w-full bg-transparent text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none"
+                className="h-11 w-full bg-transparent text-sm text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none"
                 data-testid="command-palette-input"
               />
-              <kbd className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+              <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
                 Esc
               </kbd>
             </div>
 
             {filtered.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-zinc-500" role="status">
+              <p className="px-4 py-6 text-center text-sm text-[var(--text-muted)]" role="status">
                 No matching commands
               </p>
             ) : (
@@ -379,8 +379,8 @@ function CommandPalette({
                         onClick={() => runCommand(command)}
                         className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm ${
                           isSelected
-                            ? 'bg-zinc-200/80 font-medium text-zinc-900'
-                            : 'text-zinc-700 hover:bg-zinc-100'
+                            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)]'
                         }`}
                       >
                         {command.id === 'new-chat' ? (
@@ -394,22 +394,22 @@ function CommandPalette({
                         )}
                         <span
                           className={`min-w-0 flex-1 truncate ${
-                            isActiveSession ? 'text-zinc-900' : ''
+                            isActiveSession ? 'text-[var(--text)]' : ''
                           }`}
                         >
                           {command.label}
                           {isActiveSession && (
-                            <span className="ml-1.5 text-[11px] font-normal text-zinc-500">
+                            <span className="ml-1.5 text-[11px] font-normal text-[var(--text-muted)]">
                               (current)
                             </span>
                           )}
                         </span>
                         {command.shortcut !== undefined && (
-                          <kbd className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+                          <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
                             {command.shortcut}
                           </kbd>
                         )}
-                        <span className="shrink-0 text-[11px] font-normal text-zinc-500">
+                        <span className="shrink-0 text-[11px] font-normal text-[var(--text-muted)]">
                           {command.hint}
                         </span>
                       </div>
@@ -419,7 +419,7 @@ function CommandPalette({
               </ul>
             )}
 
-            <div className="flex items-center justify-between border-t border-zinc-200 px-3 py-2 text-[11px] text-zinc-500">
+            <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
               <span>
                 <kbd className="font-mono">↑↓</kbd> to navigate · <kbd className="font-mono">↵</kbd>{' '}
                 to run

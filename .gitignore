@@ -4,6 +4,8 @@ dist/
 *.log
 .tmp-*/
 *.png
+!resources/logo.png
+!src/renderer/public/logo.png
 *_probe.txt
 accept_perm.txt
 robot-gardener-story.md

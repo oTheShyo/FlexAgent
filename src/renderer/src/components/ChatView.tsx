@@ -46,7 +46,7 @@ const InlineText = memo(function InlineText({ text }: { text: string }): ReactEl
         i % 2 === 1 ? (
           <code
             key={i}
-            className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.85em] text-zinc-800"
+            className="rounded bg-[var(--surface-raised)] px-1 py-0.5 font-mono text-[0.85em] text-[var(--text)]"
           >
             {seg}
           </code>
@@ -66,13 +66,13 @@ const AssistantContent = memo(function AssistantContent({ content }: { content: 
         block.kind === 'code' ? (
           <pre
             key={bi}
-            className="overflow-x-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-5 text-zinc-800"
+            className="overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] p-3 font-mono text-xs leading-5 text-[var(--text)]"
             data-lang={block.lang || undefined}
           >
             <code>{block.code}</code>
           </pre>
         ) : (
-          <p key={bi} className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+          <p key={bi} className="whitespace-pre-wrap text-sm leading-6 text-[var(--text)]">
             <InlineText text={block.text} />
           </p>
         ),
@@ -142,7 +142,7 @@ const CopyButton = memo(function CopyButton({ text }: { text: string }): ReactEl
       onClick={handleClick}
       aria-label={copied ? 'Copied' : 'Copy message'}
       title={copied ? 'Copied' : 'Copy message'}
-      className="inline-flex h-6 w-6 items-center justify-center rounded border border-transparent text-zinc-400 transition-colors hover:border-zinc-200 hover:bg-white hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+      className="inline-flex h-6 w-6 items-center justify-center rounded border border-transparent text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       {copied ? (
         <svg
@@ -183,7 +183,7 @@ function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
       onClick={onClick}
       aria-label="Regenerate response"
       title="Regenerate response"
-      className="inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-200 hover:bg-white hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+      className="inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[11px] font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       <svg
         className="h-3.5 w-3.5"
@@ -205,10 +205,10 @@ const TOOL_STATUS: Record<ToolItem['status'], { dot: string; label: string; text
   waiting: {
     dot: 'bg-amber-400 animate-pulse',
     label: 'Waiting for approval',
-    text: 'text-amber-700'
+    text: 'text-[var(--warning)]'
   },
-  running: { dot: 'bg-sky-500 animate-pulse', label: 'Running', text: 'text-zinc-500' },
-  done: { dot: 'bg-emerald-500', label: 'Done', text: 'text-zinc-400' },
+  running: { dot: 'bg-sky-500 animate-pulse', label: 'Running', text: 'text-[var(--text-muted)]' },
+  done: { dot: 'bg-emerald-500', label: 'Done', text: 'text-[var(--text-subtle)]' },
   error: { dot: 'bg-red-500', label: 'Failed', text: 'text-red-600' }
 }
 
@@ -226,7 +226,7 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
   return (
     <div
       className={`rounded-lg border px-3 py-2 ${
-        isError ? 'border-red-200 bg-red-50' : 'border-zinc-200 bg-zinc-50'
+        isError ? 'border-red-200 bg-red-50' : 'border-[var(--border)] bg-[var(--surface-sunken)]'
       }`}
       data-testid="tool-card"
     >
@@ -237,8 +237,8 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
       )}
       <div className="flex items-center gap-2">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} aria-hidden="true" />
-        <span className="truncate text-xs font-medium text-zinc-800">{item.label}</span>
-        <span className="shrink-0 rounded border border-zinc-200 bg-white px-1 py-px font-mono text-[10px] text-zinc-500">
+        <span className="truncate text-xs font-medium text-[var(--text)]">{item.label}</span>
+        <span className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface)] px-1 py-px font-mono text-[10px] text-[var(--text-muted)]">
           {item.name}
         </span>
         <span className={`ml-auto shrink-0 text-[11px] ${status.text}`}>{status.label}</span>
@@ -246,7 +246,7 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
       {item.chunks.length > 0 && (
         <>
           <pre
-            className={`mt-2 rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] leading-4 text-zinc-600 ${
+            className={`mt-2 rounded border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[11px] leading-4 text-[var(--text-secondary)] ${
               isLongOutput
                 ? expanded
                   ? 'overflow-auto'
@@ -262,14 +262,14 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
               data-testid="tool-card-expand"
               onClick={handleToggleExpanded}
               aria-expanded={expanded}
-              className="-ml-1 mt-1 rounded px-1 py-0.5 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300"
+              className="-ml-1 mt-1 rounded px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               {expanded ? 'Show less' : 'Show more'}
             </button>
           )}
         </>
       )}
-      {item.summary && <p className="mt-1.5 text-[11px] text-zinc-500">{item.summary}</p>}
+      {item.summary && <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">{item.summary}</p>}
     </div>
   )
 })
@@ -326,7 +326,7 @@ const ChatRow = memo(function ChatRow({
       if (message.role === 'user') {
         return (
           <div className="group flex items-start justify-end gap-1.5">
-            <div className="max-w-[75%] rounded-xl border border-zinc-200 bg-zinc-100 px-4 py-2.5 text-sm leading-6 text-zinc-900">
+            <div className="max-w-[75%] rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-2.5 text-sm leading-6 text-[var(--text)]">
               <span className="whitespace-pre-wrap">{message.content}</span>
             </div>
             <div className="mt-1.5 flex shrink-0 items-center opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
@@ -428,7 +428,7 @@ export function ChatView({ items, running = false, onRegenerate }: ChatViewProps
     >
       {items.length === 0 ? (
         <div className="flex h-full items-center justify-center px-6">
-          <p className="text-sm text-zinc-400">Send a message to start.</p>
+          <p className="text-sm text-[var(--text-subtle)]">Send a message to start.</p>
         </div>
       ) : (
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6">

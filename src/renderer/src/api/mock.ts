@@ -98,7 +98,7 @@ function buildAppFileChange(): FileChange {
     '   return (',
     '-    <div className="app">',
     '+    <main className="app-shell">',
-    '       <h1>Codex Clone</h1>',
+    '       <h1>FlexAgent</h1>',
     '+      <ChatPanel />',
     '-    </div>',
     '+    </main>',

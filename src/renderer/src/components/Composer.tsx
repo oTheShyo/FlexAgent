@@ -111,7 +111,7 @@ function QueueIcon() {
 function FileIcon() {
   return (
     <svg
-      className="h-3.5 w-3.5 shrink-0 text-zinc-400"
+      className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -139,10 +139,10 @@ function MentionPopup({ files, selectedIndex, onSelect, onPick }: MentionPopupPr
       id="composer-mention-list"
       role="listbox"
       aria-label="File mentions"
-      className="absolute inset-x-1.5 bottom-full z-30 mb-2 max-h-56 overflow-y-auto rounded-lg border border-zinc-200 bg-white py-1 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+      className="absolute inset-x-1.5 bottom-full z-30 mb-2 max-h-56 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-lg)]"
     >
       {files.length === 0 ? (
-        <li role="presentation" className="px-3 py-2 text-xs text-zinc-500">
+        <li role="presentation" className="px-3 py-2 text-xs text-[var(--text-muted)]">
           No matching files
         </li>
       ) : (
@@ -157,10 +157,10 @@ function MentionPopup({ files, selectedIndex, onSelect, onPick }: MentionPopupPr
                 onMouseMove={() => onSelect(index)}
                 onClick={() => onPick(path)}
                 tabIndex={-1}
-                className={`flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 font-mono text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
+                className={`flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 font-mono text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                   isSelected
-                    ? 'bg-zinc-200/80 font-medium text-zinc-900'
-                    : 'text-zinc-600 hover:bg-zinc-100'
+                    ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--hover)]'
                 }`}
               >
                 <FileIcon />
@@ -365,7 +365,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
   }
 
   const chipClass =
-    'flex h-8 items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white'
+    'flex h-8 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--surface)]'
 
   const activeMentionId =
     mentionOpen && mentionFiles.length > 0 && mentionIndex < mentionFiles.length
@@ -374,7 +374,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
 
   return (
     <div className="shrink-0 px-4 pb-4" data-testid="composer">
-      <div className="relative mx-auto w-full max-w-3xl rounded-xl border border-zinc-200 bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+      <div className="relative mx-auto w-full max-w-3xl rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)]">
         {mentionOpen && (
           <MentionPopup
             files={mentionFiles}
@@ -387,7 +387,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
         {dragOver && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-zinc-400 bg-zinc-50/95 text-sm font-medium text-zinc-600"
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-[var(--border-strong)] bg-[var(--surface-sunken)] text-sm font-medium text-[var(--text-secondary)]"
           >
             Drop files to attach
           </div>
@@ -402,7 +402,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
           <button
             type="button"
             disabled={disabled}
-            className="flex w-full items-center gap-1.5 border-b border-zinc-100 px-3 py-2 text-xs text-zinc-500 hover:text-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex w-full items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <FolderIcon />
             <span>Choose project</span>
@@ -424,7 +424,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
             aria-expanded={mentionOpen}
             aria-controls={mentionOpen ? 'composer-mention-list' : undefined}
             aria-activedescendant={activeMentionId}
-            className="block min-h-[52px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 disabled:opacity-40"
+            className="block min-h-[52px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:opacity-40"
           />
 
           <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
@@ -432,7 +432,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
               type="button"
               disabled={disabled}
               aria-label="Add attachment"
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <PlusIcon />
             </button>
@@ -457,7 +457,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
                 title="Queue this message to send after the current run finishes (followUp)"
                 className={`${chipClass} ${
                   queueNext
-                    ? 'border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800 hover:text-white'
+                    ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-contrast)] hover:bg-[var(--accent-hover)] hover:text-[var(--accent-contrast)]'
                     : ''
                 }`}
               >
@@ -485,7 +485,7 @@ function Composer({ onSend, disabled = false, running = false }: ComposerProps) 
                     : 'Send as a steer (injected mid-run)'
                   : 'Send message'
               }
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-white hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-30"
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-[var(--accent-contrast)] hover:bg-[var(--accent-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-30"
             >
               <SendIcon />
             </button>
