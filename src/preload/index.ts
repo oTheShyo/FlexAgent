@@ -9,11 +9,15 @@ import {
   type ContractErrorCode,
   type CreateSessionInput,
   type KernelEvent,
+  type ModelConfig,
+  type ModelOption,
   type PromptInput,
   type RespondPermissionInput,
   type SessionDetail,
   type SessionId,
   type SessionSummary,
+  type SetModelInput,
+  type SetThinkingLevelInput,
   type TerminalCreateInput,
   type TerminalInputInput,
   type TerminalResizeInput
@@ -138,7 +142,18 @@ const codex: CodexApi = {
   terminalKill: (terminalId: string) => invoke<void>(IPC.terminalKill, terminalId),
 
   applyFileChanges: (input: ApplyFileChangesInput) =>
-    invoke<ApplyFileChangesResult>(IPC.applyFileChanges, input)
+    invoke<ApplyFileChangesResult>(IPC.applyFileChanges, input),
+
+  listModels: () => invoke<ModelOption[]>(IPC.listModels),
+
+  getModelConfig: (sessionId: SessionId) => invoke<ModelConfig>(IPC.getModelConfig, sessionId),
+
+  setModel: (input: SetModelInput) => invoke<ModelConfig>(IPC.setModel, input),
+
+  setThinkingLevel: (input: SetThinkingLevelInput) =>
+    invoke<ModelConfig>(IPC.setThinkingLevel, input),
+
+  pickDirectory: () => invoke<string | null>(IPC.pickDirectory)
 }
 
 // Not CodexApi — §7.3 accept-disconnect only; frontend must not depend on it.

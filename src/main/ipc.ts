@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import {
   ContractError,
@@ -7,6 +7,8 @@ import {
   type ContractErrorCode,
   type PromptInput,
   type RespondPermissionInput,
+  type SetModelInput,
+  type SetThinkingLevelInput,
   type TerminalCreateInput,
   type TerminalInputInput,
   type TerminalResizeInput
@@ -257,6 +259,67 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.applyFileChanges, (_e, input: ApplyFileChangesInput) =>
     guard(() => applyFileChanges(registry, input))
+  )
+
+  ipcMain.handle(IPC.listModels, () =>
+    guard(async () => (await kernel.request({ type: 'listModels' })) ?? [])
+  )
+
+  ipcMain.handle(IPC.getModelConfig, (_e, sessionId: unknown) =>
+    guard(async () => {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      registry.require(sessionId)
+      return kernel.request({ type: 'getModelConfig', sessionId })
+    })
+  )
+
+  ipcMain.handle(IPC.setModel, (_e, input: SetModelInput) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (typeof input.provider !== 'string' || !input.provider) {
+        throw new ContractError('INVALID_INPUT', 'provider is required')
+      }
+      if (typeof input.id !== 'string' || !input.id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      registry.require(input.sessionId)
+      return kernel.request({
+        type: 'setModel',
+        sessionId: input.sessionId,
+        provider: input.provider,
+        id: input.id,
+        thinkingLevel: input.thinkingLevel
+      })
+    })
+  )
+
+  ipcMain.handle(IPC.setThinkingLevel, (_e, input: SetThinkingLevelInput) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      registry.require(input.sessionId)
+      return kernel.request({
+        type: 'setThinkingLevel',
+        sessionId: input.sessionId,
+        level: input.level
+      })
+    })
+  )
+
+  ipcMain.handle(IPC.pickDirectory, () =>
+    guard(async () => {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const result = win
+        ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+        : await dialog.showOpenDialog({ properties: ['openDirectory'] })
+      if (result.canceled || result.filePaths.length === 0) return null
+      return result.filePaths[0] ?? null
+    })
   )
 
   // §7.3 walkthrough only — not part of CodexApi / shared/contract.
