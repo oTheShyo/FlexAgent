@@ -30,6 +30,10 @@ import {
   type PluginDetail,
   type PluginId,
   type PluginSummary,
+  type McpServerStatusEntry,
+  type McpServerStatusEvent,
+  type UserMcpSaveInput,
+  type UserMcpServerSummary,
   type PromptInput,
   type RespondPermissionInput,
   type SessionDetail,
@@ -210,6 +214,29 @@ const codex: CodexApi = {
     ipcRenderer.on(IPC.pluginsChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC.pluginsChanged, handler)
+    }
+  },
+
+  listUserMcpServers: () => invoke<UserMcpServerSummary[]>(IPC.listUserMcpServers),
+
+  saveUserMcpServer: (input: UserMcpSaveInput) =>
+    invoke<UserMcpServerSummary[]>(IPC.saveUserMcpServer, input),
+
+  removeUserMcpServer: (name: string) =>
+    invoke<UserMcpServerSummary[]>(IPC.removeUserMcpServer, name),
+
+  toggleUserMcpServer: (name: string, enabled: boolean) =>
+    invoke<UserMcpServerSummary[]>(IPC.toggleUserMcpServer, { name, enabled }),
+
+  listMcpServerStatus: () => invoke<McpServerStatusEntry[]>(IPC.listMcpServerStatus),
+
+  subscribeMcpStatus(listener: (event: McpServerStatusEvent) => void): () => void {
+    const handler = (_event: IpcRendererEvent, payload: McpServerStatusEvent): void => {
+      listener(payload)
+    }
+    ipcRenderer.on(IPC.mcpStatusChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.mcpStatusChanged, handler)
     }
   },
 
