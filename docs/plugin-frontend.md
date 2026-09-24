@@ -244,3 +244,47 @@ interface UsePluginsResult {
 4. `PluginsPage.tsx` + `PluginDetailPanel.tsx`（先用 mock 数据调好视觉）。
 5. `Sidebar.tsx` / `App.tsx` / `CommandPalette.tsx` 接线。
 6. mock 走查 9 步 + `typecheck`。
+
+---
+
+## 9. 当前队列（P2 状态 · 按顺序做）
+
+> 更新时机：P2a/b 已落地（commands 已可用）；P2c hooks 与 P3 marketplace 后端并行开发中。后端轨文件（`src/main/**`、`src/preload/**`、`src/shared/**`）依然碰不得。
+
+### 9.1 现在就做（不等后端）
+
+1. **验证并提交导航修复**（P1 遗留 bug，已修未提交）：
+   - 手工验证：进 Plugins 页 → 点侧栏任一会话 → **页面应切回会话区**（此前不切换）；`New chat`/`Projects` 同理；`Esc` 行为不变。
+   - 通过后**只提交这一个文件**：`git add src/renderer/src/App.tsx` 然后 commit（风格：英文祈使句首字母大写，如 `Fix plugins view blocking session switch`）。**禁止 `git add -A`/`git add .`**——工作区有后端在制品和杂物（`robot_gardener_story.*`、`scripts/diag-model-*.mjs` 永不入库）。
+2. **可选清理**（同文件或前端文件内，随手但各自独立小提交或并入上面提交均可）：
+   - `App.tsx` 若存在 `codexApi as PluginApi` 之类冗余类型断言 → 删掉（用真实类型）。
+   - `usePlugins.uninstall` 失败路径未清 `busyId` 的话补上（对齐 §4 busy 语义）。
+
+### 9.2 P2b commands 人工 QA（现在可做，真链路）
+
+后端已交付：`.zcode-plugin/.claude-plugin/.codex-plugin/.cursor-plugin` manifest 发现优先级 + `commands/*.md` 枚举 + 内核 `/命令` 注册。你验证 UI 侧：
+
+1. 准备一个本地 fixture 插件目录：manifest（任选一种，如 `.zcode-plugin/plugin.json`）+ `commands/demo.md`（frontmatter `name: demo` / `description: ...` + 正文含 `$ARGUMENTS`）。
+2. `Install from folder` 安装 → 打开详情：**组件清单应出现 `kind: command`，name/description 来自 frontmatter**；列表徽标 `componentCounts.command ≥ 1`。
+3. 启用插件（`Reloading…` → 内核重启）→ 新会话 → 会话输入框若透传内核 slash commands，`/demo ` 应可补全；输入 `/demo hello` 发送后应出现一条内容为展开正文（`$ARGUMENTS`→`hello`）的用户消息。**若渲染层目前不展示内核命令列表，记录为已知限制即可，不要为此改后端。**
+4. 重复安装/坏 manifest 等错误码展示走查（§6.C 里已覆盖的沿用）。
+
+> **已知限制（§9.2 QA 已确认并记录）**：当前渲染层不展示、也不补全内核 slash command 列表——`/demo ` 无自动补全，发送 `/demo hello` 后消息为原文（非 `$ARGUMENTS` 展开正文）。详情面板的 `kind: command` 组件清单与 frontmatter name/description 展示正常。按上方约定不改后端；待 Composer 命令透传（P2 运行时交互）落地后一并补 UI。
+
+### 9.3 等 P2c（hooks）交付后
+
+- 详情面板组件清单应自动多出 `kind: hook` 分组（§5.3 分组逻辑已覆盖该 kind，无需新 UI）——装一个带 `hooks/` 的 fixture 验证渲染不炸、计数正确。
+- 诊断区可能出现新码（如 hook 事件无 PI 对等时的 warning）——确认 `PluginDiagnostic` 渲染能显示未知 code（只展示 code+message，不要硬编码白名单）。
+
+### 9.4 等 P3（marketplace）交付后 —— 届时再开工
+
+- 后端将交付 `docs/plugin-marketplace.md`（IPC 通道清单 + payload 形状 + 前端 QA 步骤）+ 新的 shared/preload 契约（只增）。
+- 你的 P3 UI 范围：市场浏览/搜索列表、**Install from URL**、安装进度条（progress 事件）、错误态（网络/zip/manifest 失败）、与现有 `Install from folder` 并列。
+- **在 `docs/plugin-marketplace.md` 出现之前不要动 P3 UI**——契约未定，先写会返工。
+
+### 9.5 明确不做 / 不碰
+
+- ❌ `src/main/**`、`src/preload/**`、`src/shared/**`（含 `kernel-protocol.ts`）——双 agent 正在改，碰了必冲突。
+- ❌ `THIRD_PARTY_NOTICES.md`、`docs/plugin-porting.md`、`docs/plugin-backend.md`、`scripts/accept-*.mjs`。
+- ❌ `userConfig` 表单保存、MCP UI（等后端契约）。
+- ❌ 任何 git 写操作超出 9.1 第 1 条的单文件提交。
