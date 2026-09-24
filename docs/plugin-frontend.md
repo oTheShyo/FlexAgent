@@ -315,3 +315,27 @@ interface UsePluginsResult {
 - **后端结论（本项关闭）**：接受该观察。与 P2b 设计一致——命令 handler 经 `pi.sendUserMessage` 注入**展开后**的 prompt，原文不入事件流；accept-plugins 单测（`$ARGUMENTS` 全量替换 + `sendUserMessage` 捕获）与本次真链路互证。后端无动作；§9.2 旧记录已由前端更正。唯一遗留项归 9.6.1（补全 UI + IPC）。
 
 **9.6.3 提交纪律（不变）：** 后端批次未提交前，你继续只提交 `src/renderer/**` + 本文档；`git add` 指名文件，禁 `git add -A`。
+
+**9.6.4 缺口审查后的第二批（前端轨）—— 渲染层能修的全部修完**
+
+来源：`docs/gap-audit.md`（契约 ↔ `ipc.ts` 注册 ↔ preload 桥 ↔ 渲染层消费 四方交叉核对）。本批**只动 `src/renderer/**` + 文档**，未触碰 `src/main/**`、`src/preload/**`、`src/shared/**`（含 `kernel-protocol.ts`），也未动你们工作区的 MCP 在制品。
+
+| 项 | 改动 | 说明 |
+|---|---|---|
+| A3 附件 | 新增 `components/composerAttachments.ts`；drop/paste 暂存真实 `File`，chip 可移除，被拒文件给出可见原因 | 契约无 `attachments` 字段且无上传通道，因此提交时把文本内容以 `--- name --- … --- end name ---` **内联进消息**；上限 5 个 / 单文件 64 KB / 单条 192 KB。**若你们将来加 `PromptInput.attachments`，这里换成真附件即可，内联块是过渡形态** |
+| A5 删除会话 | 会话行菜单加 `Delete…`（面板内联二次确认，初始焦点在 Cancel）；`useChat.deleteSession` 调既有 API | `codex:deleteSession` 后端早已是真实现（kernel `disposeSession` + `terminals.disposeSession` + `registry.remove`），前端此前从未调用 |
+| A6 覆盖层 | `clearSessionMeta`（删除时）+ `pruneSessionMeta`（每次成功 `listSessions` 后）+ 归档计数上开关 | `renameSession`/`archiveSession` 的 localStorage 覆盖层按 §7.1#4 保留，但不再残留会导致 id 复用后被旧标题污染 |
+| B2 Projects | 侧栏可折叠 Projects 分区，按 `SessionSummary.cwd` 聚合 | **不引入新契约**：`cwd` 本就在 `listSessions` 里。选中即过滤聊天列表，主按钮变 `New chat in <项目>` 并在该目录建会话 |
+| B4 Settings | 增 Shortcuts（读 `lib/shortcuts.ts` 真值表）与 Environment（真实桥接类型 / 平台 / 会话数 / 当前目录） | 只显示**真实存在**的信息，并明示"主题 / 重命名 / 归档仅存本机" |
+| C2 | `respond` 取 sessionId 改走 `activeIdRef.current` | 与 `send`/`stop`/`applyFiles` 一致，消除快速切会话时把权限应答发给旧会话的窗口 |
+| C3 | `lib/theme.ts` 加 `subscribeThemeChange`；`TerminalDrawer` 订阅后把实时 CSS 变量重算赋给 `term.options.theme` | 含 `preference = system` 时 OS 切换的场景（`<html>` 无变化，只有媒体查询变化） |
+| F | `.gitignore` 加 `.workbuddy/`、`robot_gardener_story.*`、`scripts/diag-model-*.mjs` | 落实 §9.1「禁 `git add -A`」的机械保障 |
+
+**故意不做（后端门控，不伪造控件）：** B3 Plan/Ask（需 `PromptMode` 扩枚举 + 内核语义）、B5 `userConfig` 保存、B6 MCP 配置 UI（两者都缺写回命令）、B7 非 stdio MCP、B8/B9/B10（`plugin-porting.md` 已定的产品范围）。理由与 A1 相同——做出来就是"点了没反应"的装饰性控件。
+
+**QA：** CDP 9222 真链路走查（`Temp\opencode\gap-walkthrough.mjs` / `gap-walkthrough2.mjs`），覆盖 Projects 过滤、附件投放与拒绝原因、Settings 新分区、主题切换、终端配色跟随、删除二次确认与"确认前不删、确认后只删目标"。删除项走查会临时建一条会话并在验证后删除，走查前后会话总数一致。
+
+**给后端的两个提示（都不阻塞）：**
+1. `PromptInput.attachments` 一旦只增，前端把内联块换成真附件；在那之前附件内容会出现在 prompt 文本里，`user_message` 的 content 会因此变长（非 bug）。
+2. 侧栏 Projects 依赖 `SessionSummary.cwd` 稳定可读——目前是绝对路径，正常。
+

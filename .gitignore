@@ -9,3 +9,10 @@ dist/
 *_probe.txt
 accept_perm.txt
 robot-gardener-story.md
+# Scratch material that must never be committed (backend-handoff / plugin-frontend
+# §9.1 both forbid `git add -A` because of these).
+robot_gardener_story.md
+robot_gardener_story.txt
+scripts/diag-model-*.mjs
+# Local agent workspace memory (project-local data, not source).
+.workbuddy/
