@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import type { SessionSummary } from '../types'
 import { displaySessionTitle, useSessionMeta } from '../lib/sessionMeta'
 import { formatWhen } from '../lib/formatWhen'
+import { pathBasename } from '../lib/paths'
 import { SHORTCUTS } from '../lib/shortcuts'
 import { readTheme, writeTheme } from '../lib/theme'
 import type { ThemePreference } from '../lib/theme'
@@ -33,6 +34,28 @@ interface PaletteCommand {
   hint: string
   shortcut?: string
   run: () => void
+}
+
+/** Static, so it is read once instead of on every palette render. */
+const SHORTCUT_ROWS: { keys: string; description: string }[] = Object.values(SHORTCUTS)
+
+function SettingRow({
+  label,
+  title,
+  children
+}: {
+  label: string
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex gap-3 py-1 text-xs">
+      <span className="w-20 shrink-0 text-[var(--text-muted)]">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]" title={title}>
+        {children}
+      </span>
+    </div>
+  )
 }
 
 function fuzzyScore(query: string, text: string): number | null {
@@ -71,6 +94,13 @@ function CommandPalette({
   const sessionMeta = useSessionMeta()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
+
+  // Unlike the planned-but-unwired preferences, these are read straight from
+  // the live runtime so the panel never claims a capability that is absent.
+  const bridgeLabel =
+    window.electron?.codex !== undefined ? 'Electron IPC · kernel' : 'In-browser mock'
+  const platformLabel = navigator.platform.length > 0 ? navigator.platform : 'unknown'
+  const activeCwd = sessions.find((session) => session.id === activeSessionId)?.cwd ?? null
 
   const runNewChat = useCallback((): void => {
     onNewChat()
@@ -228,7 +258,7 @@ function CommandPalette({
         className="relative w-full max-w-lg overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]"
       >
         {showSettingsNotice ? (
-          <div className="p-4" data-testid="settings-panel">
+          <div className="max-h-[70vh] overflow-y-auto p-4" data-testid="settings-panel">
             <div className="flex items-center gap-2.5">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-secondary)]">
                 <SettingsIcon />
@@ -279,6 +309,45 @@ function CommandPalette({
                 })}
               </div>
             </div>
+
+            <div className="mt-5">
+              <p className="text-xs font-medium text-[var(--text-secondary)]">Shortcuts</p>
+              <ul className="mt-2 space-y-1" data-testid="settings-shortcuts">
+                {SHORTCUT_ROWS.map((row) => (
+                  <li
+                    key={`${row.keys}:${row.description}`}
+                    className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] px-2.5 py-1.5"
+                  >
+                    <span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">
+                      {row.description}
+                    </span>
+                    <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+                      {row.keys}
+                    </kbd>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-5">
+              <p className="text-xs font-medium text-[var(--text-secondary)]">Environment</p>
+              <div
+                className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] px-3 py-1.5"
+                data-testid="settings-environment"
+              >
+                <SettingRow label="Bridge">{bridgeLabel}</SettingRow>
+                <SettingRow label="Platform">{platformLabel}</SettingRow>
+                <SettingRow label="Chats">{sessions.length}</SettingRow>
+                <SettingRow label="Project" title={activeCwd ?? undefined}>
+                  {activeCwd === null ? 'No session open' : pathBasename(activeCwd)}
+                </SettingRow>
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-[var(--text-muted)]">
+                Theme, chat renames and archives are stored on this device only. Transcripts,
+                titles and sessions belong to the kernel.
+              </p>
+            </div>
+
             <div className="mt-4 flex justify-end">
               <Button type="button" variant="primary" onClick={closeSettingsNotice}>
                 Close

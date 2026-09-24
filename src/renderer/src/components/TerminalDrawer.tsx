@@ -1,10 +1,12 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { ContractError } from '../../../shared/contract'
 import type { KernelEvent, SessionId, TerminalId } from '../../../shared/contract'
 import { codexApi } from '../api'
+import { subscribeThemeChange } from '../lib/theme'
 import { IconButton } from './ui'
 
 export interface TerminalDrawerProps {
@@ -53,6 +55,19 @@ function describeError(err: unknown): string {
   return String(err)
 }
 
+// Resolved from the live CSS custom properties every time it is read, so the
+// same call serves the initial mount and any later palette change.
+function readTerminalTheme(): ITheme {
+  const surface = cssVar('--surface')
+  return {
+    background: surface,
+    foreground: cssVar('--text'),
+    cursor: cssVar('--success'),
+    cursorAccent: surface,
+    selectionBackground: withAlpha(cssVar('--success'), 0.25)
+  }
+}
+
 function isTerminalGone(err: unknown): boolean {
   return err instanceof ContractError && err.code === 'TERMINAL_NOT_FOUND'
 }
@@ -83,11 +98,8 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
     setTerminalId(null)
     setCreating(true)
 
-    // Theme resolved once at mount from CSS design tokens (mirrors index.css
-    // --surface/--text/--success pairs). Limitation: xterm takes a static theme,
-    // so switching the OS color scheme while this terminal stays mounted does
-    // not re-theme it until the drawer is reopened.
-    const surface = cssVar('--surface')
+    // Shared with the theme subscription below so a light/dark flip re-themes
+    // the live terminal instead of only the next one.
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -96,13 +108,7 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
       // Raw PTY stream (ConPTY already emits \r\n); do not rewrite line endings.
       convertEol: false,
       scrollback: 5000,
-      theme: {
-        background: surface,
-        foreground: cssVar('--text'),
-        cursor: cssVar('--success'),
-        cursorAccent: surface,
-        selectionBackground: withAlpha(cssVar('--success'), 0.25)
-      }
+      theme: readTerminalTheme()
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -190,6 +196,17 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
       fitRef.current = null
     }
   }, [open, sessionId])
+
+  // xterm takes a static theme object, so a palette change must be pushed onto
+  // the live instance. lib/theme covers both an explicit theme switch and an OS
+  // scheme flip while the preference is `system`.
+  useEffect(() => {
+    if (!open) return
+    return subscribeThemeChange(() => {
+      const term = termRef.current
+      if (term !== null) term.options.theme = readTerminalTheme()
+    })
+  }, [open])
 
   useEffect(() => {
     if (!open || sessionId === null || sessionId === '') return

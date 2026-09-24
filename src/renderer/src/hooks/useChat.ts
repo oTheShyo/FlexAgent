@@ -51,6 +51,12 @@ export interface UseChatResult {
   createSession: (cwd?: string) => Promise<SessionSummary | null>
   openSession: (sessionId: string) => Promise<void>
   refreshSessions: () => Promise<SessionSummary[]>
+  /**
+   * Deletes a session for real (kernel dispose + registry removal). When the
+   * deleted session is the open one, the view is torn down and the most recent
+   * remaining session is opened instead. Resolves false when the call failed.
+   */
+  deleteSession: (sessionId: string) => Promise<boolean>
   /** Native directory picker → createSession(picked cwd). No-op when cancelled. */
   pickDirectoryOrNewSession: () => Promise<void>
   modelConfig: ModelConfig | null
@@ -444,6 +450,39 @@ export function useChat(): UseChatResult {
     [openSession]
   )
 
+  const deleteSession = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      try {
+        await codexApi.deleteSession(sessionId)
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return false
+      }
+      const wasActive = activeIdRef.current === sessionId
+      if (wasActive) {
+        // Drop the subscription first — the deleted session must not keep
+        // feeding events into a view that no longer owns it.
+        unsubRef.current?.()
+        unsubRef.current = null
+        activeIdRef.current = null
+        lastSeqRef.current = null
+        setActiveSessionId(null)
+        setItems([])
+        setFiles([])
+        setPendingPermission(null)
+        setRunState('idle')
+        setModelConfig(null)
+      }
+      const remaining = await refreshSessions()
+      if (wasActive) {
+        const fallback = remaining[0]
+        if (fallback !== undefined) await openSession(fallback.id)
+      }
+      return true
+    },
+    [openSession, refreshSessions]
+  )
+
   const pickDirectoryOrNewSession = useCallback(async (): Promise<void> => {
     try {
       const dir = await codexApi.pickDirectory()
@@ -560,7 +599,10 @@ export function useChat(): UseChatResult {
 
   const respond = useCallback(
     async (decision: PermissionDecision): Promise<void> => {
-      const sessionId = activeSessionId
+      // Read the session from the ref, not state: every other call in this hook
+      // does the same, and during a fast session switch `activeSessionId` can
+      // still hold the previous session while the answer is already resolved.
+      const sessionId = activeIdRef.current
       if (!sessionId || !pendingPermission) return
       const toolCallId = pendingPermission.toolCallId
       setPendingPermission(null)
@@ -570,7 +612,7 @@ export function useChat(): UseChatResult {
         setItems((prev) => [...prev, errorItemFrom(err)])
       }
     },
-    [activeSessionId, pendingPermission]
+    [pendingPermission]
   )
 
   const applyFiles = useCallback(
@@ -628,6 +670,7 @@ export function useChat(): UseChatResult {
     createSession,
     openSession,
     refreshSessions,
+    deleteSession,
     pickDirectoryOrNewSession,
     modelConfig,
     modelOptions,

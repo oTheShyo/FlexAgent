@@ -79,6 +79,43 @@ export function setSessionMetaArchived(sessionId: string, archived: boolean): vo
   writeSessionMeta({ ...current, [sessionId]: { ...previous, archived } })
 }
 
+/** Drops the overlay for one session (used when it is deleted for real). */
+export function clearSessionMeta(sessionId: string): void {
+  const current = readSessionMeta()
+  if (current[sessionId] === undefined) return
+  const next = { ...current }
+  delete next[sessionId]
+  writeSessionMeta(next)
+}
+
+/**
+ * Drops overlay entries whose session no longer exists in `listSessions`.
+ * Without this an overlay outlives its session (deleted on another device, or
+ * through the kernel) and would silently re-title an unrelated id later.
+ */
+export function pruneSessionMeta(sessionIds: readonly string[]): void {
+  const current = readSessionMeta()
+  const live = new Set(sessionIds)
+  let changed = false
+  const next: SessionMetaMap = {}
+  for (const [id, entry] of Object.entries(current)) {
+    if (live.has(id)) next[id] = entry
+    else changed = true
+  }
+  if (changed) writeSessionMeta(next)
+}
+
+export function countArchivedSessions(
+  sessions: readonly Pick<SessionSummary, 'id'>[],
+  meta: SessionMetaMap = readSessionMeta()
+): number {
+  let count = 0
+  for (const session of sessions) {
+    if (meta[session.id]?.archived === true) count += 1
+  }
+  return count
+}
+
 export function displaySessionTitle(
   session: Pick<SessionSummary, 'id' | 'title'>,
   meta: SessionMetaMap = readSessionMeta()

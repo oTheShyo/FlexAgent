@@ -17,7 +17,12 @@ import ErrorBoundary from './components/ErrorBoundary'
 import ConnectionBanner from './components/ConnectionBanner'
 import { ChatSkeleton } from './components/Skeleton'
 import { useChat } from './hooks/useChat'
-import { displaySessionTitle, useSessionMeta } from './lib/sessionMeta'
+import {
+  clearSessionMeta,
+  displaySessionTitle,
+  pruneSessionMeta,
+  useSessionMeta
+} from './lib/sessionMeta'
 import { useShortcuts } from './lib/shortcuts'
 
 export interface AppProps {
@@ -59,6 +64,7 @@ export default function App({ children }: AppProps) {
     createSession,
     openSession,
     refreshSessions,
+    deleteSession,
     pickDirectoryOrNewSession,
     modelConfig,
     modelOptions,
@@ -74,6 +80,14 @@ export default function App({ children }: AppProps) {
   useEffect(() => {
     if (files.length > 0) setShowReview(true)
   }, [files])
+
+  // The rename/archive overlay is keyed by session id, so an entry whose
+  // session is gone (deleted elsewhere, or through the kernel) would silently
+  // re-title an unrelated id. Drop those once the list has settled.
+  useEffect(() => {
+    if (sessionsLoaded !== true) return
+    pruneSessionMeta(sessions.map((session) => session.id))
+  }, [sessions, sessionsLoaded])
 
   const handleSend = useCallback(
     (text: string, mode?: PromptMode): void => {
@@ -105,11 +119,23 @@ export default function App({ children }: AppProps) {
 
   const onRegenerate = canRegenerate ? handleRegenerate : undefined
 
-  const handleNewChat = useCallback((): void => {
-    setShowPlugins(false)
-    closeDetail()
-    void createSession()
-  }, [createSession, closeDetail])
+  const handleNewChat = useCallback(
+    (cwd?: string): void => {
+      setShowPlugins(false)
+      closeDetail()
+      void createSession(cwd)
+    },
+    [createSession, closeDetail]
+  )
+
+  const handleDeleteSession = useCallback(
+    (sessionId: string): void => {
+      // The overlay is local, so it has to be cleared alongside the real delete.
+      clearSessionMeta(sessionId)
+      void deleteSession(sessionId)
+    },
+    [deleteSession]
+  )
 
   const handleChooseProject = useCallback((): void => {
     setShowPlugins(false)
@@ -303,7 +329,8 @@ export default function App({ children }: AppProps) {
       shift: true,
       preventDefault: true,
       allowInEditable: true,
-      handler: handleNewChat
+      // Wrapped: handleNewChat's first parameter is a cwd, not the event.
+      handler: () => handleNewChat()
     },
     {
       id: 'closeTop',
@@ -334,6 +361,8 @@ export default function App({ children }: AppProps) {
           activeSessionId={activeSessionId}
           onNewChat={handleNewChat}
           onSelect={handleSelectSession}
+          onAddProject={handleChooseProject}
+          onDelete={handleDeleteSession}
           loading={sessionsLoaded !== true}
           onOpenPlugins={handleOpenPlugins}
           pluginsActive={showPlugins}

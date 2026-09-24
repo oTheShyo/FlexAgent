@@ -1,5 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
+import type {
+  ClipboardEvent,
+  DragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  ReactNode
+} from 'react'
 import type {
   ModelConfig,
   ModelOption,
@@ -7,7 +12,15 @@ import type {
   SlashCommandSummary,
   ThinkingLevel
 } from '../types'
+import { pathBasename } from '../lib/paths'
 import { filterComposerFiles } from './composerFiles'
+import {
+  composePrompt,
+  describeRejections,
+  formatBytes,
+  stageAttachments
+} from './composerAttachments'
+import type { StagedAttachment } from './composerAttachments'
 import { Button, Chip, MenuItem, MenuPanel } from './ui'
 import {
   CheckIcon,
@@ -43,11 +56,6 @@ function matchMentionQuery(value: string, caret: number): string | null {
 function matchSlashQuery(value: string, caret: number): string | null {
   const match = value.slice(0, caret).match(SLASH_AT_START)
   return match === null ? null : match[1]
-}
-
-function pathBasename(cwd: string): string {
-  const parts = cwd.split(/[\\/]+/).filter((part) => part.length > 0)
-  return parts.length > 0 ? parts[parts.length - 1] : cwd
 }
 
 interface CompletionItem {
@@ -124,6 +132,60 @@ function CompletionPopup({
   )
 }
 
+interface AttachmentTrayProps {
+  attachments: readonly StagedAttachment[]
+  notice: string | null
+  busy: boolean
+  onRemove: (id: string) => void
+}
+
+function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayProps) {
+  if (attachments.length === 0 && notice === null && !busy) return null
+  return (
+    <div
+      className="border-b border-[var(--border)] px-3 py-2"
+      data-testid="composer-attachments"
+    >
+      {attachments.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {attachments.map((attachment) => (
+            <li key={attachment.id}>
+              <span
+                title={`${attachment.name} · ${formatBytes(attachment.size)} · contents are inlined into the message`}
+                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] py-1 pl-2 pr-1 text-[11px] text-[var(--text-secondary)]"
+              >
+                <FileIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
+                <span className="max-w-[180px] truncate font-mono">{attachment.name}</span>
+                <span className="shrink-0 text-[var(--text-subtle)]">
+                  {formatBytes(attachment.size)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRemove(attachment.id)}
+                  aria-label={`Remove ${attachment.name}`}
+                  className="shrink-0 rounded px-1 text-[var(--text-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  ✕
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {busy && <p className="mt-1 text-[11px] text-[var(--text-muted)]">Reading files…</p>}
+      {notice !== null && (
+        <p
+          role="status"
+          data-testid="composer-attachment-notice"
+          className="mt-1 text-[11px] leading-4 text-[var(--warning-text)]"
+        >
+          {notice}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function Composer({
   onSend,
   disabled = false,
@@ -144,14 +206,20 @@ function Composer({
   const [slashIndex, setSlashIndex] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const [openMenu, setOpenMenu] = useState<'model' | null>(null)
+  const [attachments, setAttachments] = useState<StagedAttachment[]>([])
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null)
+  const [stagingAttachments, setStagingAttachments] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const mentionQueryRef = useRef<string | null>(null)
   const slashQueryRef = useRef<string | null>(null)
   const pendingCaretRef = useRef<number | null>(null)
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
+  const attachmentsRef = useRef<StagedAttachment[]>([])
+  attachmentsRef.current = attachments
 
-  const canSend = !disabled && text.trim().length > 0
+  const canSend =
+    !disabled && (text.trim().length > 0 || attachments.length > 0)
   const slashOpen = slashQuery !== null
   const mentionOpen = !slashOpen && mentionQuery !== null
 
@@ -349,9 +417,11 @@ function Composer({
   const submit = (): void => {
     if (!canSend) return
     const mode: PromptMode | undefined = running && queueNext ? 'followUp' : undefined
-    onSend(text.trim(), mode)
+    onSend(composePrompt(text.trim(), attachments), mode)
     setText('')
     setQueueNext(false)
+    setAttachments([])
+    setAttachmentNotice(null)
     closeCompletion()
   }
 
@@ -430,6 +500,26 @@ function Composer({
     [syncCompletion]
   )
 
+  const stageFiles = useCallback(
+    async (incoming: readonly File[]): Promise<void> => {
+      if (incoming.length === 0) return
+      setStagingAttachments(true)
+      try {
+        const { accepted, rejected } = await stageAttachments(incoming, attachmentsRef.current)
+        if (accepted.length > 0) setAttachments((prev) => [...prev, ...accepted])
+        setAttachmentNotice(describeRejections(rejected))
+      } finally {
+        setStagingAttachments(false)
+      }
+    },
+    []
+  )
+
+  const removeAttachment = useCallback((id: string): void => {
+    setAttachments((prev) => prev.filter((entry) => entry.id !== id))
+    setAttachmentNotice(null)
+  }, [])
+
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     setDragOver(true)
@@ -445,22 +535,23 @@ function Composer({
     (event: DragEvent<HTMLDivElement>): void => {
       event.preventDefault()
       setDragOver(false)
-      try {
-        const files = Array.from(event.dataTransfer?.files ?? [])
-        if (files.length === 0) return
-        const el = textareaRef.current
-        if (el === null) return
-        const caret = el.selectionStart ?? el.value.length
-        const prefix = el.value.length > 0 && caret > 0 && !/\s$/.test(el.value.slice(0, caret)) ? ' ' : ''
-        const snippet = files.map((file) => `@${file.name} `).join('')
-        setText(`${el.value.slice(0, caret)}${prefix}${snippet}${el.value.slice(caret)}`)
-        pendingCaretRef.current = caret + prefix.length + snippet.length
-        closeCompletion()
-      } catch {
-        setDragOver(false)
-      }
+      if (disabled) return
+      void stageFiles(Array.from(event.dataTransfer?.files ?? []))
     },
-    [closeCompletion]
+    [disabled, stageFiles]
+  )
+
+  const handlePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+      if (disabled) return
+      const files = Array.from(event.clipboardData?.files ?? [])
+      if (files.length === 0) return
+      // A copied image arrives as a file that cannot be inlined; let the tray
+      // say so instead of letting the paste do nothing at all.
+      event.preventDefault()
+      void stageFiles(files)
+    },
+    [disabled, stageFiles]
   )
 
   const projectLabel =
@@ -521,6 +612,7 @@ function Composer({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
+          data-testid="composer-drop"
           className={dragOver ? 'rounded-xl' : undefined}
         >
           <button
@@ -535,6 +627,13 @@ function Composer({
             <ChevronDownIcon className="h-3 w-3" />
           </button>
 
+          <AttachmentTray
+            attachments={attachments}
+            notice={attachmentNotice}
+            busy={stagingAttachments}
+            onRemove={removeAttachment}
+          />
+
           <textarea
             ref={textareaRef}
             rows={2}
@@ -543,6 +642,7 @@ function Composer({
             onKeyUp={handleKeyUp}
             onClick={syncCompletion}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={dragOver ? 'Drop files to attach' : running ? 'Steer the running turn…' : 'Do anything'}
             disabled={disabled}
             autoFocus

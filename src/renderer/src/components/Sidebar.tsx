@@ -1,29 +1,37 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSummary } from '../types'
 import {
+  countArchivedSessions,
   displaySessionTitle,
   setSessionMetaArchived,
   setSessionMetaTitle,
   useSessionMeta
 } from '../lib/sessionMeta'
 import { formatWhen } from '../lib/formatWhen'
+import { pathBasename, pathKey } from '../lib/paths'
 import { SessionListSkeleton } from './Skeleton'
 import { IconButton, MenuPanel, MenuItem } from './ui'
 import {
   ChatDotIcon,
+  FolderIcon,
   MoreIcon,
   NewChatIcon,
   PluginsIcon,
   ScheduledIcon,
   SearchIcon,
-  SettingsIcon
+  SettingsIcon,
+  TrashIcon
 } from './icons'
 
 export interface SidebarProps {
   sessions: SessionSummary[]
   activeSessionId: string | null
-  onNewChat: () => void
+  /** `cwd` opens a chat in that directory; omitted falls back to the picker. */
+  onNewChat: (cwd?: string) => void
   onSelect: (sessionId: string) => void
+  /** Picks a directory and opens a chat in it (Projects "+" affordance). */
+  onAddProject?: () => void
+  onDelete?: (sessionId: string) => void
   loading?: boolean
   onOpenPlugins?: () => void
   pluginsActive?: boolean
@@ -76,6 +84,15 @@ interface SessionRowData {
   archived: boolean
 }
 
+interface ProjectRowData {
+  /** Normalised comparison key; the filter holds this, not the raw path. */
+  key: string
+  /** Representative absolute path (first spelling seen for this directory). */
+  cwd: string
+  label: string
+  chats: number
+}
+
 function matchesQuery(title: string, query: string): boolean {
   if (query.length === 0) return true
   return title.toLowerCase().includes(query)
@@ -86,6 +103,8 @@ function Sidebar({
   activeSessionId,
   onNewChat,
   onSelect,
+  onAddProject,
+  onDelete,
   loading = false,
   onOpenPlugins,
   pluginsActive = false,
@@ -95,8 +114,11 @@ function Sidebar({
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [menuId, setMenuId] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [projectsOpen, setProjectsOpen] = useState(true)
   const renameCancelledRef = useRef(false)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -144,9 +166,34 @@ function Sidebar({
     setMenuId(null)
   }, [])
 
+  const requestDelete = useCallback((sessionId: string): void => {
+    setConfirmDeleteId(sessionId)
+  }, [])
+
+  const cancelDelete = useCallback((): void => {
+    setConfirmDeleteId(null)
+  }, [])
+
+  const confirmDelete = useCallback(
+    (sessionId: string): void => {
+      setConfirmDeleteId(null)
+      setMenuId(null)
+      onDelete?.(sessionId)
+    },
+    [onDelete]
+  )
+
   const openMenu = useCallback((sessionId: string): void => {
     setMenuId((current) => (current === sessionId ? null : sessionId))
   }, [])
+
+  const toggleProject = useCallback((key: string): void => {
+    setProjectFilter((current) => (current === key ? null : key))
+  }, [])
+
+  useEffect(() => {
+    if (menuId === null) setConfirmDeleteId(null)
+  }, [menuId])
 
   useEffect(() => {
     if (menuId === null) return
@@ -182,7 +229,7 @@ function Sidebar({
       document.removeEventListener('mousedown', handleMouseDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [menuId])
+  }, [menuId, confirmDeleteId])
 
   useEffect(() => {
     if (renamingId === null) return
@@ -192,6 +239,41 @@ function Sidebar({
 
   const normalizedQuery = query.trim().toLowerCase()
 
+  const projects = useMemo<ProjectRowData[]>(() => {
+    const byKey = new Map<string, ProjectRowData>()
+    for (const session of sessions) {
+      if (session.cwd.length === 0) continue
+      const key = pathKey(session.cwd)
+      const existing = byKey.get(key)
+      if (existing === undefined) {
+        byKey.set(key, {
+          key,
+          cwd: session.cwd,
+          label: pathBasename(session.cwd),
+          chats: 1
+        })
+      } else {
+        existing.chats += 1
+      }
+    }
+    return [...byKey.values()].sort(
+      (a, b) => b.chats - a.chats || a.label.localeCompare(b.label)
+    )
+  }, [sessions])
+
+  const archivedCount = useMemo(() => countArchivedSessions(sessions, meta), [sessions, meta])
+
+  const activeProject = useMemo<ProjectRowData | null>(
+    () => projects.find((project) => project.key === projectFilter) ?? null,
+    [projects, projectFilter]
+  )
+
+  // A project can disappear when its last chat is deleted; drop the stale filter.
+  useEffect(() => {
+    if (projectFilter === null) return
+    if (!projects.some((project) => project.key === projectFilter)) setProjectFilter(null)
+  }, [projects, projectFilter])
+
   const visibleSessions = useMemo<SessionRowData[]>(() => {
     const rows: SessionRowData[] = []
     for (const session of sessions) {
@@ -200,11 +282,13 @@ function Sidebar({
       // Pin the active row so archiving the open session never hides it (no createSession side effect).
       const inView = showArchived ? archived : !archived || session.id === activeSessionId
       if (!inView) continue
+      // The archived bucket is its own place, so a project filter only narrows the chats view.
+      if (!showArchived && projectFilter !== null && pathKey(session.cwd) !== projectFilter) continue
       if (!matchesQuery(title, normalizedQuery)) continue
       rows.push({ session, title, archived })
     }
     return rows
-  }, [sessions, meta, normalizedQuery, showArchived, activeSessionId])
+  }, [sessions, meta, normalizedQuery, showArchived, projectFilter, activeSessionId])
 
   const emptyMessage =
     sessions.length === 0
@@ -213,9 +297,18 @@ function Sidebar({
         ? null
         : showArchived
           ? 'No archived chats'
-          : 'No matching chats'
+          : normalizedQuery.length > 0
+            ? 'No matching chats'
+            : activeProject !== null
+              ? `No chats in ${activeProject.label}`
+              : 'No matching chats'
 
   const archiveToggleLabel = showArchived ? 'Show chats' : 'Archived'
+
+  const listHeading = showArchived ? 'Archived' : (activeProject?.label ?? 'Chats')
+
+  const newChatLabel =
+    activeProject === null ? 'New chat' : `New chat in ${activeProject.label}`
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-sidebar)]">
@@ -225,7 +318,12 @@ function Sidebar({
       </div>
 
       <nav className="space-y-1 px-2 pb-4" aria-label="Primary">
-        <NavRow icon={<NewChatIcon />} label="New chat" primary onClick={onNewChat} />
+        <NavRow
+          icon={<NewChatIcon />}
+          label={newChatLabel}
+          primary
+          onClick={() => onNewChat(activeProject?.cwd)}
+        />
         <NavRow
           icon={<PluginsIcon />}
           label="Plugins"
@@ -235,7 +333,91 @@ function Sidebar({
         <NavRow icon={<ScheduledIcon />} label="Scheduled" disabled title="Coming soon" />
       </nav>
 
-      <div className="mx-4 border-t border-[var(--border)]" />
+      {projects.length > 0 && (
+        <>
+          <div className="mx-4 border-t border-[var(--border)]" />
+          <div className="px-2 pt-3" data-testid="projects">
+            <div className="flex items-center gap-1 px-2 pb-1">
+              <button
+                type="button"
+                onClick={() => setProjectsOpen((value) => !value)}
+                aria-expanded={projectsOpen}
+                aria-controls="sidebar-projects"
+                className="flex min-w-0 flex-1 items-center gap-1 rounded text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                data-testid="projects-toggle"
+              >
+                <svg
+                  className={`h-3 w-3 shrink-0 transition-transform ${projectsOpen ? '' : '-rotate-90'}`}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+                Projects
+                <span className="font-normal">({projects.length})</span>
+              </button>
+              {onAddProject !== undefined && (
+                <IconButton
+                  label="Open a folder as a project"
+                  variant="ghost"
+                  onClick={onAddProject}
+                  data-testid="project-add"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </IconButton>
+              )}
+            </div>
+
+            {projectsOpen && (
+              <ul id="sidebar-projects" className="max-h-44 space-y-0.5 overflow-y-auto">
+                {projects.map((project) => {
+                  const isSelected = project.key === projectFilter
+                  return (
+                    <li key={project.key}>
+                      <button
+                        type="button"
+                        onClick={() => toggleProject(project.key)}
+                        aria-pressed={isSelected}
+                        title={project.cwd}
+                        data-testid="project-row"
+                        className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
+                          isSelected
+                            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
+                        }`}
+                      >
+                        <FolderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]" />
+                        <span className="min-w-0 flex-1 truncate">{project.label}</span>
+                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                          {project.chats}
+                        </span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+
+      <div className="mx-4 mt-3 border-t border-[var(--border)]" />
 
       <div className="px-2 pt-3">
         <div className="relative">
@@ -258,15 +440,29 @@ function Sidebar({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          <span className="text-[11px] font-medium text-[var(--text-muted)]">
-            {showArchived ? 'Archived' : 'Chats'}
+          <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
+            <span className="truncate" data-testid="session-list-heading">
+              {listHeading}
+            </span>
+            {!showArchived && activeProject !== null && (
+              <button
+                type="button"
+                onClick={() => setProjectFilter(null)}
+                aria-label="Clear project filter"
+                title="Clear project filter"
+                data-testid="project-clear"
+                className="shrink-0 rounded px-1 text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              >
+                ✕
+              </button>
+            )}
           </span>
           <button
             type="button"
             aria-pressed={showArchived}
             aria-label={archiveToggleLabel}
             onClick={() => setShowArchived((value) => !value)}
-            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+            className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
               showArchived
                 ? 'border-[var(--border-strong)] bg-[var(--active)] text-[var(--text)]'
                 : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
@@ -274,6 +470,7 @@ function Sidebar({
             data-testid="session-archive-toggle"
           >
             Archived
+            {archivedCount > 0 && <span className="font-normal">· {archivedCount}</span>}
           </button>
         </div>
 
@@ -288,6 +485,7 @@ function Sidebar({
               const running = session.runState === 'running'
               const isRenaming = renamingId === session.id
               const isMenuOpen = menuId === session.id
+              const isConfirmingDelete = confirmDeleteId === session.id
               return (
                 <li key={session.id} className="group relative" data-session-menu-root={session.id}>
                   {isRenaming ? (
@@ -349,14 +547,43 @@ function Sidebar({
                   {isMenuOpen && (
                     <MenuPanel
                       aria-label={`Actions for ${title}`}
-                      className="right-1 top-full mt-0.5 w-36"
+                      className="right-1 top-full mt-0.5 w-44"
                     >
-                      <MenuItem onClick={() => startRename(session.id, title)}>
-                        Rename
-                      </MenuItem>
-                      <MenuItem onClick={() => toggleArchive(session.id, archived)}>
-                        {archived ? 'Unarchive' : 'Archive'}
-                      </MenuItem>
+                      {isConfirmingDelete ? (
+                        <>
+                          <p className="px-2.5 py-1.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                            Delete this chat? The transcript is removed for good.
+                          </p>
+                          <MenuItem onClick={cancelDelete} data-testid="session-delete-cancel">
+                            Cancel
+                          </MenuItem>
+                          <MenuItem
+                            onClick={() => confirmDelete(session.id)}
+                            className="gap-1.5 !text-[var(--danger-text)] hover:!bg-[var(--danger-bg)]"
+                            data-testid="session-delete-confirm"
+                          >
+                            <TrashIcon className="h-3.5 w-3.5" />
+                            Delete
+                          </MenuItem>
+                        </>
+                      ) : (
+                        <>
+                          <MenuItem onClick={() => startRename(session.id, title)}>
+                            Rename
+                          </MenuItem>
+                          <MenuItem onClick={() => toggleArchive(session.id, archived)}>
+                            {archived ? 'Unarchive' : 'Archive'}
+                          </MenuItem>
+                          {onDelete !== undefined && (
+                            <MenuItem
+                              onClick={() => requestDelete(session.id)}
+                              data-testid="session-delete"
+                            >
+                              Delete…
+                            </MenuItem>
+                          )}
+                        </>
+                      )}
                     </MenuPanel>
                   )}
                 </li>

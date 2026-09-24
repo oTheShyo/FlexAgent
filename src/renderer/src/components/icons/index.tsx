@@ -194,6 +194,18 @@ export function ShieldIcon({ className }: IconProps) {
   )
 }
 
+export function TrashIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M4 7h16" />
+      <path d="M10 4h4" />
+      <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  )
+}
+
 export function SettingsIcon({ className }: IconProps) {
   return (
     <svg {...baseProps(className)}>
