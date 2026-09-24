@@ -1,10 +1,11 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { ContractError } from '../shared/contract'
 import type { PluginId, PluginSourceKind } from '../shared/contract'
 import type { PluginResourceSpec } from '../shared/kernel-protocol'
 import { enumerateComponents, findManifestPath, parseManifest } from './pluginManifest'
+import { resolveUserConfigValues } from './userConfig'
 
 export interface PluginRecord {
   id: PluginId
@@ -40,30 +41,75 @@ export function pluginsStorageRoot(): string {
   return pluginsDir()
 }
 
+function backupPath(file: string): string {
+  let candidate = `${file}.corrupt`
+  let n = 1
+  while (existsSync(candidate)) {
+    candidate = `${file}.corrupt.${n++}`
+  }
+  return candidate
+}
+
+function preserveCorrupt(file: string, reason: unknown): void {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  try {
+    const backup = backupPath(file)
+    renameSync(file, backup)
+    console.error(
+      `[pluginRegistry] installed.json unreadable (${message}); preserved original bytes at ${backup}`
+    )
+  } catch (err) {
+    const backupError = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `[pluginRegistry] installed.json unreadable (${message}); original file could NOT be backed up (${backupError}) — it may be overwritten by the next persist()`
+    )
+  }
+}
+
 export class PluginRegistry {
   private records = new Map<PluginId, PluginRecord>()
 
   load(): void {
     const file = registryPath()
     if (!existsSync(file)) return
+    let raw: string
     try {
-      const raw = readFileSync(file, 'utf8')
-      const parsed = JSON.parse(raw) as PersistShape
-      if (parsed?.version !== 1 || !Array.isArray(parsed.plugins)) return
-      for (const rec of parsed.plugins) {
-        if (rec && typeof rec.id === 'string' && typeof rec.rootPath === 'string' && typeof rec.name === 'string') {
-          this.records.set(rec.id, {
-            ...rec,
-            version: typeof rec.version === 'string' ? rec.version : '0.0.0',
-            enabled: rec.enabled === true,
-            sourceKind: rec.sourceKind ?? 'local',
-            sourceLabel: rec.sourceLabel ?? 'Local',
-            installedAt: Number(rec.installedAt) || Date.now()
-          })
-        }
-      }
-    } catch {
+      raw = readFileSync(file, 'utf8')
+    } catch (err) {
       this.records.clear()
+      preserveCorrupt(file, err)
+      return
+    }
+    let parsed: PersistShape
+    try {
+      parsed = JSON.parse(raw) as PersistShape
+    } catch (err) {
+      this.records.clear()
+      preserveCorrupt(file, err)
+      return
+    }
+    if (parsed?.version !== 1 || !Array.isArray(parsed.plugins)) {
+      this.records.clear()
+      preserveCorrupt(file, new Error('unexpected plugins registry shape'))
+      return
+    }
+    let skipped = 0
+    for (const rec of parsed.plugins) {
+      if (rec && typeof rec.id === 'string' && typeof rec.rootPath === 'string' && typeof rec.name === 'string') {
+        this.records.set(rec.id, {
+          ...rec,
+          version: typeof rec.version === 'string' ? rec.version : '0.0.0',
+          enabled: rec.enabled === true,
+          sourceKind: rec.sourceKind ?? 'local',
+          sourceLabel: rec.sourceLabel ?? 'Local',
+          installedAt: Number(rec.installedAt) || Date.now()
+        })
+      } else {
+        skipped++
+      }
+    }
+    if (skipped > 0) {
+      preserveCorrupt(file, new Error(`${skipped} malformed record(s) skipped, good records kept`))
     }
   }
 
@@ -118,6 +164,10 @@ export class PluginRegistry {
     const spec: PluginResourceSpec = {
       extensionPaths: [],
       skillRoots: [],
+      commands: [],
+      hooks: [],
+      hookContexts: {},
+      mcp: [],
       pluginStorageRoot: pluginsStorageRoot()
     }
     for (const rec of this.list()) {
@@ -125,15 +175,31 @@ export class PluginRegistry {
       try {
         const manifestPath = findManifestPath(rec.rootPath)
         if (!manifestPath) continue
-        const enumeration = enumerateComponents(rec.rootPath, parseManifest(manifestPath))
+        const manifest = parseManifest(manifestPath)
+        const enumeration = enumerateComponents(rec.rootPath, manifest)
         spec.extensionPaths.push(...enumeration.extensionPaths)
         spec.skillRoots.push(...enumeration.skillRoots)
+        spec.commands.push(...enumeration.commandDirs)
+        spec.hooks.push(...enumeration.hookPaths)
+        for (const hookPath of enumeration.hookPaths) {
+          spec.hookContexts[hookPath] = {
+            pluginRoot: rec.rootPath,
+            pluginId: rec.id,
+            pluginName: rec.name,
+            userConfig: resolveUserConfigValues(manifest.userConfig, rec.configuredOptions),
+            sensitiveKeys: Object.entries(manifest.userConfig ?? {})
+              .filter(([, entry]) => entry.sensitive === true)
+              .map(([key]) => key)
+          }
+        }
       } catch {
         continue
       }
     }
     spec.extensionPaths = [...new Set(spec.extensionPaths)].sort()
     spec.skillRoots = [...new Set(spec.skillRoots)].sort()
+    spec.commands = [...new Set(spec.commands)].sort()
+    spec.hooks = [...new Set(spec.hooks)].sort()
     return spec
   }
 }

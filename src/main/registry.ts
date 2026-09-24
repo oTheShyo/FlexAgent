@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { RunState, SessionId, SessionSummary } from '../shared/contract'
 import { ContractError } from '../shared/contract'
@@ -33,28 +33,73 @@ function defaultTitle(cwd: string, title?: string): string {
   return base.slice(0, MAX_TITLE) || 'Session'
 }
 
+function backupPath(file: string): string {
+  let candidate = `${file}.corrupt`
+  let n = 1
+  while (existsSync(candidate)) {
+    candidate = `${file}.corrupt.${n++}`
+  }
+  return candidate
+}
+
+function preserveCorrupt(file: string, reason: unknown): void {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  try {
+    const backup = backupPath(file)
+    renameSync(file, backup)
+    console.error(
+      `[registry] sessions.json unreadable (${message}); preserved original bytes at ${backup}`
+    )
+  } catch (err) {
+    const backupError = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `[registry] sessions.json unreadable (${message}); original file could NOT be backed up (${backupError}) — it may be overwritten by the next persist()`
+    )
+  }
+}
+
 export class SessionRegistry {
   private records = new Map<SessionId, RegistryRecord>()
 
   load(): void {
     const file = registryPath()
     if (!existsSync(file)) return
+    let raw: string
     try {
-      const raw = readFileSync(file, 'utf8')
-      const parsed = JSON.parse(raw) as PersistShape
-      if (parsed?.version !== 1 || !Array.isArray(parsed.sessions)) return
-      for (const rec of parsed.sessions) {
-        if (rec && typeof rec.id === 'string' && typeof rec.cwd === 'string') {
-          this.records.set(rec.id, {
-            ...rec,
-            runState: 'idle',
-            updatedAt: Number(rec.updatedAt) || Number(rec.createdAt) || Date.now(),
-            createdAt: Number(rec.createdAt) || Date.now()
-          })
-        }
-      }
-    } catch {
+      raw = readFileSync(file, 'utf8')
+    } catch (err) {
       this.records.clear()
+      preserveCorrupt(file, err)
+      return
+    }
+    let parsed: PersistShape
+    try {
+      parsed = JSON.parse(raw) as PersistShape
+    } catch (err) {
+      this.records.clear()
+      preserveCorrupt(file, err)
+      return
+    }
+    if (parsed?.version !== 1 || !Array.isArray(parsed.sessions)) {
+      this.records.clear()
+      preserveCorrupt(file, new Error('unexpected sessions registry shape'))
+      return
+    }
+    let skipped = 0
+    for (const rec of parsed.sessions) {
+      if (rec && typeof rec.id === 'string' && typeof rec.cwd === 'string') {
+        this.records.set(rec.id, {
+          ...rec,
+          runState: 'idle',
+          updatedAt: Number(rec.updatedAt) || Number(rec.createdAt) || Date.now(),
+          createdAt: Number(rec.createdAt) || Date.now()
+        })
+      } else {
+        skipped++
+      }
+    }
+    if (skipped > 0) {
+      preserveCorrupt(file, new Error(`${skipped} malformed record(s) skipped, good records kept`))
     }
   }
 

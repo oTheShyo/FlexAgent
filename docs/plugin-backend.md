@@ -1,6 +1,7 @@
 # 插件系统 · 后端实现计划（内核轨）
 
 **上游设计：** [`docs/plugin-design.md`](./plugin-design.md)（先读）
+**P2/P3 移植依据：** [`docs/plugin-porting.md`](./plugin-porting.md)（zcode 选择性移植矩阵）
 **前端分工：** [`docs/plugin-frontend.md`](./plugin-frontend.md)
 **契约权威：** [`src/shared/contract/index.ts`](../src/shared/contract/index.ts) + [`docs/contract.md`](./contract.md)
 **改动边界：** 仅 `src/main/**`、`src/preload/**`、`src/shared/**`（只增契约）、`docs/**`。**不改** `src/renderer/**`（前端轨负责）。
@@ -104,6 +105,12 @@ export interface InstallPluginInput {
   /** P1 only supports a local directory. P3 will add marketplace variants (discriminated union). */
   source: { kind: 'directory'; path: string }
 }
+
+export interface SlashCommandSummary {
+  name: string
+  description?: string
+  pluginId: PluginId
+}
 ```
 
 **`CodexApi` 追加**（放在 `pickDirectory` 之后）：
@@ -120,6 +127,13 @@ export interface InstallPluginInput {
   installPlugin(input: InstallPluginInput): Promise<PluginSummary>
   /** Remove from registry + delete installed dir (bundled → suppressed marker). */
   uninstallPlugin(id: PluginId): Promise<void>
+  /**
+   * Slash commands from enabled plugins (composer completion source).
+   * Optional so renderer mocks that predate it keep typechecking;
+   * the real preload bridge always provides it.
+   */
+  listSlashCommands?(): Promise<SlashCommandSummary[]>
+}
 ```
 
 **`KernelEvent` 追加**：注意——`pluginsChanged` **不是 session 事件**，但现有投递模型是 session-scoped + `seq`。P1 采用**独立全局通道**，不塞进 `KernelEvent`（避免污染 seq 语义）：
@@ -140,6 +154,7 @@ export interface PluginChangeEvent {
   setPluginEnabled: 'codex:setPluginEnabled',
   installPlugin: 'codex:installPlugin',
   uninstallPlugin: 'codex:uninstallPlugin',
+  listSlashCommands: 'codex:listSlashCommands',
   /** main → renderer push for PluginChangeEvent (global, per webContents). */
   pluginsChanged: 'codex:pluginsChanged'
 ```

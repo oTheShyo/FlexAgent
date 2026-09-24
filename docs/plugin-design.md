@@ -3,6 +3,7 @@
 **读者：** 后端/内核轨 + 前端轨**都先读本文**，再读各自的分工文档：
 - 后端实现计划 → [`docs/plugin-backend.md`](./plugin-backend.md)
 - 前端实现计划 → [`docs/plugin-frontend.md`](./plugin-frontend.md)
+- **zcode 选择性移植矩阵（P2/P3 依据）** → [`docs/plugin-porting.md`](./plugin-porting.md)
 - 契约权威类型 → [`src/shared/contract/index.ts`](../src/shared/contract/index.ts) + [`docs/contract.md`](./contract.md)
 
 **一句话：** FlexAgent 插件 = **zcode 风格的声明式打包格式**（manifest + 目录布局）＋ **PI 稳定扩展机制作为唯一执行运行时**（`DefaultResourceLoader` → `createAgentSession`）。

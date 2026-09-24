@@ -19,12 +19,34 @@ export type WorkerKernelEvent = StripSeq<KernelEvent>
 /** Distributive strip of `requestId` — plain Omit collapses the request union. */
 export type StripRequestId<R> = R extends { requestId: string } ? Omit<R, 'requestId'> : R
 
+/** Per-source runtime context for P2c hooks (env identity + userConfig interpolation values). */
+export interface PluginHookContext {
+  /** Absolute plugin root path (ZCODE_/FLEX_/CLAUDE_ PLUGIN_ROOT env + ${...} template). */
+  pluginRoot: string
+  /** Installed plugin id (ZCODE_/FLEX_ PLUGIN_ID env). */
+  pluginId: string
+  /** Plugin name (ZCODE_/FLEX_ PLUGIN_NAME env). */
+  pluginName: string
+  /** Resolved userConfig values (manifest defaults merged with configured options) for ${user_config.*}. */
+  userConfig: Record<string, string | number | boolean>
+  /** userConfig keys marked sensitive — rejected inside hook command templates. */
+  sensitiveKeys: string[]
+}
+
 /** Resource spec for enabled plugins — consumed when the worker builds its resource loader. */
 export interface PluginResourceSpec {
   /** Absolute paths to extension files/dirs (PI additionalExtensionPaths). */
   extensionPaths: string[]
   /** Absolute skill root dirs of enabled plugins (PI skills discovery). */
   skillRoots: string[]
+  /** Absolute command dirs of enabled plugins (bridge registers *.md as PI slash commands). */
+  commands: string[]
+  /** Absolute hooks/hooks.json paths of enabled plugins (P2c — bridge runs them on kernel events). */
+  hooks: string[]
+  /** Per hooks-file context keyed by the absolute hooks path (P2c env + interpolation values). */
+  hookContexts: Record<string, PluginHookContext>
+  /** Absolute MCP config paths of enabled plugins (P2.5 placeholder — empty for now). */
+  mcp: string[]
   /** Plugin storage root (worker cwd varies per session). */
   pluginStorageRoot: string
 }

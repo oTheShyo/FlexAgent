@@ -16,6 +16,10 @@ import {
 } from '../shared/contract'
 import type { WorkerKernelEvent, WorkerRequest, WorkerResponse, PluginResourceSpec } from '../shared/kernel-protocol'
 import type { AgentSession, SessionManager as SessionManagerType } from '@earendil-works/pi-coding-agent'
+import { createPluginBridgeFactory, type PluginHookDeps } from './pluginBridge'
+import { parseHooksContent } from './hookSources'
+import { interpolateHookTemplate } from './userConfig'
+import { runHook, type HookRunOptions, type HookRunResult } from './hooks/hookRunner'
 
 /**
  * PI package is ESM-only (`exports.import` only). electron-vite emits this
@@ -33,7 +37,36 @@ function loadPi(): Promise<PiModule> {
 let pluginResourceSpec: PluginResourceSpec = {
   extensionPaths: [],
   skillRoots: [],
+  commands: [],
+  hooks: [],
+  hookContexts: {},
+  mcp: [],
   pluginStorageRoot: ''
+}
+
+const inflightHookRuns = new Set<Promise<unknown>>()
+
+function trackedRunHook(options: HookRunOptions): Promise<HookRunResult> {
+  const tracked = runHook(options).finally(() => {
+    inflightHookRuns.delete(tracked)
+  })
+  inflightHookRuns.add(tracked)
+  return tracked
+}
+
+const hookDeps: PluginHookDeps = {
+  parseHooksContent,
+  interpolate: interpolateHookTemplate,
+  runHook: trackedRunHook
+}
+
+async function settleHookRuns(): Promise<void> {
+  await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50))
+  if (inflightHookRuns.size === 0) return
+  await Promise.race([
+    Promise.allSettled([...inflightHookRuns]),
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, 2000))
+  ])
 }
 
 const port = parentPort
@@ -430,16 +463,22 @@ async function attachSession(
     cwd,
     agentDir: getAgentDir(),
     additionalExtensionPaths: pluginResourceSpec.extensionPaths,
-    additionalSkillPaths: pluginResourceSpec.skillRoots
+    additionalSkillPaths: pluginResourceSpec.skillRoots,
+    extensionFactories: [createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps)]
   })
   await resourceLoader.reload()
   const { session } = await createAgentSession({ cwd, sessionManager, resourceLoader })
+  await session.bindExtensions({ mode: 'print' })
   const host: HostSession = {
     session,
     sessionId,
     cwd,
     unsubscribe: () => {},
-    runState: session.isStreaming ? 'running' : 'idle',
+    // Run-state authority (contract §3.2): only agent_start/agent_settled (plus
+    // prompt-accept/abort below) may set runState and fan out run_state events.
+    // Never seed from session.isStreaming — kernel run_state is the sole
+    // runtime-state authority; PI transport state must not feed registry/fanOut/run_state.
+    runState: 'idle',
     allowSessionNames: new Set(),
     allowOnceIds: new Set(),
     pending: new Map(),
@@ -451,7 +490,6 @@ async function attachSession(
   })
   setupPermissionGate(host)
   sessions.set(sessionId, host)
-  if (host.runState === 'running') setRunState(host, 'running')
   return host
 }
 
@@ -488,11 +526,21 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     case 'prompt': {
       const host = requireSession(req.sessionId)
       const text = req.text
-      const streaming = host.session.isStreaming
+      // Disposition authority (contract §2.1): the table keys on runState, and
+      // host.runState is the origin of the run_state fanOut (setRunState →
+      // kernel.runStates → registry projection → UI). Consume it directly;
+      // never re-derive disposition from session.isStreaming (PI transport
+      // state can diverge under steer/queue races).
       let disposition: PromptDisposition
-      if (!streaming) disposition = 'started'
+      if (host.runState === 'idle') disposition = 'started'
       else if (req.disposition === 'queued') disposition = 'queued'
       else disposition = 'steering'
+
+      // Deliberately distinct concept: PI transport-level admission control.
+      // Kernel run_state is the UI/host authority; this PI check only decides
+      // prompt() options (PI throws if streaming without streamingBehavior,
+      // §2.1) and must never feed registry, fanOut, or run_state emission.
+      const piStreamActive = host.session.isStreaming
 
       // Contract §3.1.1: resolve when accepted (preflightResult), not when the run ends.
       // PI prompt() awaits the full run after preflight(true) on the started path.
@@ -506,9 +554,12 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
           if (success) resolve()
           else reject(new ContractError('INVALID_INPUT', 'Prompt rejected before run start'))
         }
-        const opts = streaming
+        // Transport semantics unchanged: while PI streams, followUp-vs-steer is
+        // the host-declared mode (req.disposition), independent of disposition.
+        const opts = piStreamActive
           ? {
-              streamingBehavior: disposition === 'queued' ? ('followUp' as const) : ('steer' as const),
+              streamingBehavior:
+                req.disposition === 'queued' ? ('followUp' as const) : ('steer' as const),
               preflightResult
             }
           : { preflightResult }
@@ -618,6 +669,7 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
         }
         sessions.delete(id)
       }
+      await settleHookRuns()
       setTimeout(() => process.exit(0), 10)
       return undefined
     }

@@ -1,11 +1,13 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
-import { extname, join, relative } from 'path'
+import { dirname, extname, join, relative } from 'path'
 import { ContractError } from '../shared/contract'
 import type {
   PluginComponentInfo,
   PluginDiagnostic,
   PluginUserConfigSpec
 } from '../shared/contract'
+import { isMappedHookEvent, parseCommandMarkdown } from './pluginBridge'
+import { discoverHookSources, parseHooksContent } from './hookSources'
 
 export type FlexComponentDecl = string | string[] | Record<string, unknown>
 
@@ -46,6 +48,8 @@ export interface ComponentEnumeration {
   components: PluginComponentInfo[]
   extensionPaths: string[]
   skillRoots: string[]
+  commandDirs: string[]
+  hookPaths: string[]
   diagnostics: PluginDiagnostic[]
 }
 
@@ -53,6 +57,8 @@ export const MANIFEST_CANDIDATES = [
   '.flex-plugin/plugin.json',
   '.zcode-plugin/plugin.json',
   '.claude-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
+  '.cursor-plugin/plugin.json',
   'plugin.json'
 ] as const
 
@@ -374,7 +380,7 @@ function collectSkills(rootPath: string, decl: FlexComponentDecl | undefined, re
 
 function collectP2Component(
   rootPath: string,
-  kind: 'command' | 'hook' | 'mcp',
+  kind: 'command' | 'mcp',
   label: string,
   decl: FlexComponentDecl | undefined,
   fallbackPath: string,
@@ -395,20 +401,33 @@ function collectP2Component(
   for (const entry of entries) {
     if (!existsSync(entry)) continue
     if (statSync(entry).isDirectory()) {
+      if (kind === 'command') result.commandDirs.push(entry)
       const files = listDir(entry).files
         .filter((file) => kind === 'command' && extname(file) === '.md')
         .map((file) => join(entry, file))
         .sort()
       for (const file of files) {
         found += 1
+        const stem = file.slice(0, -extname(file).length).split(/[\\/]/).pop() ?? label
+        let name = stem
+        let description: string | undefined
+        try {
+          const parsed = parseCommandMarkdown(readFileSync(file, 'utf8'))
+          name = parsed.frontmatter.name?.trim() || stem
+          description = parsed.frontmatter.description
+        } catch {
+          name = stem
+        }
         result.components.push({
           kind,
-          name: file.split(/[\\/]/).pop() ?? label,
+          name,
+          ...(description !== undefined ? { description } : {}),
           path: toRelPosix(rootPath, file)
         })
       }
     } else {
       found += 1
+      if (kind === 'command') result.commandDirs.push(dirname(entry))
       result.components.push({
         kind,
         name: entry.split(/[\\/]/).pop() ?? label,
@@ -416,11 +435,61 @@ function collectP2Component(
       })
     }
   }
-  if (found > 0) {
+  if (found > 0 && kind !== 'command') {
     result.diagnostics.push({
       code: 'plugin_unsupported_component',
       severity: 'warning',
       message: `${label} components are registered but not loaded in P1 (P2 roadmap).`
+    })
+  }
+}
+
+function collectHookComponents(
+  rootPath: string,
+  manifestPath: string | null,
+  decl: FlexComponentDecl | undefined,
+  result: ComponentEnumeration
+): void {
+  const discovery = discoverHookSources({
+    rootPath,
+    ...(manifestPath !== null ? { manifestPath } : {}),
+    manifestHooks: decl
+  })
+  for (const diag of discovery.diagnostics) {
+    result.diagnostics.push({ ...diag })
+  }
+  const unsupportedEvents = new Set<string>()
+  const seenEvents = new Set<string>()
+  for (const source of discovery.sources) {
+    const parsed = parseHooksContent(source.content, source.path)
+    for (const diag of parsed.diagnostics) {
+      result.diagnostics.push({ ...diag })
+    }
+    if (parsed.diagnostics.some((diag) => diag.code === 'plugin_hook_read_failed')) {
+      continue
+    }
+    result.hookPaths.push(source.path)
+    for (const entry of parsed.entries) {
+      if (!isMappedHookEvent(entry.event)) {
+        unsupportedEvents.add(entry.event)
+        continue
+      }
+      if (seenEvents.has(entry.event)) continue
+      seenEvents.add(entry.event)
+      result.components.push({
+        kind: 'hook',
+        name: entry.event,
+        path: toRelPosix(rootPath, source.path)
+      })
+    }
+  }
+  if (unsupportedEvents.size > 0) {
+    result.diagnostics.push({
+      code: 'plugin_unsupported_hook',
+      severity: 'warning',
+      message: `Hook event(s) not executable by this kernel: ${[...unsupportedEvents]
+        .sort()
+        .join(', ')}`
     })
   }
 }
@@ -430,6 +499,8 @@ export function enumerateComponents(rootPath: string, manifest: FlexPluginManife
     components: [],
     extensionPaths: [],
     skillRoots: [],
+    commandDirs: [],
+    hookPaths: [],
     diagnostics: []
   }
 
@@ -448,11 +519,13 @@ export function enumerateComponents(rootPath: string, manifest: FlexPluginManife
   collectSkills(rootPath, manifest.skills, result)
 
   collectP2Component(rootPath, 'command', 'Command', manifest.commands, 'commands', result)
-  collectP2Component(rootPath, 'hook', 'Hook', manifest.hooks, 'hooks/hooks.json', result)
+  collectHookComponents(rootPath, findManifestPath(rootPath), manifest.hooks, result)
   collectP2Component(rootPath, 'mcp', 'MCP', manifest.mcpServers, '.mcp.json', result)
 
   result.extensionPaths = [...new Set(result.extensionPaths)].sort()
   result.skillRoots = [...new Set(result.skillRoots)].sort()
+  result.commandDirs = [...new Set(result.commandDirs)].sort()
+  result.hookPaths = [...new Set(result.hookPaths)].sort()
 
   for (const path of result.extensionPaths) {
     result.components.push({
