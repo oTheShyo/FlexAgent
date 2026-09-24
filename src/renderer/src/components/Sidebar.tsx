@@ -15,12 +15,14 @@ import { IconButton, MenuPanel, MenuItem } from './ui'
 import {
   ChatDotIcon,
   FolderIcon,
+  MemoryIcon,
   MoreIcon,
   NewChatIcon,
   PluginsIcon,
   ScheduledIcon,
   SearchIcon,
   SettingsIcon,
+  SkillsIcon,
   TrashIcon
 } from './icons'
 
@@ -43,6 +45,8 @@ export interface SidebarProps {
   pluginsActive?: boolean
   onOpenSkills?: () => void
   skillsActive?: boolean
+  onOpenMemory?: () => void
+  memoryActive?: boolean
   onOpenSettings?: () => void
 }
 
@@ -119,6 +123,8 @@ function Sidebar({
   pluginsActive = false,
   onOpenSkills,
   skillsActive = false,
+  onOpenMemory,
+  memoryActive = false,
   onOpenSettings
 }: SidebarProps) {
   const meta = useSessionMeta()
@@ -371,10 +377,16 @@ function Sidebar({
           onClick={onOpenPlugins}
         />
         <NavRow
-          icon={<ScheduledIcon />}
+          icon={<SkillsIcon />}
           label="Skills"
           active={skillsActive}
           onClick={onOpenSkills}
+        />
+        <NavRow
+          icon={<MemoryIcon />}
+          label="Memory"
+          active={memoryActive}
+          onClick={onOpenMemory}
         />
         <NavRow icon={<ScheduledIcon />} label="Scheduled" disabled title="Coming soon" />
       </nav>

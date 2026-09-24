@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { cp, mkdir, rename, rm } from 'fs/promises'
+import { cp, mkdir, readFile, readdir, rename, rm } from 'fs/promises'
 import { homedir } from 'os'
-import { basename, join, resolve } from 'path'
+import { basename, join, relative, resolve, sep } from 'path'
 import {
   ContractError,
   type AddSkillHubInput,
@@ -10,9 +10,12 @@ import {
   type SkillSummary,
   type InstallSkillSource
 } from '../../shared/contract'
-import { resolveGitHubArchiveSource } from '../marketplaceGithub'
 import { cleanupPluginSourceBestEffort } from '../marketplaceHelpers'
-import { resolveHttpZipSource, type ResolvedZipPluginSourceRoot } from '../marketplaceZip'
+import {
+  PluginZipDownloadError,
+  resolveHttpZipSource,
+  type ResolvedZipPluginSourceRoot
+} from '../marketplaceZip'
 import { listUserSkillDirs, readSkillMeta, SKILLS_HOME } from './skillManage'
 
 /**
@@ -31,8 +34,7 @@ const HUBS_FILE = join(homedir(), '.flexagent', 'skillhubs.json')
 const BROWSE_TTL_MS = 10 * 60 * 1000
 const BROWSE_CACHE_MAX = 20
 const MAX_ENTRIES_PER_HUB = 60
-/** SKILL.md frontmatter fetches per browse; entries beyond this are name-only. */
-const MAX_META_FETCH = 24
+const MAX_SCAN_DEPTH = 4
 const FETCH_TIMEOUT_MS = 15_000
 
 const BUILTIN_HUB: SkillHubInfo = {
@@ -80,7 +82,32 @@ export function parseSkillSource(raw: string): ParsedSource {
   }
   let rest = value
   if (rest.startsWith('github:')) {
-    rest = `https://github.com/${rest.slice('github:'.length)}`
+    // Shorthand `github:owner/repo[@ref][/path]` — parsed directly (not via
+    // URL) so the `@ref` segment survives; `@v1/sub/dir` means ref=v1, path=sub/dir.
+    let body = rest.slice('github:'.length)
+    let refTail = ''
+    const at = body.indexOf('@')
+    if (at >= 0) {
+      refTail = body.slice(at + 1)
+      body = body.slice(0, at)
+    }
+    const parts = body.split('/').filter(Boolean)
+    const owner = parts[0] ?? ''
+    const repo = (parts[1] ?? '').replace(/\.git$/u, '')
+    if (parts.length < 2 || !GITHUB_SEGMENT.test(owner) || !GITHUB_SEGMENT.test(repo)) {
+      throw new ContractError('SKILL_SOURCE_INVALID', `Invalid GitHub repository: ${value}`)
+    }
+    const tailParts = refTail.split('/').filter(Boolean)
+    const ref = tailParts[0] || undefined
+    const pathTail = tailParts.slice(1).join('/')
+    const path = [...parts.slice(2), ...(pathTail !== '' ? [pathTail] : [])].join('/') || undefined
+    return {
+      kind: 'github',
+      owner,
+      repo,
+      ...(ref !== undefined ? { ref } : {}),
+      ...(path !== undefined ? { path } : {})
+    }
   }
   if (rest.startsWith('https://')) {
     let url: URL
@@ -102,6 +129,11 @@ export function parseSkillSource(raw: string): ParsedSource {
         const ref = segments[3] ?? ''
         const path = segments.slice(4).join('/') || undefined
         return { kind: 'github', owner, repo, ref: ref || undefined, path }
+      }
+      // `github:owner/repo[/sub/path]` shorthand — @ref is the only ref form,
+      // so any extra segments are a sub-path.
+      if (segments.length > 2) {
+        return { kind: 'github', owner, repo, path: segments.slice(2).join('/') }
       }
       // Query/hash forms are tolerated and dropped.
       return { kind: 'github', owner, repo }
@@ -288,106 +320,188 @@ async function fetchJsonHubEntries(hub: SkillHubInfo): Promise<SkillHubEntry[]> 
   return out
 }
 
-/** GitHub directory mode: enumerate every nested SKILL.md via one trees-API call. */
+/**
+ * GitHub repo hub: ONE codeload zipball per browse, then scan locally.
+ *
+ * Deliberately avoids api.github.com — its anonymous quota is 60 req/h, which a
+ * couple of browses exhaust (everything 403s for the rest of the hour).
+ * codeload.github.com serves the same archive unauthenticated and unmetered.
+ */
 async function fetchGithubRepoEntries(
   hub: SkillHubInfo,
   parsed: ParsedGithubSource
 ): Promise<SkillHubEntry[]> {
-  const skillPaths = await listGithubSkillPaths(parsed)
-  const prefix = parsed.path !== undefined && parsed.path.length > 0 ? `${parsed.path.replace(/\/+$/u, '')}/` : ''
-  const dirs = skillPaths
-    .map((p) => p.slice(0, -'/SKILL.md'.length))
-    .filter((dir) => prefix.length === 0 || dir.startsWith(prefix))
-    .slice(0, MAX_ENTRIES_PER_HUB)
-
-  const out: SkillHubEntry[] = []
-  for (const dir of dirs) {
-    // Frontmatter fetch is rate-limited (anonymous GitHub: 60 req/h) — only the
-    // first entries get descriptions; the rest stay name-only.
-    const meta =
-      out.length < MAX_META_FETCH
-        ? await fetchGithubFileText(parsed.owner, parsed.repo, parsed.ref, `${dir}/SKILL.md`)
-        : null
-    const name = meta?.name ?? dir.split('/').pop() ?? dir
-    const shortDir = prefix.length > 0 ? dir.slice(prefix.length) : dir
-    pushUnique(out, {
-      hub: hub.id,
-      name,
-      ...(meta?.description !== undefined ? { description: meta.description } : {}),
-      source: sourceToString({ ...parsed, path: dir }),
-      installed: false,
-      ...(shortDir !== name ? { label: shortDir } : {})
-    })
+  const prefix =
+    parsed.path !== undefined && parsed.path.length > 0
+      ? `${parsed.path.replace(/\/+$/u, '')}/`
+      : ''
+  const { root, release } = await acquireRepoZipball(parsed)
+  try {
+    const dirs = (await collectSkillDirs(root, prefix)).slice(0, MAX_ENTRIES_PER_HUB)
+    const out: SkillHubEntry[] = []
+    for (const dir of dirs) {
+      const meta = parseFrontmatterFields(await readFileOptional(join(root, dir, 'SKILL.md')))
+      const fullPath = `${prefix}${dir}`
+      const name = meta.name ?? dir.split('/').pop() ?? dir
+      pushUnique(out, {
+        hub: hub.id,
+        name,
+        ...(meta.description !== undefined ? { description: meta.description } : {}),
+        source: sourceToString({ ...parsed, path: fullPath }),
+        installed: false,
+        ...(dir !== name ? { label: dir } : {})
+      })
+    }
+    return out
+  } finally {
+    release()
   }
+}
+
+async function readFileOptional(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/** Every directory containing a SKILL.md, relative to root, under `prefix`. */
+async function collectSkillDirs(root: string, prefix: string): Promise<string[]> {
+  const out: string[] = []
+  const start = prefix.length > 0 ? join(root, prefix) : root
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > MAX_SCAN_DEPTH || out.length >= MAX_ENTRIES_PER_HUB) return
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    if (entries.some((entry) => entry.name === 'SKILL.md' && entry.isFile())) {
+      const rel = relative(start, dir)
+      if (rel.length > 0) out.push(rel.split(sep).join('/'))
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      if (entry.name === 'node_modules') continue
+      await walk(join(dir, entry.name), depth + 1)
+    }
+  }
+  await walk(start, 0)
   return out
+}
+
+interface CachedRepo {
+  root: string
+  cleanup: () => Promise<void>
+  expiresAt: number
+  refs: number
+}
+
+const REPO_CACHE_TTL_MS = 15 * 60 * 1000
+const repoCache = new Map<string, CachedRepo>()
+
+/**
+ * Whole-repo zipball, reused across browse → install.
+ *
+ * Downloading `anthropics/skills` takes tens of seconds, and installing right
+ * after browsing should not pay for it twice. Entries are refcounted and cleaned
+ * up once idle (any one checkout costs tens of MB, so nothing lives forever).
+ */
+async function acquireRepoZipball(
+  parsed: ParsedGithubSource
+): Promise<{ root: string; release: () => void }> {
+  const key = `${parsed.owner}/${parsed.repo}@${parsed.ref ?? 'default'}`
+  const cached = repoCache.get(key)
+  if (cached !== undefined && cached.expiresAt > Date.now()) {
+    cached.refs += 1
+    return {
+      root: cached.root,
+      release: () => {
+        cached.refs -= 1
+        if (cached.refs <= 0) evictRepo(key)
+      }
+    }
+  }
+  const resolved = await resolveRepoZipball(parsed)
+  const entry: CachedRepo = {
+    root: resolved.path,
+    cleanup: resolved.cleanup,
+    expiresAt: Date.now() + REPO_CACHE_TTL_MS,
+    refs: 1
+  }
+  repoCache.set(key, entry)
+  return {
+    root: entry.root,
+    release: () => {
+      entry.refs -= 1
+      if (entry.refs <= 0) evictRepo(key)
+    }
+  }
+}
+
+function evictRepo(key: string): void {
+  const entry = repoCache.get(key)
+  if (entry === undefined || entry.refs > 0) return
+  repoCache.delete(key)
+  void cleanupPluginSourceBestEffort(entry.cleanup)
+}
+
+/**
+ * codeload zipball for a repo, trying plausible ref locations. `refs/heads/HEAD`
+ * does not exist there, hence main → master, and heads → tags → bare sha for an
+ * explicit ref.
+ */
+async function resolveRepoZipball(
+  parsed: ParsedGithubSource
+): Promise<ResolvedZipPluginSourceRoot> {
+  const ref = parsed.ref
+  if (ref !== undefined && !GITHUB_SEGMENT.test(ref)) {
+    throw new ContractError('SKILL_SOURCE_INVALID', `Invalid git ref in skill source: ${ref}`)
+  }
+  const candidates =
+    ref === undefined
+      ? ['refs/heads/main', 'refs/heads/master']
+      : [`refs/heads/${ref}`, `refs/tags/${ref}`, ref]
+  let lastError: unknown = null
+  for (const suffix of candidates) {
+    const url = `https://codeload.github.com/${parsed.owner}/${parsed.repo}/zip/${suffix}`
+    try {
+      return await resolveHttpZipSource({
+        headers: { 'User-Agent': UA },
+        requireSingleRoot: true,
+        stripRoot: true,
+        url
+      })
+    } catch (error) {
+      if (error instanceof PluginZipDownloadError && (error.status === 403 || error.status === 404)) {
+        lastError = error
+        continue
+      }
+      throw error
+    }
+  }
+  throw new ContractError(
+    'SKILL_HUB_UNAVAILABLE',
+    `Cannot download ${parsed.owner}/${parsed.repo}${ref !== undefined ? `@${ref}` : ''}: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  )
 }
 
 function pushUnique(out: SkillHubEntry[], entry: SkillHubEntry): void {
   if (!out.some((existing) => existing.name === entry.name)) out.push(entry)
 }
 
-/**
- * One `git/trees?recursive=1` call per browse (anonymous GitHub: 60 req/h, and
- * this avoids raw.githubusercontent.com, which is unreachable on some networks).
- */
-async function listGithubSkillPaths(parsed: ParsedGithubSource): Promise<string[]> {
-  const ref = parsed.ref !== undefined && parsed.ref.length > 0 ? parsed.ref : 'HEAD'
-  const url = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`
-  const raw = await fetchText(url, {
-    Accept: 'application/vnd.github+json',
-    'User-Agent': UA
-  })
-  let doc: { tree?: unknown; truncated?: unknown }
-  try {
-    doc = JSON.parse(raw) as { tree?: unknown; truncated?: unknown }
-  } catch {
-    throw new ContractError('SKILL_HUB_UNAVAILABLE', `GitHub trees response is not JSON: ${url}`)
-  }
-  if (!Array.isArray(doc.tree)) {
-    throw new ContractError(
-      'SKILL_HUB_UNAVAILABLE',
-      `GitHub tree not found or rate-limited: ${parsed.owner}/${parsed.repo}@${ref}`
-    )
-  }
-  const paths: string[] = []
-  for (const item of doc.tree) {
-    if (typeof item !== 'object' || item === null) continue
-    const path = (item as { path?: unknown }).path
-    if (typeof path !== 'string' || !path.endsWith('/SKILL.md')) continue
-    if (path.split('/').some((segment) => segment.startsWith('.'))) continue
-    paths.push(path)
-  }
-  return paths
-}
-
-/** Contents-API fetch of a single file (base64); null on 404. */
-async function fetchGithubFileText(
-  owner: string,
-  repo: string,
-  ref: string | undefined,
-  path: string
-): Promise<{ name?: string; description?: string } | null> {
-  const refPart = ref !== undefined && ref.length > 0 ? `?ref=${encodeURIComponent(ref)}` : ''
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}${refPart}`
-  let raw: string
-  try {
-    raw = await fetchText(url, {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': UA
-    })
-  } catch (error) {
-    if (error instanceof ContractError && error.code === 'SKILL_SOURCE_INVALID') return null
-    throw error
-  }
-  let doc: { content?: unknown; encoding?: unknown }
-  try {
-    doc = JSON.parse(raw) as { content?: unknown; encoding?: unknown }
-  } catch {
-    return null
-  }
-  if (doc.encoding !== 'base64' || typeof doc.content !== 'string') return null
-  const text = Buffer.from(doc.content.replace(/\s+/gu, ''), 'base64').toString('utf8')
-  return parseFrontmatterFields(text)
+/** Path join that refuses to escape `root`. */
+function resolveInsideLocal(root: string, rawPath: string): string | null {
+  if (rawPath.includes('..')) return null
+  const joined = resolve(root, rawPath)
+  const rel = relative(root, joined)
+  if (rel === '' || (!rel.startsWith('..') && !rel.includes(`..${sep}`))) return joined
+  return null
 }
 
 function parseFrontmatterFields(raw: string): { name?: string; description?: string } {
@@ -455,6 +569,7 @@ export async function installSkill(
 ): Promise<SkillSummary> {
   let root: string | null = null
   let cleanup: (() => Promise<void>) | null = null
+  let cleanupRef: (() => void) | null = null
   try {
     if (source.kind === 'folder') {
       const folder = resolve(source.folderPath)
@@ -483,11 +598,22 @@ export async function installSkill(
       const parsed = parseSkillSource(rawSource)
       let resolved: ResolvedZipPluginSourceRoot
       if (parsed.kind === 'github') {
-        resolved = await resolveGitHubArchiveSource({
-          url: `https://github.com/${parsed.owner}/${parsed.repo}`,
-          ...(parsed.ref !== undefined ? { pin: parsed.ref } : {}),
-          ...(parsed.path !== undefined && parsed.path.length > 0 ? { path: parsed.path } : {})
-        })
+        // Whole-repo codeload zipball (unmetered, reused from a recent browse),
+        // then the skill subdir inside it.
+        const { root: repoRoot, release } = await acquireRepoZipball(parsed)
+        cleanupRef = release
+        let selected = repoRoot
+        if (parsed.path !== undefined && parsed.path.length > 0) {
+          const subdir = resolveInsideLocal(repoRoot, parsed.path)
+          if (subdir === null || !existsSync(subdir)) {
+            throw new ContractError(
+              'SKILL_SOURCE_INVALID',
+              `Skill path does not exist in ${parsed.owner}/${parsed.repo}: ${parsed.path}`
+            )
+          }
+          selected = subdir
+        }
+        resolved = { cleanup: async () => {}, path: selected }
       } else {
         resolved = await resolveHttpZipSource({ url: parsed.url })
       }
@@ -546,6 +672,9 @@ export async function installSkill(
       path: target
     }
   } finally {
+    // The copied target lives on its own; releasing here only drops the shared
+    // checkout whose expense we already paid.
+    if (cleanupRef !== null) cleanupRef()
     if (cleanup !== null) {
       const cleanupError = await cleanupPluginSourceBestEffort(cleanup)
       if (cleanupError !== null && root === null) {

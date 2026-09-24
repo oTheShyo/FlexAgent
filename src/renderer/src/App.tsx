@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import EmptyState from './components/EmptyState'
 import Composer from './components/Composer'
+import MemoryPage from './components/MemoryPage'
 import PluginsPage from './components/PluginsPage'
 import PluginDetailPanel from './components/PluginDetailPanel'
 import SkillsPage from './components/SkillsPage'
@@ -38,6 +39,7 @@ export default function App({ children }: AppProps) {
   const [paletteOpenSettings, setPaletteOpenSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showSkills, setShowSkills] = useState(false)
+  const [showMemory, setShowMemory] = useState(false)
   const sessionMeta = useSessionMeta()
   const {
     plugins,
@@ -130,6 +132,7 @@ export default function App({ children }: AppProps) {
     (cwd?: string): void => {
       setShowPlugins(false)
       setShowSkills(false)
+      setShowMemory(false)
       closeDetail()
       void newChat(cwd)
     },
@@ -149,6 +152,7 @@ export default function App({ children }: AppProps) {
   const handleChooseProject = useCallback((): void => {
     setShowPlugins(false)
     setShowSkills(false)
+    setShowMemory(false)
     closeDetail()
     void chooseProject()
   }, [chooseProject, closeDetail])
@@ -157,6 +161,7 @@ export default function App({ children }: AppProps) {
   const handleAddProject = useCallback((): void => {
     setShowPlugins(false)
     setShowSkills(false)
+    setShowMemory(false)
     closeDetail()
     void newChatInFolder()
   }, [newChatInFolder, closeDetail])
@@ -179,6 +184,7 @@ export default function App({ children }: AppProps) {
     (sessionId: string): void => {
       setShowPlugins(false)
       setShowSkills(false)
+      setShowMemory(false)
       closeDetail()
       void openSession(sessionId)
     },
@@ -209,12 +215,20 @@ export default function App({ children }: AppProps) {
 
   const handleOpenPlugins = useCallback((): void => {
     setShowSkills(false)
+    setShowMemory(false)
     setShowPlugins(true)
   }, [])
 
   const handleOpenSkills = useCallback((): void => {
     setShowPlugins(false)
+    setShowMemory(false)
     setShowSkills(true)
+  }, [])
+
+  const handleOpenMemory = useCallback((): void => {
+    setShowPlugins(false)
+    setShowSkills(false)
+    setShowMemory(true)
   }, [])
 
   const handleClosePlugins = useCallback((): void => {
@@ -223,6 +237,10 @@ export default function App({ children }: AppProps) {
 
   const handleCloseSkills = useCallback((): void => {
     setShowSkills(false)
+  }, [])
+
+  const handleCloseMemory = useCallback((): void => {
+    setShowMemory(false)
   }, [])
 
   const handleUninstallPlugin = useCallback(
@@ -311,6 +329,11 @@ export default function App({ children }: AppProps) {
         handleCloseSkills()
         return
       }
+      if (showMemory) {
+        event.preventDefault()
+        handleCloseMemory()
+        return
+      }
       if (showTerminal) {
         event.preventDefault()
         setShowTerminal(false)
@@ -321,7 +344,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showPlugins, showSkills, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins, handleCloseSkills]
+    [showPalette, showPlugins, showSkills, showMemory, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins, handleCloseSkills, handleCloseMemory]
   )
 
   useShortcuts([
@@ -411,6 +434,8 @@ export default function App({ children }: AppProps) {
           pluginsActive={showPlugins}
           onOpenSkills={handleOpenSkills}
           skillsActive={showSkills}
+          onOpenMemory={handleOpenMemory}
+          memoryActive={showMemory}
           onOpenSettings={handleOpenSettings}
         />
       </ErrorBoundary>
@@ -443,7 +468,9 @@ export default function App({ children }: AppProps) {
                 onOpenDetail={handleOpenPluginDetail}
               />
             ) : showSkills ? (
-              <SkillsPage />
+              <SkillsPage onOpenMemory={handleOpenMemory} />
+            ) : showMemory ? (
+              <MemoryPage />
             ) : (
               content
             )}

@@ -176,6 +176,30 @@ export function FileIcon({ className }: IconProps) {
   )
 }
 
+/** Skills: a procedure card with a checklist. */
+export function SkillsIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <rect x="3.5" y="4" width="17" height="16" rx="3" />
+      <path d="M7 10l1.8 1.8L12 8.5" />
+      <path d="M7 15.5h6" />
+      <path d="M15.5 15.5H17" />
+    </svg>
+  )
+}
+
+/** Memory: a durable-records card with an anchor line. */
+export function MemoryIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <rect x="4" y="3.5" width="16" height="17" rx="3" />
+      <path d="M8 8h8" />
+      <path d="M8 12h8" />
+      <path d="M8 16h5" />
+    </svg>
+  )
+}
+
 export function SlashIcon({ className }: IconProps) {
   return (
     <svg {...baseProps(className)}>

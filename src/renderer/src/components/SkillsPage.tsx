@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
-  MemoryCard,
-  MemoryCardFile,
   SkillHubEntry,
   SkillHubInfo,
   SkillPendingWrite,
@@ -17,11 +15,6 @@ const SOURCE_LABEL: Record<SkillSummary['source'], string> = {
 }
 
 const SOURCE_ORDER: SkillSummary['source'][] = ['user', 'plugin']
-
-const MEMORY_FILE_LABEL: Record<MemoryCardFile, string> = {
-  MEMORY: 'Project & environment',
-  USER: 'User profile'
-}
 
 function SkillsSkeleton() {
   return (
@@ -436,27 +429,30 @@ function HubView({
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-function SkillsPage() {
+interface SkillsPageProps {
+  onOpenMemory?: () => void
+}
+
+/**
+ * Skills: what the agent can DO (procedures, progressive disclosure, installable
+ * from hubs). The companion Memory page owns what the agent KNOWS.
+ */
+function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
   const [tab, setTab] = useState<'installed' | 'hub'>('installed')
   const [loading, setLoading] = useState(true)
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [pending, setPending] = useState<SkillPendingWrite[]>([])
-  const [cards, setCards] = useState<MemoryCard[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [memoryFile, setMemoryFile] = useState<MemoryCardFile>('MEMORY')
-  const [memoryDraft, setMemoryDraft] = useState('')
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [skillList, pendingList, cardList] = await Promise.all([
+      const [skillList, pendingList] = await Promise.all([
         codexApi.listSkills(),
-        codexApi.listPendingSkillWrites(),
-        codexApi.listMemoryCards()
+        codexApi.listPendingSkillWrites()
       ])
       setSkills(skillList)
       setPending(pendingList)
-      setCards(cardList)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -500,36 +496,6 @@ function SkillsPage() {
     [refresh]
   )
 
-  const handleAddCard = useCallback(async (): Promise<void> => {
-    const text = memoryDraft.trim()
-    if (text.length === 0) return
-    setBusyId('memory-add')
-    try {
-      await codexApi.addMemoryCard(memoryFile, text)
-      setMemoryDraft('')
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusyId(null)
-    }
-  }, [memoryDraft, memoryFile, refresh])
-
-  const handleRemoveCard = useCallback(
-    async (card: MemoryCard): Promise<void> => {
-      setBusyId(`memory-${card.file}-${card.index}`)
-      try {
-        await codexApi.removeMemoryCard(card.file, card.index)
-        await refresh()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setBusyId(null)
-      }
-    },
-    [refresh]
-  )
-
   const sections = useMemo(() => {
     return SOURCE_ORDER.map((source) => ({
       source,
@@ -537,15 +503,6 @@ function SkillsPage() {
       items: skills.filter((skill) => skill.source === source)
     })).filter((section) => section.items.length > 0)
   }, [skills])
-
-  const memoryGroups = useMemo(() => {
-    return (['MEMORY', 'USER'] as MemoryCardFile[])
-      .map((file) => ({
-        file,
-        label: MEMORY_FILE_LABEL[file],
-        items: cards.filter((card) => card.file === file)
-      }))
-  }, [cards])
 
   const installedView = (
     <div className="space-y-6">
@@ -625,103 +582,32 @@ function SkillsPage() {
           </div>
         )}
       </section>
-
-      <section aria-label="Memory">
-        <h2 className="flex items-baseline gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
-          Memory cards
-          <span className="font-normal normal-case tracking-normal text-[var(--text-muted)]">
-            {cards.length}
-          </span>
-        </h2>
-        <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-          Curated facts injected into every session. The agent maintains them via{' '}
-          <code>memory_manage</code>; edits here apply from the next turn.
-        </p>
-
-        <form
-          className="mt-2 flex items-center gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void handleAddCard()
-          }}
-        >
-          <div className="flex shrink-0 items-center gap-1" role="group" aria-label="Memory file">
-            {(['MEMORY', 'USER'] as MemoryCardFile[]).map((file) => (
-              <Chip
-                key={file}
-                active={memoryFile === file}
-                onClick={() => setMemoryFile(file)}
-                aria-pressed={memoryFile === file}
-                className="h-7 px-2.5 text-[11px]"
-              >
-                {file}
-              </Chip>
-            ))}
-          </div>
-          <input
-            type="text"
-            value={memoryDraft}
-            onChange={(event) => setMemoryDraft(event.target.value)}
-            placeholder="Add a durable fact…"
-            aria-label="New memory card"
-            autoComplete="off"
-            spellCheck={false}
-            className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            data-testid="memory-add-input"
-          />
-          <Button
-            type="submit"
-            variant="secondary"
-            disabled={busyId !== null || memoryDraft.trim().length === 0}
-            className="shrink-0"
-            data-testid="memory-add"
-          >
-            Add
-          </Button>
-        </form>
-
-        <div className="mt-3 space-y-3">
-          {memoryGroups.map((group) => (
-            <div key={group.file}>
-              <div className="text-[11px] font-medium text-[var(--text-muted)]">{group.label}</div>
-              {group.items.length === 0 ? (
-                <div className="mt-1 text-xs text-[var(--text-subtle)]">No cards.</div>
-              ) : (
-                <ul className="mt-1.5 space-y-1.5">
-                  {group.items.map((card) => (
-                    <li
-                      key={`${card.file}-${card.index}`}
-                      data-testid={`memory-card-${card.file}-${card.index}`}
-                      className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-                    >
-                      <span className="min-w-0 flex-1 text-xs leading-5 text-[var(--text-secondary)]">
-                        {card.text}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={busyId !== null}
-                        onClick={() => void handleRemoveCard(card)}
-                        aria-label={`Remove card: ${card.text.slice(0, 40)}`}
-                        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
-                      >
-                        ✕
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   )
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6" data-testid="skills-page">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text)]">Skills & Memory</h1>
-        <div className="flex items-center gap-1" role="tablist" aria-label="Skills views">
+        <div className="min-w-0">
+          <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text)]">Skills</h1>
+          <p className="mt-0.5 text-xs leading-5 text-[var(--text-muted)]">
+            Reusable procedures for the agent. Durable facts live in{' '}
+            {onOpenMemory !== undefined ? (
+              <button
+                type="button"
+                onClick={onOpenMemory}
+                data-testid="open-memory"
+                className="rounded text-[var(--text-secondary)] underline decoration-[var(--border)] underline-offset-2 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              >
+                Memory
+              </button>
+            ) : (
+              'Memory'
+            )}
+            .
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1" role="tablist" aria-label="Skills views">
           <Chip
             active={tab === 'installed'}
             onClick={() => setTab('installed')}
