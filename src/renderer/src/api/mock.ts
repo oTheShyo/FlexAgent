@@ -24,6 +24,7 @@ import {
   type SessionSummary,
   type SetModelInput,
   type SetThinkingLevelInput,
+  type SlashCommandSummary,
   type TerminalCreateAck,
   type TerminalCreateInput,
   type TerminalId,
@@ -696,6 +697,22 @@ export class MockCodexApi implements CodexApi {
     }
   }
 
+  async listSlashCommands(): Promise<SlashCommandSummary[]> {
+    const commands: SlashCommandSummary[] = []
+    for (const detail of this.pluginDetails.values()) {
+      if (!detail.enabled) continue
+      for (const component of detail.components) {
+        if (component.kind !== 'command') continue
+        commands.push({
+          name: component.name,
+          ...(component.description !== undefined ? { description: component.description } : {}),
+          pluginId: detail.id
+        })
+      }
+    }
+    return commands
+  }
+
   adoptPlugin(detail: PluginDetail): void {
     this.pluginDetails.set(detail.id, detail)
     this.pushPluginsChanged()
@@ -739,7 +756,7 @@ export class MockCodexApi implements CodexApi {
         version: '1.0.0',
         description: 'Built-in skills for generating DOCX and PDF documents.',
         enabled: true,
-        componentCounts: { skill: 2 },
+        componentCounts: { skill: 2, command: 1 },
         components: [
           {
             kind: 'skill',
@@ -752,6 +769,12 @@ export class MockCodexApi implements CodexApi {
             name: 'pdf',
             description: 'Merge, split, and extract text from PDF files.',
             path: 'skills/pdf/SKILL.md'
+          },
+          {
+            kind: 'command',
+            name: 'summarize',
+            description: 'Summarize the current file or selection.',
+            path: 'commands/summarize.md'
           }
         ],
         userConfig: [],

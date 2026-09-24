@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactElement } fro
 import type { ChatItem } from '../hooks/useChat'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
+import { CheckIcon, CopyIcon, RegenerateIcon } from './icons'
 
 export interface ChatViewProps {
   items: ChatItem[]
@@ -80,34 +81,12 @@ const CopyButton = memo(function CopyButton({ text }: { text: string }): ReactEl
       onClick={handleClick}
       aria-label={copied ? 'Copied' : 'Copy message'}
       title={copied ? 'Copied' : 'Copy message'}
-      className="inline-flex h-6 w-6 items-center justify-center rounded border border-transparent text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-transparent text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       {copied ? (
-        <svg
-          className="h-3.5 w-3.5 text-emerald-600"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          aria-hidden="true"
-        >
-          <path d="M3 8.5 6.5 12 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" />
       ) : (
-        <svg
-          className="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          aria-hidden="true"
-        >
-          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
-          <path
-            d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"
-            strokeLinecap="round"
-          />
-        </svg>
+        <CopyIcon className="h-3.5 w-3.5" />
       )}
     </button>
   )
@@ -121,19 +100,9 @@ function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
       onClick={onClick}
       aria-label="Regenerate response"
       title="Regenerate response"
-      className="inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[11px] font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
-      <svg
-        className="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        aria-hidden="true"
-      >
-        <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" strokeLinecap="round" />
-        <path d="M13.5 2.5V5H11" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <RegenerateIcon className="h-3.5 w-3.5" />
       Regenerate
     </button>
   )
@@ -141,13 +110,17 @@ function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
 
 const TOOL_STATUS: Record<ToolItem['status'], { dot: string; label: string; text: string }> = {
   waiting: {
-    dot: 'bg-amber-400 animate-pulse',
+    dot: 'bg-[var(--warning)] animate-pulse',
     label: 'Waiting for approval',
-    text: 'text-[var(--warning)]'
+    text: 'text-[var(--warning-text)]'
   },
-  running: { dot: 'bg-sky-500 animate-pulse', label: 'Running', text: 'text-[var(--text-muted)]' },
-  done: { dot: 'bg-emerald-500', label: 'Done', text: 'text-[var(--text-subtle)]' },
-  error: { dot: 'bg-red-500', label: 'Failed', text: 'text-red-600' }
+  running: {
+    dot: 'bg-[var(--info-dot)] animate-pulse',
+    label: 'Running',
+    text: 'text-[var(--text-muted)]'
+  },
+  done: { dot: 'bg-[var(--success)]', label: 'Done', text: 'text-[var(--text-subtle)]' },
+  error: { dot: 'bg-[var(--danger)]', label: 'Failed', text: 'text-[var(--danger-text)]' }
 }
 
 const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElement {
@@ -164,7 +137,9 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
   return (
     <div
       className={`rounded-lg border px-3 py-2 ${
-        isError ? 'border-red-200 bg-red-50' : 'border-[var(--border)] bg-[var(--surface-sunken)]'
+        isError
+          ? 'border-[var(--danger-border)] bg-[var(--danger-bg)]'
+          : 'border-[var(--border)] bg-[var(--surface-sunken)]'
       }`}
       data-testid="tool-card"
     >
@@ -184,7 +159,7 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
       {item.chunks.length > 0 && (
         <>
           <pre
-            className={`mt-2 rounded border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[11px] leading-4 text-[var(--text-secondary)] ${
+            className={`mt-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[11px] leading-4 text-[var(--text-secondary)] ${
               isLongOutput
                 ? expanded
                   ? 'overflow-auto'
@@ -200,7 +175,7 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
               data-testid="tool-card-expand"
               onClick={handleToggleExpanded}
               aria-expanded={expanded}
-              className="-ml-1 mt-1 rounded px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="-ml-1 mt-1 rounded-md px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               {expanded ? 'Show less' : 'Show more'}
             </button>
@@ -216,9 +191,12 @@ type ErrorItem = Extract<ChatItem, { kind: 'error' }>
 
 const ErrorBlock = memo(function ErrorBlock({ item }: { item: ErrorItem }): ReactElement {
   return (
-    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2" data-testid="error-block">
-      <span className="font-mono text-[11px] font-semibold text-red-700">{item.code}</span>
-      <p className="mt-0.5 whitespace-pre-wrap text-sm text-red-700">{item.message}</p>
+    <div
+      className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2"
+      data-testid="error-block"
+    >
+      <span className="font-mono text-[11px] font-semibold text-[var(--danger-text)]">{item.code}</span>
+      <p className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--danger-text)]">{item.message}</p>
     </div>
   )
 })

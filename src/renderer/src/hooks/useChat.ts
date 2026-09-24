@@ -12,6 +12,7 @@ import {
   type PromptMode,
   type RunState,
   type SessionSummary,
+  type SlashCommandSummary,
   type ThinkingLevel
 } from '../types'
 import { codexApi } from '../api'
@@ -54,6 +55,8 @@ export interface UseChatResult {
   pickDirectoryOrNewSession: () => Promise<void>
   modelConfig: ModelConfig | null
   modelOptions: ModelOption[]
+  /** Slash commands from enabled plugins; empty when the bridge lacks the channel. */
+  slashCommands: SlashCommandSummary[]
   setModel: (provider: string, id: string) => Promise<ModelConfig | null>
   setThinkingLevel: (level: ThinkingLevel) => Promise<ModelConfig | null>
   connectionState?: ConnectionState
@@ -64,7 +67,6 @@ export interface UseChatResult {
   historyLoading?: boolean
 }
 
-const WORKSPACE_CWD = 'D:/2026/FlexAgent'
 const RECONNECTED_CLEAR_MS = 2000
 
 let partialCounter = 0
@@ -149,6 +151,7 @@ export function useChat(): UseChatResult {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [slashCommands, setSlashCommands] = useState<SlashCommandSummary[]>([])
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -352,13 +355,14 @@ export function useChat(): UseChatResult {
       case 'error': {
         const { code, message } = event
         setItems((prev) => [...prev, { kind: 'error', code, message }])
-        // Worker death may emit no further events (no seq gap). Surface
-        // degraded immediately and reconcile so the UI is not half-dead.
-        const shouldReconcileError =
-          connectionStateRef.current === 'ok' && !reconcilingRef.current
-        applyDegraded()
-        if (shouldReconcileError && code === 'KERNEL_INTERNAL') {
-          reconcileRef.current?.()
+        // Only a kernel-level failure leaves the transport suspect. Ordinary
+        // contract errors (SESSION_BUSY, INVALID_INPUT, …) are per-call outcomes
+        // and must not raise the "connection lost" banner.
+        if (code === 'KERNEL_INTERNAL') {
+          const shouldReconcileError =
+            connectionStateRef.current === 'ok' && !reconcilingRef.current
+          applyDegraded()
+          if (shouldReconcileError) reconcileRef.current?.()
         }
         break
       }
@@ -424,9 +428,11 @@ export function useChat(): UseChatResult {
   }, [applyDegraded])
 
   const createSession = useCallback(
-    async (cwd: string = WORKSPACE_CWD): Promise<SessionSummary | null> => {
+    async (cwd?: string): Promise<SessionSummary | null> => {
       try {
-        const summary = await codexApi.createSession({ cwd })
+        const target = cwd ?? (await codexApi.pickDirectory())
+        if (target === null) return null
+        const summary = await codexApi.createSession({ cwd: target })
         setSessions((prev) => [summary, ...prev])
         await openSession(summary.id)
         return summary
@@ -507,6 +513,26 @@ export function useChat(): UseChatResult {
       .catch(() => {})
     return () => {
       disposed = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    const refresh = (): void => {
+      const pending = codexApi.listSlashCommands?.()
+      if (pending === undefined) return
+      void pending
+        .then((commands) => {
+          if (!disposed) setSlashCommands(commands)
+        })
+        .catch(() => {})
+    }
+    refresh()
+    // Commands come from enabled plugins, so plugin changes invalidate the list.
+    const unsubscribe = codexApi.subscribePlugins(refresh)
+    return () => {
+      disposed = true
+      unsubscribe()
     }
   }, [])
 
@@ -605,6 +631,7 @@ export function useChat(): UseChatResult {
     pickDirectoryOrNewSession,
     modelConfig,
     modelOptions,
+    slashCommands,
     setModel,
     setThinkingLevel,
     connectionState,

@@ -1,39 +1,20 @@
 import { memo } from 'react'
 import type { PermissionDecision } from '../types'
 import type { PermissionRequest } from '../hooks/useChat'
+import { ShieldIcon } from './icons'
+import { Button } from './ui'
 
 export interface PermissionDialogProps {
   request: PermissionRequest
   onRespond: (decision: PermissionDecision) => void
 }
 
-function ShieldIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" />
-      <path d="M9.5 12.5 11 14l3.5-3.5" />
-    </svg>
-  )
-}
-
 function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
   const argsJson = JSON.stringify(request.args, null, 2)
 
-  const secondaryClass =
-    'h-8 rounded border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]'
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="presentation">
-      <div className="absolute inset-0 bg-zinc-950/30" aria-hidden="true" />
+      <div className="absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
       <div
         role="alertdialog"
         aria-modal="true"
@@ -61,19 +42,15 @@ function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
         </pre>
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          <button type="button" onClick={() => onRespond('deny')} className={secondaryClass}>
+          <Button type="button" variant="secondary" onClick={() => onRespond('deny')}>
             Deny
-          </button>
-          <button type="button" onClick={() => onRespond('allowSession')} className={secondaryClass}>
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => onRespond('allowSession')}>
             Allow session
-          </button>
-          <button
-            type="button"
-            onClick={() => onRespond('allowOnce')}
-            className="h-8 rounded bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
-          >
+          </Button>
+          <Button type="button" variant="primary" onClick={() => onRespond('allowOnce')}>
             Allow once
-          </button>
+          </Button>
         </div>
       </div>
     </div>

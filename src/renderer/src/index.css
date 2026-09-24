@@ -25,12 +25,59 @@
   --danger-border: #fecaca;
   --success: #047857;
   --warning: #b45309;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #b45309;
+  --info: #0284c7;
+  --info-dot: #0ea5e9;
+  --overlay: rgba(9, 9, 11, 0.32);
+  --status-idle: #d4d4d8;
+  color-scheme: light;
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.16);
 }
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --surface: #09090b;
+  --surface-raised: #18181b;
+  --surface-sunken: #101013;
+  --surface-sidebar: #0c0c0e;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #f4f4f5;
+  --text-secondary: #d4d4d8;
+  --text-muted: #a1a1aa;
+  --text-subtle: #71717a;
+  --accent: #f4f4f5;
+  --accent-contrast: #09090b;
+  --accent-hover: #e4e4e7;
+  --ring: #52525b;
+  --hover: #27272a;
+  --active: #3f3f46;
+  --danger: #f87171;
+  --danger-text: #fca5a5;
+  --danger-bg: #450a0a;
+  --danger-border: #7f1d1d;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --warning-bg: #422006;
+  --warning-border: #78350f;
+  --warning-text: #fbbf24;
+  --info: #38bdf8;
+  --info-dot: #38bdf8;
+  --overlay: rgba(0, 0, 0, 0.55);
+  --status-idle: #3f3f46;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme='system'],
+  :root:not([data-theme]) {
+    color-scheme: dark;
     --surface: #09090b;
     --surface-raised: #18181b;
     --surface-sunken: #101013;
@@ -53,9 +100,21 @@
     --danger-border: #7f1d1d;
     --success: #34d399;
     --warning: #fbbf24;
+    --warning-bg: #422006;
+    --warning-border: #78350f;
+    --warning-text: #fbbf24;
+    --info: #38bdf8;
+    --info-dot: #38bdf8;
+    --overlay: rgba(0, 0, 0, 0.55);
+    --status-idle: #3f3f46;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
   }
+}
+
+body {
+  font-family: var(--font-sans);
+  line-height: 1.5;
 }
 
 [data-md-root] pre code.hljs {

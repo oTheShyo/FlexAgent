@@ -1,5 +1,6 @@
 import { Component } from 'react'
 import type { ReactNode } from 'react'
+import { Button } from './ui'
 
 export interface ErrorBoundaryProps {
   children: ReactNode
@@ -75,22 +76,22 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
               type="button"
+              variant="secondary"
               data-testid="error-boundary-retry"
               onClick={this.handleRetry}
-              className="h-8 rounded border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
             >
               Try again
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="primary"
               data-testid="error-boundary-reload"
               onClick={this.handleReload}
-              className="h-8 rounded bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
             >
               Reload
-            </button>
+            </Button>
           </div>
         </div>
       )

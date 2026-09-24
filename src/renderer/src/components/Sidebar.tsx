@@ -6,7 +6,18 @@ import {
   setSessionMetaTitle,
   useSessionMeta
 } from '../lib/sessionMeta'
+import { formatWhen } from '../lib/formatWhen'
 import { SessionListSkeleton } from './Skeleton'
+import { IconButton, MenuPanel, MenuItem } from './ui'
+import {
+  ChatDotIcon,
+  MoreIcon,
+  NewChatIcon,
+  PluginsIcon,
+  ScheduledIcon,
+  SearchIcon,
+  SettingsIcon
+} from './icons'
 
 export interface SidebarProps {
   sessions: SessionSummary[]
@@ -16,65 +27,7 @@ export interface SidebarProps {
   loading?: boolean
   onOpenPlugins?: () => void
   pluginsActive?: boolean
-}
-
-const ICON = 'h-4 w-4 shrink-0'
-
-function NewChatIcon() {
-  return (
-    <svg className={ICON} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      <path d="M12 7v6" />
-      <path d="M9 10h6" />
-    </svg>
-  )
-}
-
-function PluginsIcon() {
-  return (
-    <svg className={ICON} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
-      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
-    </svg>
-  )
-}
-
-function ScheduledIcon() {
-  return (
-    <svg className={ICON} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.5V12l3 2" />
-    </svg>
-  )
-}
-
-function ChatDotIcon() {
-  return (
-    <svg className={ICON} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 11.6a8.4 8.4 0 0 1-8.5 8.4 8.7 8.7 0 0 1-3.8-.9L3 20.5l1.4-4.6A8.4 8.4 0 1 1 21 11.6z" />
-    </svg>
-  )
-}
-
-function SearchIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
-    </svg>
-  )
-}
-
-function MoreIcon() {
-  return (
-    <svg className={ICON} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <circle cx="12" cy="5" r="1.7" />
-      <circle cx="12" cy="12" r="1.7" />
-      <circle cx="12" cy="19" r="1.7" />
-    </svg>
-  )
+  onOpenSettings?: () => void
 }
 
 function NavRow({
@@ -82,41 +35,39 @@ function NavRow({
   label,
   active = false,
   primary = false,
+  disabled = false,
+  title,
   onClick
 }: {
   icon: React.ReactNode
   label: string
   active?: boolean
   primary?: boolean
+  disabled?: boolean
+  title?: string
   onClick?: () => void
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      aria-disabled={disabled || undefined}
+      title={title}
       className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
-        primary
-          ? 'border border-[var(--border-strong)] bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-sm)] hover:bg-[var(--hover)]'
-          : active
-            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
-            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
+        disabled
+          ? 'cursor-not-allowed text-[var(--text-subtle)] opacity-60'
+          : primary
+            ? 'border border-[var(--border-strong)] bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-sm)] hover:bg-[var(--hover)]'
+            : active
+              ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
       }`}
     >
       {icon}
       <span className="truncate">{label}</span>
     </button>
   )
-}
-
-function formatWhen(ts: number): string {
-  const diff = Date.now() - ts
-  const hourMs = 3_600_000
-  const dayMs = 24 * hourMs
-  if (diff < hourMs) return `${Math.max(1, Math.floor(diff / 60_000))}m`
-  if (diff < dayMs) return `${Math.floor(diff / hourMs)}h`
-  if (diff < 2 * dayMs) return 'Yesterday'
-  if (diff < 7 * dayMs) return `${Math.floor(diff / dayMs)}d`
-  return new Date(ts).toLocaleDateString()
 }
 
 interface SessionRowData {
@@ -130,9 +81,6 @@ function matchesQuery(title: string, query: string): boolean {
   return title.toLowerCase().includes(query)
 }
 
-const MENU_ITEM_CLASS =
-  'flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]'
-
 function Sidebar({
   sessions,
   activeSessionId,
@@ -140,7 +88,8 @@ function Sidebar({
   onSelect,
   loading = false,
   onOpenPlugins,
-  pluginsActive = false
+  pluginsActive = false,
+  onOpenSettings
 }: SidebarProps) {
   const meta = useSessionMeta()
   const [query, setQuery] = useState('')
@@ -149,9 +98,7 @@ function Sidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const renameCancelledRef = useRef(false)
-  const menuPanelRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
-  const menuButtonRefs = useRef(new Map<string, HTMLButtonElement>())
 
   const startRename = useCallback((sessionId: string, currentTitle: string): void => {
     setMenuId(null)
@@ -203,7 +150,10 @@ function Sidebar({
 
   useEffect(() => {
     if (menuId === null) return
-    const firstItem = menuPanelRef.current?.querySelector('button')
+    const menuRoot = document.querySelector(
+      `[data-session-menu-root="${CSS.escape(menuId)}"]`
+    )
+    const firstItem = menuRoot?.querySelector<HTMLButtonElement>('[role="menu"] button')
     firstItem?.focus()
 
     const handleMouseDown = (event: MouseEvent): void => {
@@ -219,7 +169,12 @@ function Sidebar({
       if (event.isComposing) return
       event.stopPropagation()
       setMenuId(null)
-      menuButtonRefs.current.get(menuId)?.focus()
+      const rowRoot = document.querySelector(
+        `[data-session-menu-root="${CSS.escape(menuId)}"]`
+      )
+      rowRoot
+        ?.querySelector<HTMLButtonElement>('[data-testid="session-row-menu"]')
+        ?.focus()
     }
     document.addEventListener('mousedown', handleMouseDown)
     document.addEventListener('keydown', handleKeyDown)
@@ -277,7 +232,7 @@ function Sidebar({
           active={pluginsActive}
           onClick={onOpenPlugins}
         />
-        <NavRow icon={<ScheduledIcon />} label="Scheduled" />
+        <NavRow icon={<ScheduledIcon />} label="Scheduled" disabled title="Coming soon" />
       </nav>
 
       <div className="mx-4 border-t border-[var(--border)]" />
@@ -285,7 +240,7 @@ function Sidebar({
       <div className="px-2 pt-3">
         <div className="relative">
           <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--text-subtle)]">
-            <SearchIcon />
+            <SearchIcon className="h-3.5 w-3.5" />
           </span>
           <input
             type="text"
@@ -364,7 +319,7 @@ function Sidebar({
                         <span className="min-w-0 flex-1 truncate">{title}</span>
                         <span
                           className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                            running ? 'bg-amber-500' : 'bg-zinc-300'
+                            running ? 'bg-[var(--warning)]' : 'bg-[var(--status-idle)]'
                           }`}
                           title={running ? 'Running' : 'Idle'}
                           aria-label={running ? 'Running' : 'Idle'}
@@ -373,58 +328,50 @@ function Sidebar({
                           {formatWhen(session.updatedAt)}
                         </span>
                       </button>
-                      <button
-                        ref={(node) => {
-                          if (node) menuButtonRefs.current.set(session.id, node)
-                          else menuButtonRefs.current.delete(session.id)
-                        }}
-                        type="button"
+                      <IconButton
+                        label={`Session actions: ${title}`}
+                        variant="ghost"
                         aria-haspopup="menu"
                         aria-expanded={isMenuOpen}
-                        aria-label={`Session actions: ${title}`}
                         onClick={() => openMenu(session.id)}
-                        className={`shrink-0 rounded-md p-1.5 text-[var(--text-muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                        className={
                           isMenuOpen
                             ? 'opacity-100'
                             : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
-                        }`}
+                        }
                         data-testid="session-row-menu"
                       >
                         <MoreIcon />
-                      </button>
+                      </IconButton>
                     </div>
                   )}
 
                   {isMenuOpen && (
-                    <div
-                      ref={menuPanelRef}
-                      role="menu"
+                    <MenuPanel
                       aria-label={`Actions for ${title}`}
-                      className="absolute right-1 top-full z-20 mt-0.5 w-36 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[var(--shadow-lg)]"
+                      className="right-1 top-full mt-0.5 w-36"
                     >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => startRename(session.id, title)}
-                        className={MENU_ITEM_CLASS}
-                      >
+                      <MenuItem onClick={() => startRename(session.id, title)}>
                         Rename
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => toggleArchive(session.id, archived)}
-                        className={MENU_ITEM_CLASS}
-                      >
+                      </MenuItem>
+                      <MenuItem onClick={() => toggleArchive(session.id, archived)}>
                         {archived ? 'Unarchive' : 'Archive'}
-                      </button>
-                    </div>
+                      </MenuItem>
+                    </MenuPanel>
                   )}
                 </li>
               )
             })}
           </ul>
         )}
+      </div>
+
+      <div className="border-t border-[var(--border)] px-2 py-2">
+        <NavRow
+          icon={<SettingsIcon />}
+          label="Settings"
+          onClick={onOpenSettings}
+        />
       </div>
     </aside>
   )

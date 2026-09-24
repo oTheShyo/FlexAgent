@@ -10,10 +10,10 @@ function ConnectionBanner({ message, onRetry }: ConnectionBannerProps) {
     <div
       role="status"
       data-testid="connection-banner"
-      className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-xs text-amber-800"
+      className="flex shrink-0 items-center gap-2 border-b border-[var(--warning-border)] bg-[var(--warning-bg)] px-4 py-1.5 text-xs text-[var(--warning-text)]"
     >
       <span
-        className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
+        className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--warning)]"
         aria-hidden="true"
       />
       <span className="min-w-0 truncate">{message}</span>
@@ -21,7 +21,7 @@ function ConnectionBanner({ message, onRetry }: ConnectionBannerProps) {
         type="button"
         data-testid="connection-retry"
         onClick={onRetry}
-        className="ml-auto shrink-0 rounded border border-amber-300 bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1"
+        className="ml-auto shrink-0 rounded-md border border-[var(--warning-border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1"
       >
         Retry now
       </button>

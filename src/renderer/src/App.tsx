@@ -28,6 +28,7 @@ export default function App({ children }: AppProps) {
   const [showTerminal, setShowTerminal] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
+  const [paletteOpenSettings, setPaletteOpenSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
   const sessionMeta = useSessionMeta()
   const {
@@ -61,6 +62,7 @@ export default function App({ children }: AppProps) {
     pickDirectoryOrNewSession,
     modelConfig,
     modelOptions,
+    slashCommands,
     setModel,
     setThinkingLevel,
     connectionState,
@@ -152,6 +154,12 @@ export default function App({ children }: AppProps) {
 
   const handleClosePalette = useCallback((): void => {
     setShowPalette(false)
+    setPaletteOpenSettings(false)
+  }, [])
+
+  const handleOpenSettings = useCallback((): void => {
+    setPaletteOpenSettings(true)
+    setShowPalette(true)
   }, [])
 
   const handleOpenPlugins = useCallback((): void => {
@@ -230,7 +238,7 @@ export default function App({ children }: AppProps) {
     (event: KeyboardEvent): void => {
       if (showPalette) {
         event.preventDefault()
-        setShowPalette(false)
+        handleClosePalette()
         return
       }
       if (showPlugins && detail !== null) {
@@ -253,7 +261,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail, handleClosePlugins]
+    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins]
   )
 
   useShortcuts([
@@ -263,7 +271,10 @@ export default function App({ children }: AppProps) {
       ctrlOrMeta: true,
       preventDefault: true,
       allowInEditable: true,
-      handler: () => setShowPalette((value) => !value)
+      handler: () => {
+        setPaletteOpenSettings(false)
+        setShowPalette((value) => !value)
+      }
     },
     {
       id: 'togglePaletteAlias',
@@ -272,7 +283,10 @@ export default function App({ children }: AppProps) {
       shift: true,
       preventDefault: true,
       allowInEditable: true,
-      handler: () => setShowPalette((value) => !value)
+      handler: () => {
+        setPaletteOpenSettings(false)
+        setShowPalette((value) => !value)
+      }
     },
     {
       id: 'toggleTerminal',
@@ -313,7 +327,7 @@ export default function App({ children }: AppProps) {
     ))
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[var(--surface)] text-[var(--text)] antialiased">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-[var(--surface)] text-[var(--text)] antialiased">
       <ErrorBoundary fallbackClassName="h-full min-h-[240px] w-64 shrink-0">
         <Sidebar
           sessions={sessions}
@@ -323,6 +337,7 @@ export default function App({ children }: AppProps) {
           loading={sessionsLoaded !== true}
           onOpenPlugins={handleOpenPlugins}
           pluginsActive={showPlugins}
+          onOpenSettings={handleOpenSettings}
         />
       </ErrorBoundary>
 
@@ -367,6 +382,7 @@ export default function App({ children }: AppProps) {
           onChooseProject={handleChooseProject}
           modelConfig={modelConfig}
           modelOptions={modelOptions}
+          slashCommands={slashCommands}
           onSetModel={handleSetModel}
           onSetThinkingLevel={handleSetThinkingLevel}
         />
@@ -408,6 +424,7 @@ export default function App({ children }: AppProps) {
             onToggleTerminal={handleToggleTerminal}
             onOpenPlugins={handleOpenPlugins}
             onClose={handleClosePalette}
+            openSettings={paletteOpenSettings}
           />
         )}
       </div>

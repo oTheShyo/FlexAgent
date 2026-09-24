@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 import { ContractError } from '../../../shared/contract'
 import type { KernelEvent, SessionId, TerminalId } from '../../../shared/contract'
 import { codexApi } from '../api'
+import { IconButton } from './ui'
 
 export interface TerminalDrawerProps {
   open: boolean
@@ -15,6 +16,32 @@ export interface TerminalDrawerProps {
 type PtyEvent = Extract<KernelEvent, { type: 'pty_output' | 'pty_exit' }>
 
 const RESIZE_DEBOUNCE_MS = 150
+
+// Reads a design token from index.css at call time (mirrors --surface, --text,
+// --success, etc. on documentElement, so light and dark schemes are honored).
+function cssVar(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+}
+
+// Expands #rgb/#rrggbb token values and applies alpha; returns the input
+// unchanged when it is not a hex color (e.g. already rgb()/rgba()).
+function withAlpha(color: string, alpha: number): string {
+  const hex = color.startsWith('#') ? color.slice(1) : ''
+  const full =
+    hex.length === 3
+      ? hex
+          .split('')
+          .map(ch => ch + ch)
+          .join('')
+      : hex.length === 6
+        ? hex
+        : null
+  if (full === null) return color
+  const r = parseInt(full.slice(0, 2), 16)
+  const g = parseInt(full.slice(2, 4), 16)
+  const b = parseInt(full.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
 
 function describeError(err: unknown): string {
   if (err instanceof ContractError) {
@@ -56,6 +83,11 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
     setTerminalId(null)
     setCreating(true)
 
+    // Theme resolved once at mount from CSS design tokens (mirrors index.css
+    // --surface/--text/--success pairs). Limitation: xterm takes a static theme,
+    // so switching the OS color scheme while this terminal stays mounted does
+    // not re-theme it until the drawer is reopened.
+    const surface = cssVar('--surface')
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -65,11 +97,11 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
       convertEol: false,
       scrollback: 5000,
       theme: {
-        background: '#0c0c0c',
-        foreground: '#d4d4d8',
-        cursor: '#34d399',
-        cursorAccent: '#0c0c0c',
-        selectionBackground: 'rgba(52, 211, 153, 0.25)'
+        background: surface,
+        foreground: cssVar('--text'),
+        cursor: cssVar('--success'),
+        cursorAccent: surface,
+        selectionBackground: withAlpha(cssVar('--success'), 0.25)
       }
     })
     const fit = new FitAddon()
@@ -198,24 +230,23 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
 
   return (
     <div
-      className="fixed inset-x-0 bottom-0 z-40 flex h-72 flex-col border-t border-zinc-800 bg-zinc-950 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
+      className="fixed inset-x-0 bottom-0 z-40 flex h-72 flex-col overflow-hidden rounded-t-xl border-t border-[var(--border)] bg-[var(--surface)] shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
       data-testid="terminal-drawer"
     >
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-zinc-800/70 bg-zinc-900 px-3">
-        <span className="text-xs font-medium tracking-wide text-zinc-400">Terminal</span>
-        <button
-          type="button"
-          aria-label="Close terminal"
-          onClick={onClose}
-          className="flex h-6 w-6 items-center justify-center rounded text-sm text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-        >
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--surface-sunken)] px-3">
+        <span className="text-xs font-medium tracking-wide text-[var(--text-secondary)]">
+          Terminal
+        </span>
+        <IconButton variant="ghost" label="Close terminal" onClick={onClose}>
           ✕
-        </button>
+        </IconButton>
       </div>
 
-      <div className="relative min-h-0 flex-1 bg-[#0c0c0c]">
+      <div className="relative min-h-0 flex-1 bg-[var(--surface)]">
         {noSession ? (
-          <div className="px-3 py-2 font-mono text-[13px] text-zinc-600">no session selected</div>
+          <div className="px-3 py-2 font-mono text-[13px] text-[var(--text-muted)]">
+            no session selected
+          </div>
         ) : (
           <>
             <div
@@ -224,7 +255,7 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
               className="absolute inset-0 overflow-hidden p-2"
             />
             {creating && (
-              <div className="pointer-events-none absolute inset-0 flex items-start p-3 font-mono text-[13px] text-zinc-600">
+              <div className="pointer-events-none absolute inset-0 flex items-start p-3 font-mono text-[13px] text-[var(--text-muted)]">
                 starting terminal…
               </div>
             )}
@@ -235,7 +266,7 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
       {status !== null && (
         <div
           role="alert"
-          className="shrink-0 border-t border-zinc-800/70 bg-zinc-950 px-3 py-1 font-mono text-[12px] text-red-400"
+          className="shrink-0 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-1 font-mono text-[12px] text-[var(--danger-text)]"
         >
           {status}
         </div>

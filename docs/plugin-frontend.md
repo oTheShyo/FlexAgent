@@ -301,11 +301,17 @@ interface UsePluginsResult {
 - 证据：Composer 零 slash 检测、裸文本透传（explore 已确认）；@-mention popup 可复用（先例已在）；前端补全 UI 工作量小，可先空列表（IPC 未就绪时）。
 - 请后端加一条**只增**通道 `listSlashCommands`（数据源 = 桥注册的 `*.md` 命令表：name/description），不改现有 IPC。前端随后接补全 popup（照 @-mention 模式）。
 - 排序：§9.3 → §9.4 → 本项（补全 UI）。发送路径无需改（内核已拦截 `/cmd` 并展开，见 9.6.2）。
+- **后端结论（已确认，排入队列）**：接受 (a)。实现方案已定——新增只增通道 `codex:listSlashCommands`（进 `IPC` 常量与 `IpcChannel` 联合，纯增量），返回 `Array<{ name: string; description?: string; pluginId: string }>`；数据源 = 主进程 `pluginManifest.enumerateComponents` 对**已启用**插件的 `kind: command` 组件枚举（frontmatter name/description，与详情面板同源），**不经过内核、不改现有通道与字段**。前端按约定：IPC 就绪前先空列表，就绪后接 @-mention 式 popup。交付时更新本节状态行。
+- **交付状态：已实现（待后端批次提交）。** 契约 `SlashCommandSummary` + `IPC.listSlashCommands` + `CodexApi.listSlashCommands?()`（**可选方法**——你们的 `MockCodexApi` 无需改动即保持 typecheck 绿，消费时用 `codex.listSlashCommands?.()`）+ preload 桥 + `PluginService.slashCommands()`；accept-plugins 追加 3 项 CDP 检查（数组形状 / 含 description+pluginId / 卸载后消失）。你们现在即可在 mock 里补一个 `listSlashCommands` 返回 `[]` 并接补全 popup。
+- **前端交付状态（已完成）：** `useChat` 消费 `codexApi.listSlashCommands?.()`，并订阅 `subscribePlugins` 在插件安装/卸载/启停后自动刷新；`Composer` 新增命令补全面板——抽出通用 `CompletionPopup`，命令与文件提及共用同一套 ↑↓/Enter/Tab/Escape 键控与 a11y 关联。触发条件收紧为**草稿起始** `/word`（`/^\/([\w-]*)$/`），使正文中后段的路径式 `/` 不再误开面板；条目展示 `/<name>` + frontmatter description，前缀匹配优先排序。mock 侧 `MockCodexApi.listSlashCommands` 从**已启用**插件的 `kind: command` 组件派生（与后端同源语义），`document-skills` fixture 增加一条 `summarize` 命令供无 Electron 环境自测。
+- **顺带修复：** Escape 关闭面板后，textarea 的 `onKeyUp` 重新同步会因草稿仍以 `/`（或 `@`）开头而立刻把面板重新打开——该缺陷 **@-mention 原本也存在**。现改为 Escape 键的 keyup 不触发同步。
+- **真链路 QA（CDP 9222，fixture `zprio-fixture@local`）：** `Temp\opencode\slash-completion-qa.mjs` → **10/10 PASS**：输入 `/` 弹出并含 `/demo` 与描述、`/de` 过滤、Enter 填入 `/demo ` 且自动关闭、非行首 `/` 不触发、Escape 关闭并保留草稿、@-mention 无回归、无匹配空态。安装后命令立即出现、卸载后立即消失（`slash-setup.mjs` / `slash-teardown.mjs`），双侧互证。
 
 **9.6.2 `/demo hello` QA 数据点 —— 前端已补观察：内核展开正确，非内核问题**
 - 真链路（CDP 9222，fixture `zprio-fixture@local`，session `0603cc3d-c98c-4297-94e3-12669b28790a`）：发送 `/demo hello` → 流内 **仅 1 条** `user_message`，content = `Summarize: hello\r\n`（`$ARGUMENTS`→`hello` 已展开）；原始 `/demo hello` **从未**进入事件流或 transcript。
 - 与 §9.2 已知限制记录的「消息为原文」**不符**——事件层与 `openSession` transcript 均只见展开正文。若 UI 曾显示原文，应是 Composer 发送前的输入回显或另一次会话的误记；**本次不回传后端**。
 - 遗留（归 9.6.1）：渲染层无 slash 补全列表；`/demo ` 不自动补全。展开正文的展示本身正常（流里就是展开后的文本）。
 - 证据：`Temp\opencode\slash-expand-qa.mjs`（exit 0）、`Temp\opencode\slash-expand-qa.png`。
+- **后端结论（本项关闭）**：接受该观察。与 P2b 设计一致——命令 handler 经 `pi.sendUserMessage` 注入**展开后**的 prompt，原文不入事件流；accept-plugins 单测（`$ARGUMENTS` 全量替换 + `sendUserMessage` 捕获）与本次真链路互证。后端无动作；§9.2 旧记录已由前端更正。唯一遗留项归 9.6.1（补全 UI + IPC）。
 
 **9.6.3 提交纪律（不变）：** 后端批次未提交前，你继续只提交 `src/renderer/**` + 本文档；`git add` 指名文件，禁 `git add -A`。

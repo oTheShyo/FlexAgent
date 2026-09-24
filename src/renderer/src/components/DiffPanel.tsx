@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { ContractError, type ApplyFileChangesResult, type FileChange } from '../types'
 import { parsePatch, type DiffRow } from './diffUtils'
+import { Button, IconButton } from './ui'
 
 export interface DiffPanelProps {
   open: boolean
@@ -19,10 +20,10 @@ type Flash =
   | null
 
 const ROW_CLASS: Record<DiffRow['kind'], string> = {
-  add: 'bg-emerald-950/40 text-emerald-300',
-  del: 'bg-red-950/40 text-red-300',
-  ctx: 'bg-zinc-950 text-zinc-100',
-  hunk: 'bg-sky-950/50 text-sky-400',
+  add: 'text-[var(--success)]',
+  del: 'bg-[var(--danger-bg)] text-[var(--danger-text)]',
+  ctx: 'text-[var(--text)]',
+  hunk: 'text-[var(--info)]',
 }
 
 const SIGN: Record<DiffRow['kind'], string> = {
@@ -41,19 +42,19 @@ function shortPath(path: string): string {
 function DiffRowLine({ row }: { row: DiffRow }): React.ReactElement {
   return (
     <div className={`flex min-w-max font-mono text-xs leading-5 ${ROW_CLASS[row.kind]}`}>
-      <span className="w-10 shrink-0 select-none border-r border-zinc-800 px-2 text-right text-zinc-600">
+      <span className="w-10 shrink-0 select-none border-r border-[var(--border)] px-2 text-right text-[var(--text-subtle)]">
         {row.oldNo ?? ''}
       </span>
-      <span className="w-10 shrink-0 select-none border-r border-zinc-800 px-2 text-right text-zinc-600">
+      <span className="w-10 shrink-0 select-none border-r border-[var(--border)] px-2 text-right text-[var(--text-subtle)]">
         {row.newNo ?? ''}
       </span>
       <span
         className={`w-4 shrink-0 select-none text-center ${
           row.kind === 'add'
-            ? 'text-emerald-500'
+            ? 'text-[var(--success)]'
             : row.kind === 'del'
-              ? 'text-red-500'
-              : 'text-zinc-600'
+              ? 'text-[var(--danger)]'
+              : 'text-[var(--text-subtle)]'
         }`}
         aria-hidden="true"
       >
@@ -156,8 +157,8 @@ export function DiffPanel({
     : flash === null
       ? 'opacity-0'
       : flash.kind === 'accepted'
-        ? 'text-emerald-700 opacity-100'
-        : 'text-red-700 opacity-100'
+        ? 'text-[var(--success)] opacity-100'
+        : 'text-[var(--danger-text)] opacity-100'
 
   return (
     <div className="fixed inset-0 z-40" role="presentation">
@@ -166,7 +167,7 @@ export function DiffPanel({
         aria-label="Close review"
         tabIndex={-1}
         onClick={onClose}
-        className="absolute inset-0 h-full w-full cursor-default bg-zinc-950/20"
+        className="absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
       />
       <aside
         role="dialog"
@@ -179,17 +180,12 @@ export function DiffPanel({
             {files.length > 0 && (
               <span className="font-mono text-xs text-[var(--text-muted)]">
                 {files.length} file{files.length === 1 ? '' : 's'}
-                <span className="ml-2 text-emerald-700">+{totalAdds}</span>
-                <span className="ml-1 text-red-700">-{totalDels}</span>
+                <span className="ml-2 text-[var(--success)]">+{totalAdds}</span>
+                <span className="ml-1 text-[var(--danger)]">-{totalDels}</span>
               </span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
+          <IconButton variant="ghost" label="Close" onClick={onClose} className="shrink-0">
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
               <path
                 d="M4 4l8 8M12 4l-8 8"
@@ -199,7 +195,7 @@ export function DiffPanel({
                 fill="none"
               />
             </svg>
-          </button>
+          </IconButton>
         </header>
 
         {files.length === 0 ? (
@@ -233,18 +229,18 @@ export function DiffPanel({
                       {shortPath(file.path)}
                     </span>
                     <span className="ml-auto shrink-0 font-mono text-xs">
-                      <span className="text-emerald-700">+{parsed.additions}</span>
-                      <span className="ml-1.5 text-red-700">-{parsed.deletions}</span>
+                      <span className="text-[var(--success)]">+{parsed.additions}</span>
+                      <span className="ml-1.5 text-[var(--danger)]">-{parsed.deletions}</span>
                     </span>
                   </button>
                 )
               })}
             </nav>
 
-            <div className="min-h-0 flex-1 overflow-auto bg-zinc-950">
+            <div className="min-h-0 flex-1 overflow-auto bg-[var(--surface-sunken)]">
               {active === null || active.parsed.rows.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-6">
-                  <p className="text-sm text-zinc-400">No diff content for this file.</p>
+                  <p className="text-sm text-[var(--text-muted)]">No diff content for this file.</p>
                 </div>
               ) : (
                 <div className="min-w-max py-1">
@@ -264,25 +260,23 @@ export function DiffPanel({
                 {statusText}
               </span>
               <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
+                <Button
+                  variant="danger"
                   data-testid="diff-reject"
                   onClick={handleReject}
                   disabled={flash?.kind === 'rejected'}
-                  className="h-8 rounded border border-[var(--border-strong)] bg-[var(--surface)] px-4 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Reject
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="primary"
                   data-testid="diff-accept"
                   onClick={() => void handleAccept()}
                   disabled={pending || acceptDisabled}
                   title={acceptDisabled ? acceptTitle : undefined}
-                  className="h-8 rounded bg-[var(--accent)] px-4 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Accept
-                </button>
+                </Button>
               </div>
             </footer>
           </>
