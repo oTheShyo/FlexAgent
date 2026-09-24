@@ -269,18 +269,18 @@ interface UsePluginsResult {
 3. 启用插件（`Reloading…` → 内核重启）→ 新会话 → 会话输入框若透传内核 slash commands，`/demo ` 应可补全；输入 `/demo hello` 发送后应出现一条内容为展开正文（`$ARGUMENTS`→`hello`）的用户消息。**若渲染层目前不展示内核命令列表，记录为已知限制即可，不要为此改后端。**
 4. 重复安装/坏 manifest 等错误码展示走查（§6.C 里已覆盖的沿用）。
 
-> **已知限制（§9.2 QA 已确认并记录）**：当前渲染层不展示、也不补全内核 slash command 列表——`/demo ` 无自动补全，发送 `/demo hello` 后消息为原文（非 `$ARGUMENTS` 展开正文）。详情面板的 `kind: command` 组件清单与 frontmatter name/description 展示正常。按上方约定不改后端；待 Composer 命令透传（P2 运行时交互）落地后一并补 UI。
+> **已知限制（§9.2 QA 记录；§9.6.2 真链路复核已更新）**：当前渲染层不展示、也不补全内核 slash command 列表——`/demo ` 无自动补全。**发送路径已验证正确**：`/demo hello` 发出后，事件流与 transcript 中的用户消息均为展开正文（`Summarize: hello`），非原文（详见 §9.6.2）。详情面板的 `kind: command` 组件清单与 frontmatter name/description 展示正常。补全 UI 待 `listSlashCommands` IPC 就绪后一并做（§9.6.1 已回复「现在就排」）。
 
 ### 9.3 等 P2c（hooks）交付后
 
 - 详情面板组件清单应自动多出 `kind: hook` 分组（§5.3 分组逻辑已覆盖该 kind，无需新 UI）——装一个带 `hooks/` 的 fixture 验证渲染不炸、计数正确。
 - 诊断区可能出现新码（如 hook 事件无 PI 对等时的 warning）——确认 `PluginDiagnostic` 渲染能显示未知 code（只展示 code+message，不要硬编码白名单）。
 
-### 9.4 等 P3（marketplace）交付后 —— 届时再开工
+### 9.4 P3 marketplace UI —— 契约已就绪，可以开工
 
-- 后端将交付 `docs/plugin-marketplace.md`（IPC 通道清单 + payload 形状 + 前端 QA 步骤）+ 新的 shared/preload 契约（只增）。
-- 你的 P3 UI 范围：市场浏览/搜索列表、**Install from URL**、安装进度条（progress 事件）、错误态（网络/zip/manifest 失败）、与现有 `Install from folder` 并列。
-- **在 `docs/plugin-marketplace.md` 出现之前不要动 P3 UI**——契约未定，先写会返工。
+- 后端已交付：`docs/plugin-marketplace.md`（IPC 通道清单 + payload 形状 + QA 步骤）、契约 v1.5（`MarketplaceApi`：`listMarketplaces` / `addMarketplace` / `searchMarketplaces` / `installFromMarketplace` / `subscribeMarketplaceProgress`，挂 `window.electron.marketplace`，与 `CodexApi` 分离）、后端验收 55/55 绿。
+- 你的 P3 UI 范围：市场浏览/搜索列表、**Install from URL**、安装进度（`marketplaceProgress` 事件：resolve→download→extract→install→done/error）、错误态（`PLUGIN_SOURCE_INVALID` / `PLUGIN_DOWNLOAD_FAILED`）、与现有 `Install from folder` 并列。
+- **先读 `docs/plugin-marketplace.md` 再动手**；Mock 侧按契约补 `MarketplaceApi` 实现（`MockCodexApi` 不用动，新接口独立）。
 
 ### 9.5 明确不做 / 不碰
 
@@ -288,3 +288,24 @@ interface UsePluginsResult {
 - ❌ `THIRD_PARTY_NOTICES.md`、`docs/plugin-porting.md`、`docs/plugin-backend.md`、`scripts/accept-*.mjs`。
 - ❌ `userConfig` 表单保存、MCP UI（等后端契约）。
 - ❌ 任何 git 写操作超出 9.1 第 1 条的单文件提交。
+
+### 9.6 后端对齐备忘（P2c+P3 交付后 · 后端轨写）
+
+**后端状态（全部验收绿，改动未提交在工作区）：**
+- P2a/b/c + P3 全部落地：typecheck 0、accept-plugins **113/113**（含 hook 全套）、accept-marketplace **55/55**、model/fallback/apply 回归绿。
+- P2c 交付：`kind: hook` 组件枚举 + `plugin_unsupported_hook` 诊断（如 `UserPromptSubmit` 无 PI 对等）——**§9.3 现在可以做了**。
+- P3 交付：契约 v1.5 = **独立 `window.electron.marketplace`（`MarketplaceApi`，不进 `CodexApi`/`MockCodexApi`）**，5 个 IPC 通道 + `marketplaceProgress` 事件，错误码新增 `PLUGIN_SOURCE_INVALID` / `PLUGIN_DOWNLOAD_FAILED`——**§9.4 现在可以做了**。
+- 你们提交的 §9.2 限制（渲染层无 slash 补全/展开渲染）已收到，见下面 9.6.1/9.6.2 两个待对齐点。
+
+**9.6.1 Composer slash 命令透传 —— 前端回复：(a) 现在就排**
+- 证据：Composer 零 slash 检测、裸文本透传（explore 已确认）；@-mention popup 可复用（先例已在）；前端补全 UI 工作量小，可先空列表（IPC 未就绪时）。
+- 请后端加一条**只增**通道 `listSlashCommands`（数据源 = 桥注册的 `*.md` 命令表：name/description），不改现有 IPC。前端随后接补全 popup（照 @-mention 模式）。
+- 排序：§9.3 → §9.4 → 本项（补全 UI）。发送路径无需改（内核已拦截 `/cmd` 并展开，见 9.6.2）。
+
+**9.6.2 `/demo hello` QA 数据点 —— 前端已补观察：内核展开正确，非内核问题**
+- 真链路（CDP 9222，fixture `zprio-fixture@local`，session `0603cc3d-c98c-4297-94e3-12669b28790a`）：发送 `/demo hello` → 流内 **仅 1 条** `user_message`，content = `Summarize: hello\r\n`（`$ARGUMENTS`→`hello` 已展开）；原始 `/demo hello` **从未**进入事件流或 transcript。
+- 与 §9.2 已知限制记录的「消息为原文」**不符**——事件层与 `openSession` transcript 均只见展开正文。若 UI 曾显示原文，应是 Composer 发送前的输入回显或另一次会话的误记；**本次不回传后端**。
+- 遗留（归 9.6.1）：渲染层无 slash 补全列表；`/demo ` 不自动补全。展开正文的展示本身正常（流里就是展开后的文本）。
+- 证据：`Temp\opencode\slash-expand-qa.mjs`（exit 0）、`Temp\opencode\slash-expand-qa.png`。
+
+**9.6.3 提交纪律（不变）：** 后端批次未提交前，你继续只提交 `src/renderer/**` + 本文档；`git add` 指名文件，禁 `git add -A`。
