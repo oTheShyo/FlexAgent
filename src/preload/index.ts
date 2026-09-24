@@ -18,6 +18,8 @@ import {
   type MarketplaceSearchInput,
   type MarketplaceSearchResult,
   type AddMarketplaceInput,
+  type MemoryCard,
+  type MemoryCardFile,
   type ModelConfig,
   type ModelOption,
   type PluginChangeEvent,
@@ -32,6 +34,9 @@ import {
   type SetModelInput,
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
+  type SessionSearchHit,
+  type SkillPendingWrite,
+  type SkillSummary,
   type SlashCommandSummary,
   type TerminalCreateInput,
   type TerminalInputInput,
@@ -188,7 +193,25 @@ const codex: CodexApi = {
     return () => {
       ipcRenderer.removeListener(IPC.pluginsChanged, handler)
     }
-  }
+  },
+
+  listSkills: () => invoke<SkillSummary[]>(IPC.listSkills),
+
+  listPendingSkillWrites: () => invoke<SkillPendingWrite[]>(IPC.listPendingSkillWrites),
+
+  approveSkillWrite: (id: string) => invoke<void>(IPC.approveSkillWrite, id),
+
+  rejectSkillWrite: (id: string) => invoke<void>(IPC.rejectSkillWrite, id),
+
+  listMemoryCards: () => invoke<MemoryCard[]>(IPC.listMemoryCards),
+
+  addMemoryCard: (file: MemoryCardFile, text: string) =>
+    invoke<void>(IPC.addMemoryCard, { file, text }),
+
+  removeMemoryCard: (file: MemoryCardFile, index: number) =>
+    invoke<void>(IPC.removeMemoryCard, { file, index }),
+
+  searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query)
 }
 
 // Not CodexApi — §7.3 accept-disconnect only; frontend must not depend on it.

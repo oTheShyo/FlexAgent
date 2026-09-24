@@ -1,6 +1,7 @@
 import { parentPort } from 'worker_threads'
 import { existsSync, readFileSync } from 'fs'
 import { isAbsolute, relative, resolve, sep } from 'path'
+import { enableCompileCache } from 'node:module'
 import {
   ContractError,
   type ChatMessage,
@@ -14,12 +15,33 @@ import {
   type ThinkingLevel,
   type ToolCallId
 } from '../shared/contract'
-import type { WorkerKernelEvent, WorkerRequest, WorkerResponse, PluginResourceSpec } from '../shared/kernel-protocol'
-import type { AgentSession, SessionManager as SessionManagerType } from '@earendil-works/pi-coding-agent'
-import { createPluginBridgeFactory, type PluginHookDeps } from './pluginBridge'
+import type {
+  WorkerKernelEvent,
+  WorkerRequest,
+  WorkerResponse,
+  PluginResourceSpec,
+  PluginMcpServerConfig
+} from '../shared/kernel-protocol'
+import type {
+  AgentSession,
+  DefaultResourceLoader as DefaultResourceLoaderType,
+  SessionManager as SessionManagerType
+} from '@earendil-works/pi-coding-agent'
+import { createPluginBridgeFactory, type PluginHookDeps, type McpToolBridgeDef, type McpToolBridgeResult } from './pluginBridge'
 import { parseHooksContent } from './hookSources'
+import { perfStart } from './perf'
 import { interpolateHookTemplate } from './userConfig'
 import { runHook, type HookRunOptions, type HookRunResult } from './hooks/hookRunner'
+import { createSelfEvolutionExtension, SKILLS_HOME } from './skills/selfEvolution'
+import {
+  connectMcpClient,
+  listMcpTools,
+  callMcpTool,
+  closeMcpClient,
+  toMcpToolName,
+  type McpClientHandle,
+  type McpToolDescriptor
+} from './mcp/mcpClient'
 
 /**
  * PI package is ESM-only (`exports.import` only). electron-vite emits this
@@ -28,6 +50,20 @@ import { runHook, type HookRunOptions, type HookRunResult } from './hooks/hookRu
  */
 type PiModule = typeof import('@earendil-works/pi-coding-agent')
 let piPromise: Promise<PiModule> | null = null
+
+/**
+ * Same V8 compile cache the main process enables. Worker threads share the
+ * process-wide cache directory, so this is belt-and-braces for the case where
+ * the worker is ever run on its own.
+ */
+const compileCacheDir = process.env.FLEXAGENT_COMPILE_CACHE
+if (compileCacheDir) {
+  try {
+    enableCompileCache(compileCacheDir)
+  } catch {
+    // Optimisation only — a failure here must not stop the worker from booting.
+  }
+}
 
 function loadPi(): Promise<PiModule> {
   piPromise ??= import('@earendil-works/pi-coding-agent')
@@ -67,6 +103,288 @@ async function settleHookRuns(): Promise<void> {
     Promise.allSettled([...inflightHookRuns]),
     new Promise<void>((resolveWait) => setTimeout(resolveWait, 2000))
   ])
+}
+
+const inflightMcpCalls = new Set<Promise<unknown>>()
+const mcpClients: McpClientHandle[] = []
+let mcpStartupPromise: Promise<McpToolBridgeDef[]> | undefined
+
+interface McpToolEntry {
+  bridgeName: string
+  serverKey: string
+  tool: McpToolDescriptor
+  handle: McpClientHandle
+  config: PluginMcpServerConfig
+}
+
+/** All discovered MCP tools (proxy + direct); registry for the single `mcp` proxy tool. */
+const mcpToolRegistry: McpToolEntry[] = []
+/** Servers that failed to connect at bridge startup, keyed by serverKey (reported via mode="status"). */
+const mcpServerErrors = new Map<string, string>()
+
+/**
+ * Timestamp of the last request that came from the UI. Warmup work is pure
+ * speculation, so it must never compete with a real user action for this single
+ * thread: measured, an attach running next to a warmup takes 3-4x longer
+ * (`getAvailable` went 20ms -> 5787ms), which is worse than not warming at all.
+ */
+let lastUserRequestAt = Date.now()
+
+/** How many UI-originated requests are currently being served. */
+let userRequestsInFlight = 0
+
+/**
+ * Wait until the UI has no request in flight and none has arrived for
+ * `quietMs`. Checking in-flight matters: the first request of a launch runs for
+ * several seconds (loading PI, attaching a session), and a purely time-based
+ * check mistakes that silence for idleness — starting a warmup then makes the
+ * very request it was meant to speed up 1.5x slower.
+ */
+async function waitForQuiet(quietMs: number, timeoutMs = 25000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (userRequestsInFlight === 0 && Date.now() - lastUserRequestAt >= quietMs) return true
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 100))
+  }
+  return false
+}
+
+async function settleMcpCalls(): Promise<void> {
+  await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50))
+  if (inflightMcpCalls.size === 0) return
+  await Promise.race([
+    Promise.allSettled([...inflightMcpCalls]),
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, 2000))
+  ])
+}
+
+function mapMcpToolResult(result: unknown): McpToolBridgeResult {
+  const blocks: Array<{ type: 'text'; text: string }> = []
+  const record =
+    result !== null && typeof result === 'object' ? (result as Record<string, unknown>) : undefined
+  if (record && Array.isArray(record.content)) {
+    for (const block of record.content as unknown[]) {
+      if (block === null || typeof block !== 'object') continue
+      const entry = block as Record<string, unknown>
+      if (entry.type === 'text' && typeof entry.text === 'string' && entry.text.length > 0) {
+        blocks.push({ type: 'text', text: entry.text })
+      }
+    }
+  }
+  const structured = record?.structuredContent
+  if (
+    structured !== null &&
+    typeof structured === 'object' &&
+    Object.keys(structured as Record<string, unknown>).length > 0
+  ) {
+    blocks.push({
+      type: 'text',
+      text: `Structured content:\n${JSON.stringify(structured, null, 2)}`
+    })
+  }
+  if (blocks.length === 0) {
+    blocks.push({ type: 'text', text: JSON.stringify(result) })
+  }
+  const text = blocks.map((block) => block.text).join('\n\n')
+  return {
+    content: [{ type: 'text', text: record?.isError === true ? `MCP tool returned an error:\n${text}` : text }],
+    details: undefined
+  }
+}
+
+function trackMcpCall(promise: Promise<unknown>): Promise<unknown> {
+  const tracked = promise.finally(() => {
+    inflightMcpCalls.delete(tracked)
+  })
+  inflightMcpCalls.add(tracked)
+  return tracked
+}
+
+function findMcpEntry(name: string | undefined): McpToolEntry | undefined {
+  if (typeof name !== 'string' || name.length === 0) return undefined
+  const exact = mcpToolRegistry.find((entry) => entry.bridgeName === name)
+  if (exact) return exact
+  const loose = mcpToolRegistry.filter(
+    (entry) => entry.bridgeName.endsWith(`__${name}`) || entry.tool.name === name
+  )
+  return loose.length === 1 ? loose[0] : undefined
+}
+
+function buildMcpProxyDef(): McpToolBridgeDef {
+  return {
+    name: 'mcp',
+    label: 'MCP',
+    description:
+      'Discover and call tools from configured MCP servers. ' +
+      'mode="search": list matching tools (space-separated keywords, OR; empty = all). ' +
+      'mode="describe" + tool: full input schema of one tool. ' +
+      'mode="call" + tool + args: execute a tool. ' +
+      'mode="status": server connectivity and tool counts.',
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['search', 'describe', 'call', 'status'],
+          description: 'Which MCP proxy operation to perform'
+        },
+        query: {
+          type: 'string',
+          description:
+            'search: space-separated keywords (OR) matched against tool names, descriptions, and server keys'
+        },
+        tool: {
+          type: 'string',
+          description: 'describe/call: exact tool name as returned by search (mcp__<server>__<tool>)'
+        },
+        args: {
+          type: 'object',
+          description: 'call: arguments object matching the tool input schema (see describe)'
+        }
+      },
+      required: ['mode']
+    },
+    execute: async (_toolCallId, rawParams, signal) => {
+      const params =
+        rawParams !== null && typeof rawParams === 'object' ? (rawParams as Record<string, unknown>) : {}
+      const mode = typeof params.mode === 'string' ? params.mode : ''
+      if (mode === 'status') {
+        const lines: string[] = []
+        const byServer = new Map<string, { type: string; count: number }>()
+        for (const entry of mcpToolRegistry) {
+          const current = byServer.get(entry.serverKey)
+          if (current) current.count += 1
+          else byServer.set(entry.serverKey, { type: entry.config.type, count: 1 })
+        }
+        for (const [serverKey, info] of byServer) {
+          lines.push(`- ${serverKey} [${info.type}]: connected, ${info.count} tool(s)`)
+        }
+        for (const [serverKey, message] of mcpServerErrors) {
+          lines.push(`- ${serverKey}: UNAVAILABLE — ${message}`)
+        }
+        if (lines.length === 0) lines.push('No MCP servers configured.')
+        return { content: [{ type: 'text', text: lines.join('\n') }], details: undefined }
+      }
+      if (mode === 'search') {
+        const query = typeof params.query === 'string' ? params.query.toLowerCase() : ''
+        const words = query.split(/\s+/).filter((word) => word.length > 0)
+        const matched = mcpToolRegistry.filter((entry) => {
+          if (words.length === 0) return true
+          const haystack =
+            `${entry.bridgeName} ${entry.tool.name} ${entry.tool.description ?? ''} ${entry.serverKey}`.toLowerCase()
+          return words.some((word) => haystack.includes(word))
+        })
+        if (matched.length === 0) {
+          return {
+            content: [
+              { type: 'text', text: 'No matching MCP tools. Use mode="status" to see server health.' }
+            ],
+            details: undefined
+          }
+        }
+        const lines = matched.map((entry) => {
+          const desc = entry.tool.description ? ` — ${entry.tool.description}` : ''
+          return `- ${entry.bridgeName}${desc}`
+        })
+        return { content: [{ type: 'text', text: lines.join('\n') }], details: undefined }
+      }
+      if (mode === 'describe' || mode === 'call') {
+        const entry = findMcpEntry(typeof params.tool === 'string' ? params.tool : undefined)
+        if (!entry) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Unknown MCP tool: ${String(params.tool ?? '')}. Use mode="search" first.`
+              }
+            ],
+            details: undefined
+          }
+        }
+        if (mode === 'describe') {
+          const text = [
+            `${entry.bridgeName} (server: ${entry.serverKey})`,
+            entry.tool.description ? `Description: ${entry.tool.description}` : undefined,
+            `Input schema:\n${JSON.stringify(
+              entry.tool.inputSchema ?? { type: 'object', properties: {} },
+              null,
+              2
+            )}`
+          ]
+            .filter((line) => line !== undefined)
+            .join('\n')
+          return { content: [{ type: 'text', text }], details: undefined }
+        }
+        const result = await trackMcpCall(
+          callMcpTool(entry.handle, entry.tool.name, params.args, entry.config.timeoutMs, signal)
+        )
+        return mapMcpToolResult(result)
+      }
+      return {
+        content: [
+          { type: 'text', text: `Unknown mode "${mode}". Use search, describe, call, or status.` }
+        ],
+        details: undefined
+      }
+    }
+  }
+}
+
+async function startMcpToolBridge(): Promise<McpToolBridgeDef[]> {
+  const servers = pluginResourceSpec.mcpServers ?? {}
+  const defs: McpToolBridgeDef[] = []
+  const seen = new Set<string>()
+  mcpToolRegistry.length = 0
+  mcpServerErrors.clear()
+  let hasProxyServers = false
+  for (const [serverKey, config] of Object.entries(servers)) {
+    try {
+      const handle = await connectMcpClient(config, serverKey)
+      mcpClients.push(handle)
+      const listed = await listMcpTools(handle)
+      for (const tool of listed) {
+        const toolName = toMcpToolName(serverKey, tool.name)
+        if (seen.has(toolName)) continue
+        seen.add(toolName)
+        const entry: McpToolEntry = { bridgeName: toolName, serverKey, tool, handle, config }
+        mcpToolRegistry.push(entry)
+        if (config.expose === 'direct') {
+          defs.push({
+            name: toolName,
+            label: tool.name,
+            description: tool.description ?? `MCP tool from ${serverKey}`,
+            parameters: tool.inputSchema ?? { type: 'object', properties: {} },
+            execute: async (_toolCallId, params, signal) => {
+              const result = await trackMcpCall(
+                callMcpTool(handle, tool.name, params, config.timeoutMs, signal)
+              )
+              return mapMcpToolResult(result)
+            }
+          })
+        } else {
+          hasProxyServers = true
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      mcpServerErrors.set(serverKey, message)
+      console.error(`[worker] MCP server ${serverKey} unavailable: ${message}`)
+    }
+  }
+  if (hasProxyServers) {
+    defs.push(buildMcpProxyDef())
+  }
+  return defs
+}
+
+function resetMcpBridge(): void {
+  for (const client of mcpClients) {
+    void closeMcpClient(client)
+  }
+  mcpClients.length = 0
+  mcpToolRegistry.length = 0
+  mcpServerErrors.clear()
+  mcpStartupPromise = undefined
 }
 
 const port = parentPort
@@ -453,22 +771,127 @@ function buildMessages(session: AgentSession): ChatMessage[] {
   return out
 }
 
+/**
+ * Resource loaders are bound to a cwd and expensive to build: reload() resolves
+ * the package graph, loads every extension module and re-reads the project
+ * context files. That was ~4s per attach here — paid again for every New chat
+ * and every switch to a session this worker had not attached yet.
+ *
+ * Sessions sharing a folder now share one loader. Different folders still get
+ * their own, and reloadPlugins drops the whole cache because plugin-provided
+ * extensions and skills are baked in at construction time.
+ */
+const resourceLoaders = new Map<string, Promise<DefaultResourceLoaderType>>()
+
+async function acquireResourceLoader(
+  cwd: string,
+  mcpTools: McpToolBridgeDef[]
+): Promise<DefaultResourceLoaderType> {
+  const key = cwd.toLowerCase()
+  const cached = resourceLoaders.get(key)
+  if (cached) return cached
+  const pending = (async () => {
+    const { DefaultResourceLoader, getAgentDir } = await loadPi()
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir: getAgentDir(),
+      additionalExtensionPaths: pluginResourceSpec.extensionPaths,
+      // User-level skills (agent-written via skill_manage) ride the same
+      // additionalSkillPaths channel as plugin skills; the dir may not exist
+      // until the first skill is written, hence the existsSync guard.
+      additionalSkillPaths: [
+        ...pluginResourceSpec.skillRoots,
+        ...(existsSync(SKILLS_HOME) ? [SKILLS_HOME] : [])
+      ],
+      extensionFactories: [
+        createSelfEvolutionExtension({ onSkillsChanged: () => resourceLoaders.clear() }),
+        createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps, { tools: mcpTools })
+      ]
+    })
+    await resourceLoader.reload()
+    return resourceLoader
+  })()
+  resourceLoaders.set(key, pending)
+  // A failed build must not be cached — the next attach should retry cleanly.
+  pending.catch(() => resourceLoaders.delete(key))
+  return pending
+}
+
+/** Minimal shape of the V8 CPU profile we consume. */
+interface CpuProfileNode {
+  hitCount?: number
+  callFrame: { functionName: string; url: string; lineNumber: number }
+}
+interface CpuProfile {
+  nodes: CpuProfileNode[]
+}
+
+/** Top self-time consumers, so a slow PI call can be attributed to a file:line. */
+function reportProfile(label: string, prof: CpuProfile, top = 12): void {
+  const self = new Map<string, number>()
+  for (const node of prof.nodes) {
+    const hits = node.hitCount ?? 0
+    if (hits === 0) continue
+    const { functionName, url, lineNumber } = node.callFrame
+    const file = url ? url.replace(/^.*[\\/]/, '') : '(native)'
+    const key = `${functionName || '(anonymous)'} @ ${file}:${lineNumber}`
+    self.set(key, (self.get(key) ?? 0) + hits)
+  }
+  const rows = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, top)
+  console.log(`[perf:profile] ${label} ${JSON.stringify(rows)}`)
+}
+
+/**
+ * Wrap a call in the V8 CPU profiler when FLEXAGENT_PERF=1, printing where the
+ * self time went. Sampling interval is 1ms, so hit counts read as milliseconds.
+ */
+async function profiled<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  if (process.env.FLEXAGENT_PERF !== '1') return fn()
+  const { Session: InspectorSession } = await import('node:inspector')
+  const inspector = new InspectorSession()
+  inspector.connect()
+  const post = <R>(method: string): Promise<R> =>
+    new Promise<R>((resolve, reject) => {
+      inspector.post(method, (err, res) => (err ? reject(err) : resolve(res as R)))
+    })
+  try {
+    await post('Profiler.enable')
+    await post('Profiler.start')
+    const result = await fn()
+    const { profile } = await post<{ profile: CpuProfile }>('Profiler.stop')
+    reportProfile(label, profile)
+    return result
+  } finally {
+    inspector.disconnect()
+  }
+}
+
 async function attachSession(
   sessionId: SessionId,
   cwd: string,
   sessionManager: SessionManagerType
 ): Promise<HostSession> {
-  const { createAgentSession, DefaultResourceLoader, getAgentDir } = await loadPi()
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir: getAgentDir(),
-    additionalExtensionPaths: pluginResourceSpec.extensionPaths,
-    additionalSkillPaths: pluginResourceSpec.skillRoots,
-    extensionFactories: [createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps)]
-  })
-  await resourceLoader.reload()
-  const { session } = await createAgentSession({ cwd, sessionManager, resourceLoader })
+  const perf = perfStart()
+  const { createAgentSession } = await loadPi()
+  perf.mark('loadPi')
+  if (!mcpStartupPromise) mcpStartupPromise = startMcpToolBridge()
+  const mcpTools = await mcpStartupPromise
+  perf.mark('mcp')
+  const resourceLoader = await acquireResourceLoader(cwd, mcpTools)
+  perf.mark('resourceLoader')
+  // createAgentSession would otherwise build its own ModelRuntime per attach
+  // (measured ~1.7s). getDefaultAgentDir() === getAgentDir(), so the shared
+  // instance resolves the same auth.json/models.json and can be reused, exactly
+  // as PI's own service layer does across sessions.
+  const modelRuntime = await getModelRuntime()
+  perf.mark('getModelRuntime')
+  const { session } = await profiled('createAgentSession', () =>
+    createAgentSession({ cwd, sessionManager, resourceLoader, modelRuntime })
+  )
+  perf.mark('createAgentSession')
   await session.bindExtensions({ mode: 'print' })
+  perf.mark('bindExtensions')
+  perf.done('attachSession', { sessionId, cwd })
   const host: HostSession = {
     session,
     sessionId,
@@ -499,6 +922,7 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       return [...sessions.keys()]
     }
     case 'createSession': {
+      const perf = perfStart()
       if (!req.cwd || !isAbsolute(req.cwd)) {
         throw new ContractError('INVALID_INPUT', 'cwd must be an absolute path')
       }
@@ -507,23 +931,38 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
         return { piSessionFile: existing.session.sessionFile }
       }
       const { SessionManager } = await loadPi()
+      perf.mark('loadPi')
       const host = await attachSession(req.sessionId, req.cwd, SessionManager.create(req.cwd))
+      perf.mark('attachSession')
+      perf.done('createSession', { sessionId: req.sessionId, cwd: req.cwd })
       return { piSessionFile: host.session.sessionFile }
     }
     case 'openSession': {
+      const perf = perfStart()
       const existing = sessions.get(req.sessionId)
       if (existing) {
-        return { messages: buildMessages(existing.session) }
+        const messages = buildMessages(existing.session)
+        perf.mark('buildMessages')
+        perf.done('openSession', { sessionId: req.sessionId, warm: true, messages: messages.length })
+        return { messages }
       }
       if (!req.piSessionFile) {
+        perf.done('openSession', { sessionId: req.sessionId, warm: false, reason: 'no transcript file' })
         return { messages: [] }
       }
       const { SessionManager } = await loadPi()
+      perf.mark('loadPi')
       const sessionManager = SessionManager.open(req.piSessionFile, undefined, req.cwd)
+      perf.mark('sessionManager.open')
       const host = await attachSession(req.sessionId, req.cwd, sessionManager)
-      return { messages: buildMessages(host.session) }
+      perf.mark('attachSession')
+      const messages = buildMessages(host.session)
+      perf.mark('buildMessages')
+      perf.done('openSession', { sessionId: req.sessionId, warm: false, messages: messages.length })
+      return { messages }
     }
     case 'setSessionCwd': {
+      const perf = perfStart()
       if (!req.cwd || !isAbsolute(req.cwd)) {
         throw new ContractError('INVALID_INPUT', 'cwd must be an absolute path')
       }
@@ -542,12 +981,16 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       previous.unsubscribe()
       previous.session.dispose()
       sessions.delete(req.sessionId)
+      perf.mark('disposePrevious')
       const { SessionManager } = await loadPi()
       const sessionManager =
         sessionFile === undefined
           ? SessionManager.create(req.cwd)
           : SessionManager.open(sessionFile, undefined, req.cwd)
+      perf.mark('sessionManager.open')
       const host = await attachSession(req.sessionId, req.cwd, sessionManager)
+      perf.mark('attachSession')
+      perf.done('setSessionCwd', { sessionId: req.sessionId, cwd: req.cwd })
       return { piSessionFile: host.session.sessionFile }
     }
     case 'prompt': {
@@ -650,9 +1093,47 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       sessions.delete(req.sessionId)
       return undefined
     }
+    case 'warmup': {
+      // Prewarming is only worth anything when it happens strictly before the
+      // user acts. This worker has a single thread, so a "warmup" that overlaps
+      // a real request does not run in parallel — the two interleave and both
+      // wall-clock times balloon (measured: getModelRuntime 1.7s -> 9.2s while
+      // an attach was in flight). So: do nothing at all until the UI has been
+      // quiet for a while, and bail out rather than compete.
+      const perf = perfStart()
+      if (!(await waitForQuiet(2000))) {
+        perf.mark('idleWait')
+        perf.done('warmup', { cwd: req.cwd, skipped: 'ui busy' })
+        return undefined
+      }
+      perf.mark('idleWait')
+      await loadPi()
+      perf.mark('loadPi')
+      await getModelRuntime()
+      perf.mark('getModelRuntime')
+      if (req.cwd) {
+        if (!mcpStartupPromise) mcpStartupPromise = startMcpToolBridge()
+        const mcpTools = await mcpStartupPromise
+        perf.mark('mcp')
+        // The loader build is the longest single piece; re-check before paying
+        // for it in case the user came back while the rest was running.
+        if (await waitForQuiet(1500)) {
+          await acquireResourceLoader(req.cwd, mcpTools)
+          perf.mark('resourceLoader')
+        } else {
+          perf.mark('resourceLoaderSkipped')
+        }
+      }
+      perf.done('warmup', { cwd: req.cwd })
+      return undefined
+    }
     case 'listModels': {
+      const perf = perfStart()
       const runtime = await getModelRuntime()
+      perf.mark('getModelRuntime')
       const available = await runtime.getAvailable()
+      perf.mark('getAvailable')
+      perf.done('listModels')
       return available.map((m) => toModelOption(m))
     }
     case 'getModelConfig': {
@@ -682,6 +1163,17 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'reloadPlugins': {
       pluginResourceSpec = req.resourceSpec
+      resetMcpBridge()
+      // Plugin extensions, skills and MCP tools are baked into a loader at
+      // construction, so every cached loader is stale by definition now.
+      resourceLoaders.clear()
+      return undefined
+    }
+    case 'reloadResources': {
+      // User-level skills changed on disk (approved skill write or direct
+      // skill_manage write). Loaders bake skills in at construction, so the
+      // next attach rebuilds and picks them up.
+      resourceLoaders.clear()
       return undefined
     }
     case 'shutdown': {
@@ -697,6 +1189,14 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
         sessions.delete(id)
       }
       await settleHookRuns()
+      await settleMcpCalls()
+      for (const client of mcpClients) {
+        try {
+          await closeMcpClient(client)
+        } catch {
+        }
+      }
+      mcpClients.length = 0
       setTimeout(() => process.exit(0), 10)
       return undefined
     }
@@ -707,6 +1207,12 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
 }
 
 port.on('message', (req: WorkerRequest) => {
+  const isWarmup = req.type === 'warmup'
+  if (!isWarmup) {
+    // Warmup is speculative background work; everything else is the user waiting.
+    lastUserRequestAt = Date.now()
+    userRequestsInFlight += 1
+  }
   void handleRequest(req)
     .then((result) => ok(req.requestId, result))
     .catch((err: unknown) => {
@@ -715,5 +1221,8 @@ port.on('message', (req: WorkerRequest) => {
       } else {
         fail(req.requestId, 'KERNEL_INTERNAL', err instanceof Error ? err.message : String(err))
       }
+    })
+    .finally(() => {
+      if (!isWarmup) userRequestsInFlight -= 1
     })
 })

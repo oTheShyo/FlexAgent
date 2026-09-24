@@ -439,7 +439,7 @@ function collectP2Component(
     result.diagnostics.push({
       code: 'plugin_unsupported_component',
       severity: 'warning',
-      message: `${label} components are registered but not loaded in P1 (P2 roadmap).`
+      message: `${label} components are bridged to the kernel at session start.`
     })
   }
 }

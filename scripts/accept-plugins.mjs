@@ -280,6 +280,7 @@ async function runBridgeUnitChecks() {
 async function main() {
   await runBridgeUnitChecks()
   await runHookUnitChecks()
+  await runMcpUnitChecks()
   const targets = await listTargets()
   const page = pickPage(targets)
   if (!page) {
@@ -1241,7 +1242,7 @@ async function runHookUnitChecks() {
     const workerSrc = readFileSync(new URL('../src/main/worker.ts', import.meta.url), 'utf8')
     check(
       'hook: worker wires hookDeps into bridge factory',
-      workerSrc.includes('createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps)')
+      workerSrc.includes('createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps')
     )
     check(
       'hook: worker drains inflight hook runs before exit',
@@ -1383,4 +1384,238 @@ async function runHookUnitChecks() {
     }
     if (cdp) cdp.close()
   }
+}
+
+async function runMcpUnitChecks() {
+  const throwMessage = (fn) => {
+    try {
+      fn()
+      return ''
+    } catch (err) {
+      return String((err && err.message) || err)
+    }
+  }
+
+  let pluginMcp = null
+  let mcpClient = null
+  let userConfig = null
+  let hookRunner = null
+
+  try {
+    userConfig = await import(new URL('../src/main/userConfig.ts', import.meta.url).href)
+    hookRunner = await import(new URL('../src/main/hooks/hookRunner.ts', import.meta.url).href)
+  } catch (err) {
+    check('mcp: deps modules import (type-stripped, no Electron)', false, String((err && err.message) || err))
+  }
+
+  try {
+    pluginMcp = await import(new URL('../src/main/pluginMcp.ts', import.meta.url).href)
+    check('mcp: pluginMcp module import (type-stripped, no Electron)', typeof pluginMcp.collectMcpServerConfigs === 'function')
+  } catch (err) {
+    check('mcp: pluginMcp module import (type-stripped, no Electron)', false, String((err && err.message) || err))
+    return
+  }
+  try {
+    mcpClient = await import(new URL('../src/main/mcp/mcpClient.ts', import.meta.url).href)
+    check(
+      'mcp: mcpClient module import (type-stripped, no Electron)',
+      typeof mcpClient.connectMcpClient === 'function' &&
+        typeof mcpClient.listMcpTools === 'function' &&
+        typeof mcpClient.callMcpTool === 'function' &&
+        typeof mcpClient.closeMcpClient === 'function'
+    )
+  } catch (err) {
+    check('mcp: mcpClient module import (type-stripped, no Electron)', false, String((err && err.message) || err))
+  }
+
+  check(
+    'mcp: tool name namespace (zcode mcp__ convention)',
+    mcpClient && mcpClient.toMcpToolName('plugin:demo:github', 'echo') === 'mcp__plugin_demo_github__echo',
+    mcpClient ? mcpClient.toMcpToolName('plugin:demo:github', 'echo') : 'no module'
+  )
+
+  const mkInput = (root, manifest, extra = {}) => ({
+    rootPath: root,
+    manifest,
+    dataPath: join(root, 'data'),
+    cwd: root,
+    pluginId: 'mcp-fixture@local',
+    pluginName: 'mcp-fixture',
+    userConfigValues: {},
+    sensitiveKeys: [],
+    interpolate: userConfig.interpolateHookTemplate,
+    createEnvOverlay: hookRunner.createHookEnvOverlay,
+    ...extra
+  })
+  const emptyManifest = {}
+
+  const inlineRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-inline-'))
+  const inlineResult = pluginMcp.collectMcpServerConfigs(
+    mkInput(inlineRoot, { mcpServers: { fetcher: { command: 'node', args: ['-v'] } } })
+  )
+  check(
+    'mcp: inline manifest.mcpServers resolves with namespaced key',
+    Object.keys(inlineResult.configs).length === 1 &&
+      inlineResult.configs['plugin:mcp-fixture:fetcher']?.command === 'node',
+    JSON.stringify(inlineResult.configs)
+  )
+  rmSync(inlineRoot, { recursive: true, force: true })
+
+  const fileRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-file-'))
+  writeFileSync(
+    join(fileRoot, '.mcp.json'),
+    JSON.stringify({ mcpServers: { wrapper: { command: 'node' } } }),
+    'utf8'
+  )
+  const fileResult = pluginMcp.collectMcpServerConfigs(mkInput(fileRoot, emptyManifest))
+  check(
+    'mcp: .mcp.json {mcpServers} wrapper accepted',
+    fileResult.configs['plugin:mcp-fixture:wrapper']?.command === 'node',
+    JSON.stringify(fileResult.configs)
+  )
+  const bareRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-bare-'))
+  writeFileSync(join(bareRoot, '.mcp.json'), JSON.stringify({ bare: { command: 'node' } }), 'utf8')
+  const bareResult = pluginMcp.collectMcpServerConfigs(mkInput(bareRoot, emptyManifest))
+  check(
+    'mcp: bare .mcp.json object accepted',
+    bareResult.configs['plugin:mcp-fixture:bare']?.command === 'node',
+    JSON.stringify(bareResult.configs)
+  )
+  rmSync(fileRoot, { recursive: true, force: true })
+  rmSync(bareRoot, { recursive: true, force: true })
+
+  const strRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-str-'))
+  mkdirSync(join(strRoot, 'cfg'), { recursive: true })
+  writeFileSync(join(strRoot, 'cfg', 'servers.json'), JSON.stringify({ via: { command: 'node' } }), 'utf8')
+  const strResult = pluginMcp.collectMcpServerConfigs(mkInput(strRoot, { mcpServers: 'cfg/servers.json' }))
+  check(
+    'mcp: manifest.mcpServers string path resolved inside root',
+    strResult.configs['plugin:mcp-fixture:via']?.command === 'node',
+    JSON.stringify(strResult.configs)
+  )
+  const escResult = pluginMcp.collectMcpServerConfigs(mkInput(strRoot, { mcpServers: '../outside.json' }))
+  check(
+    'mcp: mcpServers path escaping root errors plugin_component_path_invalid',
+    escResult.diagnostics.some((d) => d.code === 'plugin_component_path_invalid' && d.severity === 'error'),
+    JSON.stringify(escResult.diagnostics)
+  )
+  rmSync(strRoot, { recursive: true, force: true })
+
+  const httpRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-http-'))
+  const httpResult = pluginMcp.collectMcpServerConfigs(
+    mkInput(httpRoot, { mcpServers: { remote: { type: 'http', url: 'https://example.com/mcp' } } })
+  )
+  check(
+    'mcp: http transport surfaces plugin_unsupported_mcp warning and spawns nothing',
+    httpResult.diagnostics.some((d) => d.code === 'plugin_unsupported_mcp' && d.severity === 'warning') &&
+      Object.keys(httpResult.configs).length === 0,
+    JSON.stringify(httpResult.diagnostics)
+  )
+  const badJsonRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-badjson-'))
+  writeFileSync(join(badJsonRoot, '.mcp.json'), '{ nope', 'utf8')
+  const badJsonResult = pluginMcp.collectMcpServerConfigs(mkInput(badJsonRoot, emptyManifest))
+  check(
+    'mcp: malformed .mcp.json errors plugin_mcp_read_failed',
+    badJsonResult.diagnostics.some((d) => d.code === 'plugin_mcp_read_failed' && d.severity === 'error'),
+    JSON.stringify(badJsonResult.diagnostics)
+  )
+  rmSync(httpRoot, { recursive: true, force: true })
+  rmSync(badJsonRoot, { recursive: true, force: true })
+
+  const resRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-res-'))
+  const resResult = pluginMcp.collectMcpServerConfigs(
+    mkInput(
+      resRoot,
+      {
+        mcpServers: {
+          templated: {
+            command: '${user_config.bin}',
+            args: ['${user_config.msg}'],
+            env: { TOKEN: '${user_config.token}', FLEX_PLUGIN_ID: 'forged' }
+          }
+        }
+      },
+      {
+        userConfigValues: { bin: 'node', msg: 'hello', token: 'sekret' },
+        sensitiveKeys: ['token']
+      }
+    )
+  )
+  const templated = resResult.configs['plugin:mcp-fixture:templated']
+  check(
+    'mcp: ${user_config.*} resolved in command and args',
+    templated?.command === 'node' && templated?.args?.[0] === 'hello',
+    JSON.stringify(templated || resResult.diagnostics)
+  )
+  check(
+    'mcp: env overlay keys and sensitive allowed in env sink',
+    templated?.env?.TOKEN === 'sekret' &&
+      templated?.env?.FLEX_PROJECT_DIR === resRoot &&
+      templated?.env?.CLAUDE_PLUGIN_ROOT === resRoot &&
+      templated?.env?.ZCODE_PLUGIN_ID === 'mcp-fixture@local',
+    JSON.stringify(templated?.env || {})
+  )
+  check(
+    'mcp: FLEX_PLUGIN_ID authoritative after manifest env spread',
+    templated?.env?.FLEX_PLUGIN_ID === 'mcp-fixture@local',
+    JSON.stringify(templated?.env?.FLEX_PLUGIN_ID || null)
+  )
+  const sensRoot = mkdtempSync(join(tmpdir(), 'flex-mcp-sens-'))
+  const sensResult = pluginMcp.collectMcpServerConfigs(
+    mkInput(
+      sensRoot,
+      {
+        mcpServers: {
+          leaky: { command: 'node', args: ['${user_config.token}'] },
+          leakier: { command: '${user_config.token}' }
+        }
+      },
+      { userConfigValues: { token: 'sekret' }, sensitiveKeys: ['token'] }
+    )
+  )
+  const sensDiags = sensResult.diagnostics.filter((d) => d.code === 'plugin_mcp_invalid' && d.severity === 'error')
+  check(
+    'mcp: sensitive value blocked in command and args sinks',
+    sensDiags.length === 2 &&
+      sensDiags.every((d) => /token/.test(d.message)) &&
+      sensResult.configs['plugin:mcp-fixture:leaky'] === undefined &&
+      sensResult.configs['plugin:mcp-fixture:leakier'] === undefined,
+    JSON.stringify(sensResult.diagnostics)
+  )
+  rmSync(resRoot, { recursive: true, force: true })
+  rmSync(sensRoot, { recursive: true, force: true })
+
+  if (!mcpClient) return
+
+  const serverScript =
+    "let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line.trim())continue;const m=JSON.parse(line);if(m.method==='initialize'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fake',version:'1.0.0'}}})+'\\n')}else if(m.method==='tools/list'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{tools:[{name:'echo',description:'echo tool',inputSchema:{type:'object',properties:{msg:{type:'string'}},required:['msg']}}]}})+'\\n')}else if(m.method==='tools/call'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:'echo:'+(m.params.arguments.msg||'')}],isError:false}})+'\\n')}}})"
+  let handle = null
+  try {
+    handle = await mcpClient.connectMcpClient(
+      { type: 'stdio', command: process.execPath, args: ['-e', serverScript], env: {} },
+      'plugin:fake:fake'
+    )
+    check('mcp: client initialize handshake', !!handle)
+    const tools = await mcpClient.listMcpTools(handle)
+    check(
+      'mcp: tools/list returns descriptor with inputSchema',
+      tools.length === 1 && tools[0].name === 'echo' && tools[0].inputSchema?.type === 'object',
+      JSON.stringify(tools)
+    )
+    const call = await mcpClient.callMcpTool(handle, 'echo', { msg: 'hi' }, undefined)
+    check(
+      'mcp: tools/call round-trip echoes param',
+      call?.content?.[0]?.text === 'echo:hi',
+      JSON.stringify(call)
+    )
+  } catch (err) {
+    check('mcp: client round-trip', false, String((err && err.message) || err))
+  } finally {
+    if (handle) {
+      try {
+        await mcpClient.closeMcpClient(handle)
+      } catch {}
+    }
+  }
+  check('mcp: close completes without throw', true)
 }

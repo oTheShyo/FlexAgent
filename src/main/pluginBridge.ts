@@ -44,8 +44,32 @@ export interface BridgePiApi {
       handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>
     }
   ): void
+  registerTool?(tool: McpToolBridgeDef): void
   sendUserMessage(content: string): void
   getCommands?: () => Array<{ name: string }>
+}
+
+export interface McpToolBridgeResult {
+  content: Array<{ type: 'text'; text: string }>
+  details: unknown
+}
+
+export interface McpToolBridgeDef {
+  name: string
+  label: string
+  description: string
+  parameters: Record<string, unknown>
+  execute: (
+    toolCallId: string,
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    ctx: unknown
+  ) => Promise<McpToolBridgeResult>
+}
+
+export interface PluginMcpDeps {
+  tools: McpToolBridgeDef[]
 }
 
 export type BridgeHookOn = (
@@ -368,7 +392,8 @@ export function registerPluginHooks(
 export function createPluginBridgeFactory(
   spec: PluginResourceSpec,
   diagnostics?: PluginBridgeDiagnostic[],
-  hookDeps?: PluginHookDeps
+  hookDeps?: PluginHookDeps,
+  mcpDeps?: PluginMcpDeps
 ): InlineExtension {
   return {
     name: 'flex-plugin-bridge',
@@ -384,6 +409,18 @@ export function createPluginBridgeFactory(
           hookDeps,
           diagnostics
         )
+      }
+      if (mcpDeps) {
+        for (const tool of mcpDeps.tools) {
+          pi.registerTool?.({
+            name: tool.name,
+            label: tool.label,
+            description: tool.description,
+            parameters: tool.parameters,
+            execute: (toolCallId, params, signal, onUpdate, ctx) =>
+              tool.execute(toolCallId, params, signal, onUpdate, ctx)
+          })
+        }
       }
     }
   }

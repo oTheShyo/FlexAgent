@@ -5,7 +5,9 @@ import { ContractError } from '../shared/contract'
 import type { PluginId, PluginSourceKind } from '../shared/contract'
 import type { PluginResourceSpec } from '../shared/kernel-protocol'
 import { enumerateComponents, findManifestPath, parseManifest } from './pluginManifest'
-import { resolveUserConfigValues } from './userConfig'
+import { resolveUserConfigValues, interpolateHookTemplate } from './userConfig'
+import { createHookEnvOverlay } from './hooks/hookRunner'
+import { collectMcpServerConfigs } from './pluginMcp'
 
 export interface PluginRecord {
   id: PluginId
@@ -181,15 +183,42 @@ export class PluginRegistry {
         spec.skillRoots.push(...enumeration.skillRoots)
         spec.commands.push(...enumeration.commandDirs)
         spec.hooks.push(...enumeration.hookPaths)
+        const userConfig = resolveUserConfigValues(manifest.userConfig, rec.configuredOptions)
+        const sensitiveKeys = Object.entries(manifest.userConfig ?? {})
+          .filter(([, entry]) => entry.sensitive === true)
+          .map(([key]) => key)
         for (const hookPath of enumeration.hookPaths) {
           spec.hookContexts[hookPath] = {
             pluginRoot: rec.rootPath,
             pluginId: rec.id,
             pluginName: rec.name,
-            userConfig: resolveUserConfigValues(manifest.userConfig, rec.configuredOptions),
-            sensitiveKeys: Object.entries(manifest.userConfig ?? {})
-              .filter(([, entry]) => entry.sensitive === true)
-              .map(([key]) => key)
+            userConfig,
+            sensitiveKeys
+          }
+        }
+        const mcpResult = collectMcpServerConfigs({
+          rootPath: rec.rootPath,
+          manifest,
+          dataPath: join(pluginsStorageRoot(), 'data', rec.id),
+          cwd: rec.rootPath,
+          pluginId: rec.id,
+          pluginName: rec.name,
+          userConfigValues: userConfig,
+          sensitiveKeys,
+          interpolate: interpolateHookTemplate,
+          createEnvOverlay: createHookEnvOverlay
+        })
+        spec.mcp.push(...mcpResult.paths)
+        if (spec.mcpServers === undefined) spec.mcpServers = {}
+        if (spec.mcpContexts === undefined) spec.mcpContexts = {}
+        Object.assign(spec.mcpServers, mcpResult.configs)
+        for (const serverKey of mcpResult.paths) {
+          spec.mcpContexts[serverKey] = {
+            pluginRoot: rec.rootPath,
+            pluginId: rec.id,
+            pluginName: rec.name,
+            userConfig,
+            sensitiveKeys
           }
         }
       } catch {

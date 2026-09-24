@@ -7,6 +7,7 @@ import EmptyState from './components/EmptyState'
 import Composer from './components/Composer'
 import PluginsPage from './components/PluginsPage'
 import PluginDetailPanel from './components/PluginDetailPanel'
+import SkillsPage from './components/SkillsPage'
 import { usePlugins } from './hooks/usePlugins'
 import ChatView from './components/ChatView'
 import DiffPanel from './components/DiffPanel'
@@ -36,6 +37,7 @@ export default function App({ children }: AppProps) {
   const [showPalette, setShowPalette] = useState(false)
   const [paletteOpenSettings, setPaletteOpenSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
+  const [showSkills, setShowSkills] = useState(false)
   const sessionMeta = useSessionMeta()
   const {
     plugins,
@@ -126,6 +128,7 @@ export default function App({ children }: AppProps) {
   const handleNewChat = useCallback(
     (cwd?: string): void => {
       setShowPlugins(false)
+      setShowSkills(false)
       closeDetail()
       void newChat(cwd)
     },
@@ -144,6 +147,7 @@ export default function App({ children }: AppProps) {
   // Composer chip: give the open chat a workspace (or replace the current one).
   const handleChooseProject = useCallback((): void => {
     setShowPlugins(false)
+    setShowSkills(false)
     closeDetail()
     void chooseProject()
   }, [chooseProject, closeDetail])
@@ -151,6 +155,7 @@ export default function App({ children }: AppProps) {
   // Sidebar Projects "+": pick a folder and open a chat in it.
   const handleAddProject = useCallback((): void => {
     setShowPlugins(false)
+    setShowSkills(false)
     closeDetail()
     void newChatInFolder()
   }, [newChatInFolder, closeDetail])
@@ -172,6 +177,7 @@ export default function App({ children }: AppProps) {
   const handleSelectSession = useCallback(
     (sessionId: string): void => {
       setShowPlugins(false)
+      setShowSkills(false)
       closeDetail()
       void openSession(sessionId)
     },
@@ -201,11 +207,21 @@ export default function App({ children }: AppProps) {
   }, [])
 
   const handleOpenPlugins = useCallback((): void => {
+    setShowSkills(false)
     setShowPlugins(true)
+  }, [])
+
+  const handleOpenSkills = useCallback((): void => {
+    setShowPlugins(false)
+    setShowSkills(true)
   }, [])
 
   const handleClosePlugins = useCallback((): void => {
     setShowPlugins(false)
+  }, [])
+
+  const handleCloseSkills = useCallback((): void => {
+    setShowSkills(false)
   }, [])
 
   const handleUninstallPlugin = useCallback(
@@ -289,6 +305,11 @@ export default function App({ children }: AppProps) {
         handleClosePlugins()
         return
       }
+      if (showSkills) {
+        event.preventDefault()
+        handleCloseSkills()
+        return
+      }
       if (showTerminal) {
         event.preventDefault()
         setShowTerminal(false)
@@ -299,7 +320,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins]
+    [showPalette, showPlugins, showSkills, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins, handleCloseSkills]
   )
 
   useShortcuts([
@@ -387,6 +408,8 @@ export default function App({ children }: AppProps) {
           loading={sessionsLoaded !== true}
           onOpenPlugins={handleOpenPlugins}
           pluginsActive={showPlugins}
+          onOpenSkills={handleOpenSkills}
+          skillsActive={showSkills}
           onOpenSettings={handleOpenSettings}
         />
       </ErrorBoundary>
@@ -418,6 +441,8 @@ export default function App({ children }: AppProps) {
                 toggleEnabled={handleTogglePlugin}
                 onOpenDetail={handleOpenPluginDetail}
               />
+            ) : showSkills ? (
+              <SkillsPage />
             ) : (
               content
             )}

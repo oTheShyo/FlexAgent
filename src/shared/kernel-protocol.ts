@@ -33,6 +33,42 @@ export interface PluginHookContext {
   sensitiveKeys: string[]
 }
 
+/**
+ * Resolved MCP server from a plugin's `.mcp.json` / `manifest.mcpServers`.
+ * stdio servers are spawned by the worker; http servers connect via
+ * StreamableHTTP. Tool exposure defaults to the single `mcp` proxy tool;
+ * `expose: 'direct'` keeps legacy per-tool registration.
+ */
+export interface PluginMcpServerConfigBase {
+  /** How the server's tools are exposed to the model. Default: 'proxy'. */
+  expose?: 'proxy' | 'direct'
+  /** Tools/call + connect timeout in milliseconds (connect is min(10s, this)). */
+  timeoutMs?: number
+}
+
+export interface PluginMcpStdioConfig extends PluginMcpServerConfigBase {
+  type: 'stdio'
+  /** Spawn command (${user_config.*} + ${CLAUDE_/ZCODE_/FLEX_...} templates resolved; sensitive values blocked). */
+  command: string
+  args?: string[]
+  /** Base plugin env overlay (hook convention) + server.env + authoritative FLEX_PLUGIN_ID. */
+  env: Record<string, string>
+  /** Spawn cwd (server-declared, resolved). Defaults to the plugin root. */
+  cwd?: string
+}
+
+export interface PluginMcpHttpConfig extends PluginMcpServerConfigBase {
+  type: 'http'
+  /** Streamable HTTP endpoint URL (${user_config.*} templates resolved). */
+  url: string
+  /** Request headers (${user_config.*} templates resolved; sensitive values allowed, e.g. Bearer tokens). */
+  headers?: Record<string, string>
+  /** Base plugin env overlay (hook convention) + server.env + authoritative FLEX_PLUGIN_ID (available to header templates). */
+  env: Record<string, string>
+}
+
+export type PluginMcpServerConfig = PluginMcpStdioConfig | PluginMcpHttpConfig
+
 /** Resource spec for enabled plugins — consumed when the worker builds its resource loader. */
 export interface PluginResourceSpec {
   /** Absolute paths to extension files/dirs (PI additionalExtensionPaths). */
@@ -45,8 +81,12 @@ export interface PluginResourceSpec {
   hooks: string[]
   /** Per hooks-file context keyed by the absolute hooks path (P2c env + interpolation values). */
   hookContexts: Record<string, PluginHookContext>
-  /** Absolute MCP config paths of enabled plugins (P2.5 placeholder — empty for now). */
+  /** Absolute MCP config paths of enabled plugins (informational; resolved servers live in `mcpServers`). */
   mcp: string[]
+  /** Resolved stdio MCP servers keyed `plugin:<manifestName>:<serverName>` (P2.5 — worker spawns + registers tools). */
+  mcpServers?: Record<string, PluginMcpServerConfig>
+  /** Per-server context keyed by the namespaced server name (same shape as `hookContexts`). */
+  mcpContexts?: Record<string, PluginHookContext>
   /** Plugin storage root (worker cwd varies per session). */
   pluginStorageRoot: string
 }
@@ -61,10 +101,13 @@ export type WorkerRequest =
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }
   | { requestId: string; type: 'disposeSession'; sessionId: SessionId }
   | { requestId: string; type: 'listModels' }
+  | { requestId: string; type: 'warmup'; cwd?: string }
   | { requestId: string; type: 'getModelConfig'; sessionId: SessionId }
   | { requestId: string; type: 'setModel'; sessionId: SessionId; provider: string; id: string; thinkingLevel?: ThinkingLevel }
   | { requestId: string; type: 'setThinkingLevel'; sessionId: SessionId; level: ThinkingLevel }
   | { requestId: string; type: 'reloadPlugins'; resourceSpec: PluginResourceSpec }
+  /** Drop cached resource loaders so re-attach picks up new user-level skills (v1.7). */
+  | { requestId: string; type: 'reloadResources' }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>

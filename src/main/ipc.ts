@@ -21,6 +21,15 @@ import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
 import { scratchCwd, workspaceKey } from './workspace'
+import { perfStart } from './perf'
+import {
+  approveSkillWrite,
+  listPendingSkillWrites,
+  rejectSkillWrite
+} from './skills/skillManage'
+import { listSkills } from './skills/skillService'
+import { addMemoryCard, listMemoryCards, removeMemoryCard } from './skills/memoryStore'
+import { searchSessionRecords } from './skills/sessionSearch'
 
 interface IpcFailure {
   code?: unknown
@@ -93,6 +102,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.createSession, (_e, input: { cwd?: unknown; title?: unknown }) =>
     guard(async () => {
+      const perf = perfStart()
       if (input !== undefined && input !== null && typeof input !== 'object') {
         throw new ContractError('INVALID_INPUT', 'expected { cwd?, title? }')
       }
@@ -103,6 +113,7 @@ export function registerIpcHandlers(
       const title = typeof input?.title === 'string' ? input.title : undefined
       const id = randomUUID()
       const rec = registry.create(id, cwd, title)
+      perf.mark('registry.create')
       try {
         const result = (await kernel.request({
           type: 'createSession',
@@ -110,8 +121,11 @@ export function registerIpcHandlers(
           cwd: rec.cwd,
           title: rec.title
         })) as { piSessionFile?: string } | undefined
+        perf.mark('kernel.request')
         if (result?.piSessionFile) registry.attachPiSession(id, result.piSessionFile)
+        perf.mark('registry.attachPiSession')
         const stored = registry.require(id)
+        perf.done('ipc.createSession', { sessionId: id })
         return {
           id: stored.id,
           title: stored.title,
@@ -129,16 +143,20 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.openSession, (_e, sessionId: unknown) =>
     guard(async () => {
+      const perf = perfStart()
       if (typeof sessionId !== 'string' || !sessionId) {
         throw new ContractError('INVALID_INPUT', 'sessionId is required')
       }
       const rec = registry.require(sessionId)
+      perf.mark('registry.require')
       const detail = (await kernel.request({
         type: 'openSession',
         sessionId,
         cwd: rec.cwd,
         piSessionFile: rec.piSessionFile
       })) as { messages: unknown[] } | undefined
+      perf.mark('kernel.request')
+      perf.done('ipc.openSession', { sessionId, messages: detail?.messages?.length ?? 0 })
       return {
         summary: {
           id: rec.id,
@@ -173,6 +191,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.setSessionCwd, (_e, input: { sessionId?: unknown; cwd?: unknown }) =>
     guard(async () => {
+      const perf = perfStart()
       if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
         throw new ContractError('INVALID_INPUT', 'sessionId is required')
       }
@@ -195,10 +214,13 @@ export function registerIpcHandlers(
           sessionId: input.sessionId,
           cwd
         })) as { piSessionFile?: string } | undefined
+        perf.mark('kernel.request')
         // open() may rewrite the session file; keep the registry pointing at it.
         if (result?.piSessionFile) registry.attachPiSession(input.sessionId, result.piSessionFile)
         registry.setCwd(input.sessionId, cwd)
+        perf.mark('registry.setCwd')
       }
+      perf.done('ipc.setSessionCwd', { sessionId: input.sessionId, cwd })
       return registry.summary(input.sessionId)
     })
   )
@@ -407,5 +429,75 @@ export function registerIpcHandlers(
   // §7.3 walkthrough only — not part of CodexApi / shared/contract.
   ipcMain.handle('diag:killWorker', () =>
     guard(() => kernel.killWorkerForTest())
+  )
+
+  // ── Skills / Memory / History (v1.7) ──
+
+  ipcMain.handle(IPC.listSkills, () => guard(() => listSkills(plugins)))
+
+  ipcMain.handle(IPC.listPendingSkillWrites, () => guard(() => listPendingSkillWrites()))
+
+  ipcMain.handle(IPC.approveSkillWrite, (_e, id: unknown) =>
+    guard(async () => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      approveSkillWrite(id)
+      // Skills are baked into cached loaders at construction — drop them so
+      // the next attach discovers the newly approved skill.
+      try {
+        await kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: the restart path rebuilds loaders from scratch anyway.
+      }
+    })
+  )
+
+  ipcMain.handle(IPC.rejectSkillWrite, (_e, id: unknown) =>
+    guard(() => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      rejectSkillWrite(id)
+    })
+  )
+
+  ipcMain.handle(IPC.listMemoryCards, () => guard(() => listMemoryCards()))
+
+  ipcMain.handle(IPC.addMemoryCard, (_e, input: { file?: unknown; text?: unknown }) =>
+    guard(() => {
+      if (!input || (input.file !== 'MEMORY' && input.file !== 'USER')) {
+        throw new ContractError('INVALID_INPUT', 'file must be MEMORY or USER')
+      }
+      if (typeof input.text !== 'string' || !input.text.trim()) {
+        throw new ContractError('INVALID_INPUT', 'text is required')
+      }
+      addMemoryCard(input.file, input.text)
+    })
+  )
+
+  ipcMain.handle(IPC.removeMemoryCard, (_e, input: { file?: unknown; index?: unknown }) =>
+    guard(() => {
+      if (!input || (input.file !== 'MEMORY' && input.file !== 'USER')) {
+        throw new ContractError('INVALID_INPUT', 'file must be MEMORY or USER')
+      }
+      if (typeof input.index !== 'number' || !Number.isInteger(input.index) || input.index < 0) {
+        throw new ContractError('INVALID_INPUT', 'index must be a non-negative integer')
+      }
+      removeMemoryCard(input.file, input.index)
+    })
+  )
+
+  ipcMain.handle(IPC.searchSessions, (_e, query: unknown) =>
+    guard(() => {
+      if (typeof query !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'query must be a string')
+      }
+      const records = registry
+        .list()
+        .map((summary) => registry.get(summary.id))
+        .filter((record): record is NonNullable<typeof record> => record !== undefined)
+      return searchSessionRecords(records, query)
+    })
   )
 }

@@ -469,3 +469,43 @@ node scripts/accept-disconnect.mjs     # 不回归（插件重载走的是预期
 8. `preload/index.ts` 5 方法 + `subscribePlugins`。
 9. `index.ts` 组装 + 首次下发 spec。
 10. `scripts/accept-plugins.mjs` + 回归。
+
+---
+
+## 7. 插件 MCP 面（P2.5 已交付）
+
+**stdio only**。http/sse 声明 → `plugin_unsupported_mcp` warning 诊断（不 spawn）；official-auth 机制（porting R2）SKIP。
+
+### 7.1 契约增补（kernel-protocol.ts，只增）
+
+```ts
+export interface PluginMcpServerConfig {
+  type: 'stdio'
+  command: string        // ${user_config.*} + 插件变量插值；command/args/cwd sink 禁敏感值
+  args?: string[]
+  env: Record<string, string>  // hook env overlay 约定 + server.env + 权威 FLEX_PLUGIN_ID
+  cwd?: string           // 默认插件根
+  timeoutMs?: number     // tools/call 超时；connect = min(10s, timeoutMs)
+}
+// PluginResourceSpec 追加（可选）：
+//   mcpServers?: Record<string, PluginMcpServerConfig>   // 键 = plugin:<manifestName>:<serverName>
+//   mcpContexts?: Record<string, PluginHookContext>      // 键同上
+// mcp: string[] 改为 informational（配置路径），resolved servers 在 mcpServers
+```
+
+### 7.2 数据流
+
+1. **main**：`pluginRegistry.collectResourceSpec()` → 每个已启用插件调 `pluginMcp.collectMcpServerConfigs()`（源：`.mcp.json` + `manifest.mcpServers`，string path | string[] | inline object；`{mcpServers}` 包裹或裸对象均接受；manifest 覆盖 `.mcp.json`）。诊断码：`plugin_mcp_read_failed`（不可读/坏 JSON）、`plugin_mcp_invalid`（非对象/插值失败）、`plugin_component_path_invalid`（路径逃逸根）、`plugin_unsupported_mcp`（http/sse warning）。
+2. **worker**：`reloadPlugins` 更新 spec → `resetMcpBridge()`（关旧 client、清 memo）→ 下个 `attachSession` 时惰性启动（`mcpStartupPromise` memo，每 worker 一次）→ `listMcpTools` → 工具定义（execute 闭包调 `callMcpTool`）传入 `createPluginBridgeFactory` 第 4 参 → `pi.registerTool` 桥接。
+3. **工具命名**：`mcp__<server>__<tool>`（zcode `name.ts` 惯例，非 `[a-zA-Z0-9_-]` → `_` 折叠）；跨 server 重名 first-wins。
+4. **结果映射**：MCP content blocks（text）→ 合并为单 text block；`structuredContent` 非空 → 追加 block；`isError` → 前缀 `MCP tool returned an error:`（镜像 zcode `formatMcpToolResult`，去掉 CUA 专属 image/resource 路径）。
+5. **生命周期**：worker `shutdown` → `settleMcpCalls()`（镜像 hooks drain）→ 关全部 client → exit。client 连接失败：console.error + 跳过该 server 工具，不崩 session。
+
+### 7.3 typebox 说明
+
+PI `ToolDefinition.parameters` 要求 `TSchema`；typebox 1.3.27（PI 嵌套依赖）的 `TSchema` 是**空接口**，`IsSchema = IsObject`——普通 JSON-Schema 对象结构满足，**无需引入 typebox 依赖**。MCP `inputSchema` 原样传入；缺省时 `{ type: 'object', properties: {} }`。
+
+### 7.4 验收
+
+- `scripts/accept-plugins.mjs` mcp 块（18 项）：模块导入×2、工具命名空间、内联/文件/裸对象/字符串路径/路径逃逸/http warning/坏 JSON、`user_config.*` 插值（command/args/env sink）、敏感值 command+args sink 阻断（env sink 放行）、env overlay 键、`FLEX_PLUGIN_ID` 权威、client round-trip（initialize/tools/list/tools/call/close，fake stdio server via `node -e`）。
+- 总计 **134/134 PASS**；typecheck 0；marketplace 55/55、model 11/11、mock-fallback/apply PASS 不回归。

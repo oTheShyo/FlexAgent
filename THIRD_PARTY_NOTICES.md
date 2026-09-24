@@ -39,6 +39,20 @@ Ported logic is host-side only (main process). No PI/kernel protocol types were 
 | `src/main/pluginBridge.ts` (`matchesHookMatcher`) | `core/src/hooks/output.ts` (matcher fragment) | COPY (fragment) | Embedded in an original module; no license header per repo zero-comment rule — attribution recorded here. |
 | `src/main/hooks/hookRunner.ts` | `core/src/hooks/runner.ts`, `configured-runner*.ts` + `packages/shared/src/workspace-hook-config.ts` L7-8 (`DEFAULT_WORKSPACE_HOOK_TIMEOUT_MS=60_000`, `MAX_OUTPUT_BYTES=32_768`) | ADAPT (C8) | Rewritten for worker-thread host; timeout/output constants retained; zero-comment. |
 
+## ZCode plugin MCP (P2.5)
+
+- **Upstream**: https://github.com/zai-org/ZCode
+- **Commit SHA**: `328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f`
+- **License**: Apache License 2.0
+- **Upstream package paths**: `apps/zcode-cli/packages/adapters/src/plugins/mcp.ts`, `apps/zcode-cli/packages/core/src/mcp/`
+
+| FlexAgent file | Upstream source (same SHA) | Matrix | Modifications |
+|---|---|---|---|
+| `src/main/pluginMcp.ts` | `adapters/src/plugins/mcp.ts` (load/resolve/interpolate) | ADAPT (R1) | stdio transport only (http/sse → `plugin_unsupported_mcp` warning, never spawned); official-auth machinery (R2) omitted; `${...}` interpolation reuses this app's `userConfig` C6 machinery via dependency injection; env overlay reuses the hook `createHookEnvOverlay` convention with authoritative `FLEX_PLUGIN_ID`; zero-comment rewrite. |
+| `src/main/mcp/mcpClient.ts` | — (new; upstream uses `@modelcontextprotocol/client` SDK) | ADAPT (R1) | Hand-rolled newline-delimited JSON-RPC 2.0 stdio client (initialize → notifications/initialized → tools/list → tools/call); upstream SDK replaced to avoid a new dependency. |
+| `src/main/pluginBridge.ts` (`McpToolBridgeDef` + factory registration) | `core/src/mcp/name.ts` (`toMcpToolName`, `mcp__<server>__<tool>` sanitization) | ADAPT (R1) | Tool naming convention ported; registration via PI `pi.registerTool`; `~unsafe`-free plain JSON-Schema parameters (typebox 1.x `TSchema` is an empty interface). |
+| `src/main/worker.ts` (MCP lifecycle) | `core/src/runtime/methods/mcp.ts` (lazy `mcpStartupPromise` pattern) | ADAPT (R1) | Memoized per-worker startup, drain-before-exit mirroring the hook lifecycle; reload resets clients. |
+
 ## Other third-party components
 
 FlexAgent's existing dependency tree (Electron, React, Vite, etc.) is declared in `package.json` and `package-lock.json` and is out of scope for this file; this notice covers source code ported from external repositories, which does not appear in the lockfile as a package dependency.

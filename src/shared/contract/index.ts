@@ -342,6 +342,60 @@ export interface SlashCommandSummary {
   pluginId: PluginId
 }
 
+// ─── User-level MCP servers (v1.8) ───────────────────────────────────────────
+
+export type UserMcpTransport = 'stdio' | 'http'
+
+/**
+ * One entry of the user-level `~/.flexagent/mcp.json` (`mcpServers` map).
+ * Same shape family as plugin MCP configs, but standalone — no plugin,
+ * no userConfig interpolation.
+ */
+export interface UserMcpServerConfig {
+  type: UserMcpTransport
+  /** Disabled servers stay in the file but are not bridged. Default: true. */
+  enabled?: boolean
+  /** 'proxy' (default): exposed through the single `mcp` tool. 'direct': one tool per MCP tool. */
+  expose?: 'proxy' | 'direct'
+  /** Tools/call timeout in milliseconds (connect timeout is min(10s, this)). */
+  timeoutMs?: number
+  /** stdio: spawn command. */
+  command?: string
+  args?: string[]
+  cwd?: string
+  env?: Record<string, string>
+  /** http: streamable endpoint. */
+  url?: string
+  headers?: Record<string, string>
+}
+
+export interface UserMcpServerSummary {
+  name: string
+  config: UserMcpServerConfig
+}
+
+/** Validated write input — the renderer sends the full config for one server. */
+export interface UserMcpSaveInput {
+  name: string
+  config: UserMcpServerConfig
+}
+
+/** Live connectivity/tool-count of one bridged MCP server (worker-reported). */
+export interface McpServerStatusEntry {
+  /** `user:<name>` or `plugin:<manifestName>:<serverName>`. */
+  key: string
+  source: 'user' | 'plugin'
+  type: UserMcpTransport
+  connected: boolean
+  toolCount?: number
+  /** Present when the server failed to connect at bridge startup. */
+  error?: string
+}
+
+export interface McpServerStatusEvent {
+  servers: McpServerStatusEntry[]
+}
+
 // ─── Marketplace (v1.5 / P3) ─────────────────────────────────────────────────
 
 /** A marketplace registered in `known_marketplaces.json`. */
@@ -429,6 +483,48 @@ export interface MarketplaceApi {
   installFromMarketplace(input: InstallFromMarketplaceInput): Promise<PluginSummary>
   /** Subscribe to install/refresh progress (global channel, mirror of subscribePlugins). */
   subscribeMarketplaceProgress(listener: (event: MarketplaceProgressEvent) => void): () => void
+}
+
+// ─── Skills / Memory / History (v1.7, additive) ─────────────────────────────
+
+/** Where a skill comes from. Project-local skills are session-scoped and not listed globally. */
+export type SkillSourceKind = 'user' | 'plugin'
+
+export interface SkillSummary {
+  name: string
+  description?: string
+  source: SkillSourceKind
+  /** `user`: absolute skill dir; `plugin`: path relative to the plugin root. */
+  path: string
+  pluginId?: PluginId
+}
+
+export interface SkillPendingWrite {
+  id: string
+  /** Skill the write targets (as declared by the op, may not exist yet for create). */
+  skillName: string
+  /** One human-readable line per op in the batch. */
+  summary: string[]
+  /** Absolute path(s) the approved write would touch. */
+  targetPaths: string[]
+  createdAt: number
+}
+
+export type MemoryCardFile = 'MEMORY' | 'USER'
+
+export interface MemoryCard {
+  file: MemoryCardFile
+  /** 0-based index within the card list of that file; stable for remove(). */
+  index: number
+  text: string
+}
+
+export interface SessionSearchHit {
+  sessionId: SessionId
+  title: string
+  /** Match context excerpt (~200 chars). */
+  snippet: string
+  updatedAt: number
 }
 
 // ─── Events (kernel → renderer), one discriminated union ─────────────────────
@@ -628,6 +724,39 @@ export interface CodexApi {
    * the real preload bridge always provides it.
    */
   listSlashCommands?(): Promise<SlashCommandSummary[]>
+
+  // ── User-level MCP servers (v1.8) ──
+  /** Entries of `~/.flexagent/mcp.json`. Not session-scoped. */
+  listUserMcpServers(): Promise<UserMcpServerSummary[]>
+  /** Create/update one server entry (validated; atomic write; kernel reload). Returns the updated list. */
+  saveUserMcpServer(input: UserMcpSaveInput): Promise<UserMcpServerSummary[]>
+  /** Remove one server entry. Returns the updated list. */
+  removeUserMcpServer(name: string): Promise<UserMcpServerSummary[]>
+  /** Enable/disable without deleting. Returns the updated list. */
+  toggleUserMcpServer(name: string, enabled: boolean): Promise<UserMcpServerSummary[]>
+  /** Last known bridge status (tool counts / errors). Empty until the worker first attached. */
+  listMcpServerStatus(): Promise<McpServerStatusEntry[]>
+  /**
+   * Subscribe to MCP bridge status updates (global, outside `KernelEvent`/`seq`).
+   * Returns unsubscribe.
+   */
+  subscribeMcpStatus(listener: (event: McpServerStatusEvent) => void): () => void
+
+  // ── Skills / Memory / History (v1.7) ──
+  /** User-level (`~/.flexagent/skills`) + enabled-plugin skills. */
+  listSkills(): Promise<SkillSummary[]>
+  /** Skill writes staged by the agent awaiting approval (skills.writeApproval). */
+  listPendingSkillWrites(): Promise<SkillPendingWrite[]>
+  /** Apply a staged write and refresh kernel skill discovery. */
+  approveSkillWrite(id: string): Promise<void>
+  /** Discard a staged write. */
+  rejectSkillWrite(id: string): Promise<void>
+  /** Curated memory cards across sessions (`~/.flexagent/memory/`). */
+  listMemoryCards(): Promise<MemoryCard[]>
+  addMemoryCard(file: MemoryCardFile, text: string): Promise<void>
+  removeMemoryCard(file: MemoryCardFile, index: number): Promise<void>
+  /** Substring search across stored session transcripts (titles + messages). */
+  searchSessions(query: string): Promise<SessionSearchHit[]>
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -668,7 +797,22 @@ export const IPC = {
   searchMarketplaces: 'codex:searchMarketplaces',
   installFromMarketplace: 'codex:installFromMarketplace',
   /** main → renderer push for MarketplaceProgressEvent (global, per webContents). */
-  marketplaceProgress: 'codex:marketplaceProgress'
+  marketplaceProgress: 'codex:marketplaceProgress',
+  listSkills: 'codex:listSkills',
+  listPendingSkillWrites: 'codex:listPendingSkillWrites',
+  approveSkillWrite: 'codex:approveSkillWrite',
+  rejectSkillWrite: 'codex:rejectSkillWrite',
+  listMemoryCards: 'codex:listMemoryCards',
+  addMemoryCard: 'codex:addMemoryCard',
+  removeMemoryCard: 'codex:removeMemoryCard',
+  searchSessions: 'codex:searchSessions',
+  listUserMcpServers: 'codex:listUserMcpServers',
+  saveUserMcpServer: 'codex:saveUserMcpServer',
+  removeUserMcpServer: 'codex:removeUserMcpServer',
+  toggleUserMcpServer: 'codex:toggleUserMcpServer',
+  listMcpServerStatus: 'codex:listMcpServerStatus',
+  /** main → renderer push for McpServerStatusEvent (global, per webContents). */
+  mcpStatusChanged: 'codex:mcpStatusChanged'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

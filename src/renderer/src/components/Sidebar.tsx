@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { SessionSummary } from '../types'
+import type { SessionSearchHit, SessionSummary } from '../types'
+import { codexApi } from '../api'
 import {
   countArchivedSessions,
   displaySessionTitle,
@@ -40,6 +41,8 @@ export interface SidebarProps {
   loading?: boolean
   onOpenPlugins?: () => void
   pluginsActive?: boolean
+  onOpenSkills?: () => void
+  skillsActive?: boolean
   onOpenSettings?: () => void
 }
 
@@ -114,6 +117,8 @@ function Sidebar({
   loading = false,
   onOpenPlugins,
   pluginsActive = false,
+  onOpenSkills,
+  skillsActive = false,
   onOpenSettings
 }: SidebarProps) {
   const meta = useSessionMeta()
@@ -245,6 +250,32 @@ function Sidebar({
 
   const normalizedQuery = query.trim().toLowerCase()
 
+  // Cross-session history search (contract v1.7): the title filter above only
+  // narrows chat rows; this also greps stored transcripts. Debounced so every
+  // keystroke does not hit the main-process scan.
+  const [historyHits, setHistoryHits] = useState<SessionSearchHit[] | null>(null)
+  useEffect(() => {
+    if (normalizedQuery.length === 0) {
+      setHistoryHits(null)
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      void codexApi
+        .searchSessions(query.trim())
+        .then((hits) => {
+          if (!cancelled) setHistoryHits(hits)
+        })
+        .catch(() => {
+          if (!cancelled) setHistoryHits([])
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [normalizedQuery, query])
+
   const projects = useMemo<ProjectRowData[]>(() => {
     const scratchKey = scratchCwd === null ? null : pathKey(scratchCwd)
     const byKey = new Map<string, ProjectRowData>()
@@ -338,6 +369,12 @@ function Sidebar({
           label="Plugins"
           active={pluginsActive}
           onClick={onOpenPlugins}
+        />
+        <NavRow
+          icon={<ScheduledIcon />}
+          label="Skills"
+          active={skillsActive}
+          onClick={onOpenSkills}
         />
         <NavRow icon={<ScheduledIcon />} label="Scheduled" disabled title="Coming soon" />
       </nav>
@@ -599,6 +636,37 @@ function Sidebar({
               )
             })}
           </ul>
+        )}
+
+        {historyHits !== null && historyHits.length > 0 && (
+          <div className="mt-4 border-t border-[var(--border)] pt-3" data-testid="history-search">
+            <div className="px-2 pb-1.5 text-[11px] font-medium text-[var(--text-muted)]">
+              History matches
+            </div>
+            <ul className="space-y-1">
+              {historyHits.map((hit) => (
+                <li key={hit.sessionId}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(hit.sessionId)}
+                    title={hit.snippet}
+                    className="w-full rounded-md px-2 py-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] hover:bg-[var(--hover)]"
+                  >
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--text)]">
+                      <ChatDotIcon className="h-3 w-3" />
+                      <span className="min-w-0 flex-1 truncate">{hit.title}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                        {formatWhen(hit.updatedAt)}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] leading-4 text-[var(--text-muted)]">
+                      {hit.snippet}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
 

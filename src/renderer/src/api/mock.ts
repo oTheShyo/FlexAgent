@@ -21,10 +21,15 @@ import {
   type RespondPermissionInput,
   type SessionDetail,
   type SessionId,
+  type SessionSearchHit,
   type SessionSummary,
   type SetModelInput,
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
+  type SkillPendingWrite,
+  type SkillSummary,
+  type MemoryCard,
+  type MemoryCardFile,
   type SlashCommandSummary,
   type TerminalCreateAck,
   type TerminalCreateInput,
@@ -748,6 +753,118 @@ export class MockCodexApi implements CodexApi {
       }
     }
     return commands
+  }
+
+  // ── Skills / Memory / History (v1.7 fixtures) ──
+
+  private readonly pendingSkillWrites: SkillPendingWrite[] = [
+    {
+      id: 'pending-mock-1',
+      skillName: 'deploy-checklist',
+      summary: ['create skill "deploy-checklist" (1840 chars)'],
+      targetPaths: ['~/.flexagent/skills/deploy-checklist'],
+      createdAt: Date.now() - 60_000
+    }
+  ]
+
+  private readonly memoryCards: MemoryCard[] = [
+    { file: 'MEMORY', index: 0, text: 'Runtime config lives in realtime-cv-inversion-0521/config.json, not the -wbh workdir.' },
+    { file: 'MEMORY', index: 1, text: 'Contract changes are additive only — never repurpose existing fields.' },
+    { file: 'USER', index: 0, text: 'Prefers concise, table-first answers with evidence.' }
+  ]
+
+  async listSkills(): Promise<SkillSummary[]> {
+    const skills: SkillSummary[] = [
+      {
+        name: 'repo-conventions',
+        description: 'How this repo structures commits, contracts and handoffs.',
+        source: 'user',
+        path: '~/.flexagent/skills/repo-conventions'
+      }
+    ]
+    for (const detail of this.pluginDetails.values()) {
+      if (!detail.enabled) continue
+      for (const component of detail.components) {
+        if (component.kind !== 'skill') continue
+        skills.push({
+          name: component.name,
+          ...(component.description !== undefined ? { description: component.description } : {}),
+          source: 'plugin',
+          path: component.path ?? '',
+          pluginId: detail.id
+        })
+      }
+    }
+    return skills
+  }
+
+  async listPendingSkillWrites(): Promise<SkillPendingWrite[]> {
+    return this.pendingSkillWrites.map((write) => ({ ...write }))
+  }
+
+  async approveSkillWrite(id: string): Promise<void> {
+    const index = this.pendingSkillWrites.findIndex((write) => write.id === id)
+    if (index < 0) throw new ContractError('INVALID_INPUT', `no pending skill write with id ${id}`)
+    this.pendingSkillWrites.splice(index, 1)
+  }
+
+  async rejectSkillWrite(id: string): Promise<void> {
+    await this.approveSkillWrite(id)
+  }
+
+  async listMemoryCards(): Promise<MemoryCard[]> {
+    return this.memoryCards.map((card) => ({ ...card }))
+  }
+
+  async addMemoryCard(file: MemoryCardFile, text: string): Promise<void> {
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (trimmed.length === 0) throw new ContractError('INVALID_INPUT', 'text is required')
+    this.memoryCards.push({ file, index: this.memoryCards.filter((c) => c.file === file).length, text: trimmed })
+  }
+
+  async removeMemoryCard(file: MemoryCardFile, index: number): Promise<void> {
+    const globalIndex = this.memoryCards.findIndex((card) => card.file === file && card.index === index)
+    if (globalIndex < 0) throw new ContractError('INVALID_INPUT', 'card index out of range')
+    this.memoryCards.splice(globalIndex, 1)
+    // Reindex remaining cards of that file.
+    let next = 0
+    for (const card of this.memoryCards) {
+      if (card.file === file) card.index = next++
+    }
+  }
+
+  async searchSessions(query: string): Promise<SessionSearchHit[]> {
+    const needle = query.trim().toLowerCase()
+    if (needle.length === 0) return []
+    const hits: SessionSearchHit[] = []
+    for (const session of this.sessions.values()) {
+      const title = session.summary.title
+      if (title.toLowerCase().includes(needle)) {
+        hits.push({
+          sessionId: session.summary.id,
+          title,
+          snippet: '(标题匹配)',
+          updatedAt: session.summary.updatedAt
+        })
+        continue
+      }
+      const firstMatch = session.messages.find((message) =>
+        message.content.toLowerCase().includes(needle)
+      )
+      if (firstMatch !== undefined) {
+        const at = firstMatch.content.toLowerCase().indexOf(needle)
+        const start = Math.max(0, at - 60)
+        const snippet = `${start > 0 ? '…' : ''}${firstMatch.content.slice(start, at + needle.length + 60).replace(/\s+/g, ' ')}…`
+        hits.push({
+          sessionId: session.summary.id,
+          title,
+          snippet: `${firstMatch.role === 'user' ? '你' : 'AI'}: ${snippet}`,
+          updatedAt: session.summary.updatedAt
+        })
+      }
+      if (hits.length >= 20) break
+    }
+    return hits
   }
 
   adoptPlugin(detail: PluginDetail): void {

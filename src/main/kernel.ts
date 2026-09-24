@@ -122,6 +122,18 @@ export class KernelHost {
     return payload
   }
 
+  /**
+   * Pay the kernel's cold-start cost before the user interacts: the worker
+   * loads the PI module graph, builds the model runtime and primes the resource
+   * loader for `cwd`. Fire-and-forget — a failure here just means the first
+   * real request pays the cost as it did before.
+   */
+  prewarm(cwd?: string): void {
+    void this.request(cwd === undefined ? { type: 'warmup' } : { type: 'warmup', cwd }).catch(
+      () => {}
+    )
+  }
+
   async shutdown(): Promise<void> {
     const w = this.worker
     if (!w) return

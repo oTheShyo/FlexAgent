@@ -57,7 +57,7 @@
 
 | # | zcode 组件 | 事实 | 动作 |
 |---|-----------|------|------|
-| R1 | `.mcp.json` / manifest.mcpServers，命名空间 `plugin:<名>:<服务名>`，stdio spawn | PI 全 dist 对 `mcpServers`/`ModelContextProtocol` **零匹配** —— 内核不带 MCP | **REFERENCE**：命名空间与 spawn 参数设计照抄 zcode；实现为桥扩展内 MCP client（stdio 子进程 + 工具枚举 → `pi.registerTool` 桥接）。**前置成本高，排 P2.5，可独立裁剪** |
+| R1 | `.mcp.json` / manifest.mcpServers，命名空间 `plugin:<名>:<服务名>`，stdio spawn | PI 全 dist 对 `mcpServers`/`ModelContextProtocol` **零匹配** —— 内核不带 MCP | **DELIVERED（P2.5）**：`pluginMcp.ts`（配置枚举+插值，main 侧）+ `mcp/mcpClient.ts`（手写 newline-delimited JSON-RPC 2.0 stdio client）+ worker `pi.registerTool` 桥接（工具名 `mcp__<server>__<tool>`，zcode `name.ts` 惯例）。http/sse → `plugin_unsupported_mcp` warning 不 spawn；official-auth 机制 SKIP。 |
 | R2 | `__zcode-plugin-host` re-exec、`mcp-official-auth.ts` | ZCode 引擎专属 | **SKIP** |
 
 ### 2.4 不移植（REFERENCE only，已有自写实现或强耦合）
