@@ -126,9 +126,37 @@ export type WorkerRequest =
    * main, which is how a settings panel ends up editing a file nobody reads.
    */
   | { requestId: string; type: 'modelsPath' }
+  /** PI's own `settings.json` — `httpProxy` / `httpIdleTimeoutMs` / `retry` live there. */
+  | { requestId: string; type: 'settingsPath' }
+  /**
+   * Resolve every routing role against the live ModelRuntime, plus the facts the
+   * catalogue knows about each available model. Re-read from disk each time, so a
+   * cleared binding cannot linger.
+   */
+  | { requestId: string; type: 'resolveModelRoles' }
+  /** Whether this process installed the kernel's HTTP dispatcher, and what env says. */
+  | { requestId: string; type: 'networkStatus' }
+  /** Make the stored network settings true in this process, and report the outcome. */
+  | { requestId: string; type: 'applyNetwork'; proxy: string; idleTimeoutMs: number }
+  /** One session's tokens, attributed to the purpose that spent them. */
+  | { requestId: string; type: 'sessionUsage'; sessionId: SessionId }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>
+
+/**
+ * What the worker can say about the machine's HTTP path. The renderer-facing
+ * `NetworkSettings` inlines this, so the wire type lives next to the request
+ * that produces it rather than being re-derived in main.
+ */
+export interface NetworkStatus {
+  /** `installed` once the worker has the kernel's dispatcher in hand. */
+  dispatcher: 'installed' | 'unavailable'
+  /** `HTTP_PROXY`/`HTTPS_PROXY` as they were before this process set anything. */
+  envProxy: string | null
+  /** Why the dispatcher is missing, or what the kernel said when it refused. */
+  note?: string
+}
 
 export type WorkerResponse =
   | { requestId: string; type: 'ok'; result?: unknown }

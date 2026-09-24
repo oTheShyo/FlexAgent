@@ -11,7 +11,10 @@ import {
   type InstallPluginInput,
   type PromptInput,
   type RespondPermissionInput,
+  type NetworkSettings,
   type SetModelInput,
+  type SetModelRoleInput,
+  type SetNetworkInput,
   type SetThinkingLevelInput,
   type TerminalCreateInput,
   type TerminalInputInput,
@@ -23,6 +26,9 @@ import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
 import type { UserModelsService } from './userModels'
+import type { KernelSettingsService, NetworkConfig } from './kernelSettings'
+import { writeRoleBinding } from './modelRouting'
+import type { NetworkStatus } from '../shared/kernel-protocol'
 import { scratchCwd, workspaceKey } from './workspace'
 import { perfStart } from './perf'
 import {
@@ -105,12 +111,32 @@ function assertText(text: unknown): string {
   return text
 }
 
+/**
+ * Merge what is stored with what the worker can actually do about it. The two
+ * are deliberately separate answers: the settings can be on disk and still not
+ * be in force, and saying so is the whole point of the Network panel.
+ */
+function composeNetworkSettings(
+  path: string,
+  values: NetworkConfig,
+  status: NetworkStatus
+): NetworkSettings {
+  return {
+    path,
+    ...values,
+    envProxy: status.envProxy,
+    dispatcher: status.dispatcher,
+    ...(status.note !== undefined ? { note: status.note } : {})
+  }
+}
+
 export function registerIpcHandlers(
   kernel: KernelHost,
   registry: SessionRegistry,
   terminals: TerminalManager,
   plugins: PluginService,
-  customModels: UserModelsService
+  customModels: UserModelsService,
+  network: KernelSettingsService
 ): void {
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
@@ -417,6 +443,55 @@ export function registerIpcHandlers(
       const write = await customModels.remove(await kernel.modelsPath(), input)
       const error = await kernel.reloadModels(write.providers, { ...write.ref, present: false })
       return error === undefined ? write.result : { ...write.result, error }
+    })
+  )
+
+  // ── Model routing (v2.0) ──────────────────────────────────────────────────
+  // The routing table is ours (`~/.flexagent/routing.json`), but whether a
+  // binding is *usable* is the kernel's call, so every read and every write ends
+  // with the worker resolving the roles again. A binding the kernel cannot
+  // resolve comes back with a per-role `error` instead of a silent fallback.
+  ipcMain.handle(IPC.listModelRoles, () => guard(() => kernel.resolveModelRoles()))
+
+  ipcMain.handle(IPC.setModelRole, (_e, input: SetModelRoleInput) =>
+    guard(async () => {
+      if (!input || typeof input !== 'object') {
+        throw new ContractError('INVALID_INPUT', 'expected { role, model }')
+      }
+      await writeRoleBinding(input.role, input.model ?? null)
+      return kernel.resolveModelRoles()
+    })
+  )
+
+  // These two live in the kernel's own settings.json (httpProxy /
+  // httpIdleTimeoutMs / retry.maxRetries). PI only applies them from its CLI
+  // entry point, which this app never runs — so after writing, the worker is
+  // asked to install them in this process and to say whether that worked.
+  ipcMain.handle(IPC.getNetworkSettings, () =>
+    guard(async () => {
+      const file = await kernel.settingsPath()
+      return composeNetworkSettings(file, network.read(file), await kernel.networkStatus())
+    })
+  )
+
+  ipcMain.handle(IPC.setNetworkSettings, (_e, input: SetNetworkInput) =>
+    guard(async () => {
+      if (!input || typeof input !== 'object') {
+        throw new ContractError('INVALID_INPUT', 'expected { proxy?, idleTimeoutMs?, maxRetries? }')
+      }
+      const file = await kernel.settingsPath()
+      const stored = await network.write(file, input)
+      const status = await kernel.applyNetwork(stored.proxy, stored.idleTimeoutMs)
+      return composeNetworkSettings(file, stored, status)
+    })
+  )
+
+  ipcMain.handle(IPC.sessionUsage, (_e, sessionId: unknown) =>
+    guard(() => {
+      if (typeof sessionId !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'sessionId must be a string')
+      }
+      return kernel.sessionUsage(sessionId)
     })
   )
 

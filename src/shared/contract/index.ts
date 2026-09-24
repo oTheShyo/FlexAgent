@@ -337,6 +337,154 @@ export interface CustomModelWriteResult {
   error?: string
 }
 
+// ─── Model routing (v2.0) ────────────────────────────────────────────────────
+
+/**
+ * A named purpose the app spends an LLM call on.
+ *
+ * Roles exist only where something in this codebase actually calls a model for
+ * that purpose — a role with no consumer would be a control that configures
+ * nothing. `permission` joins the list when the permission gate lands.
+ */
+export type ModelRole = 'chat' | 'compaction'
+
+export const MODEL_ROLES: readonly ModelRole[] = ['chat', 'compaction']
+
+export const MODEL_ROLE_LABELS: Record<ModelRole, string> = {
+  chat: 'Main conversation',
+  compaction: 'Context compaction'
+}
+
+export const MODEL_ROLE_HINTS: Record<ModelRole, string> = {
+  chat: 'The model a new chat starts on. Left unset, the kernel decides.',
+  compaction:
+    "Summarises the transcript when the context window fills up. Left unset, the conversation's own model does it — a long-context model here keeps the summary faithful without slowing the conversation down."
+}
+
+/**
+ * Where a role's effective model came from.
+ *
+ * - `binding` — the role has its own model
+ * - `kernel` — nothing is bound, so the kernel's own rule decides: for `chat`
+ *   that is `defaultProvider`/`defaultModel` in its settings, for every other
+ *   role it is the model the conversation is already running on
+ */
+export type ModelRoleSource = 'binding' | 'kernel'
+
+export interface ModelRoleState {
+  role: ModelRole
+  source: ModelRoleSource
+  /** The resolved model, or `null` when nothing resolves at all. */
+  model: ModelOption | null
+  /**
+   * Set when the stored binding could not be resolved by the kernel (unknown
+   * model, provider lost its credentials). The binding is kept — the UI shows
+   * this instead of silently falling back.
+   */
+  error?: string
+}
+
+/**
+ * What a model can do, read from the kernel's own catalogue (article §5: a
+ * whitelist entry declares its capabilities so a routing choice can be made on
+ * facts rather than on the model's name).
+ */
+export interface ModelFacts {
+  provider: string
+  id: string
+  label?: string
+  /** Context window in tokens — decides how often compaction will trigger. */
+  contextWindow?: number
+  maxTokens?: number
+  /** Model emits a reasoning/thinking channel. */
+  reasoning?: boolean
+  /** Accepted input modalities, e.g. `['text', 'image']`. */
+  input?: string[]
+  /** USD per million input tokens, when the catalogue knows it. */
+  costIn?: number
+  /** USD per million output tokens. */
+  costOut?: number
+}
+
+export interface RoutingState {
+  /** Absolute path of the routing file, for the Settings copy. */
+  path: string
+  roles: ModelRoleState[]
+  facts: ModelFacts[]
+}
+
+export interface SetModelRoleInput {
+  role: ModelRole
+  /** `null` clears the binding so the role inherits `chat` again. */
+  model: ModelOption | null
+}
+
+// ─── Network (v2.0) ──────────────────────────────────────────────────────────
+
+/** Mirrors PI's own idle-timeout presets; `0` disables the guard. */
+export const HTTP_IDLE_TIMEOUT_CHOICES: readonly { label: string; ms: number }[] = [
+  { label: '30 sec', ms: 30_000 },
+  { label: '1 min', ms: 60_000 },
+  { label: '2 min', ms: 120_000 },
+  { label: '5 min', ms: 300_000 },
+  { label: 'Disabled', ms: 0 }
+]
+
+export interface NetworkSettings {
+  /** Absolute path of the kernel's `settings.json`, supplied by the kernel. */
+  path: string
+  proxy: string
+  /** Gap between streamed tokens before the request is dropped and retried. */
+  idleTimeoutMs: number
+  /** Retries for one provider request before the turn fails. */
+  maxRetries: number
+  /**
+   * `HTTP_PROXY`/`HTTPS_PROXY` already present in the environment. PI only fills
+   * these in when empty, so a set variable wins over the setting — the UI says so
+   * rather than showing a field that does nothing.
+   */
+  envProxy: string | null
+  /**
+   * `installed` once this process has installed the kernel's HTTP dispatcher.
+   * Without it a proxy cannot work at all: Node's default dispatcher ignores the
+   * proxy environment variables.
+   */
+  dispatcher: 'installed' | 'unavailable'
+  /** Why the dispatcher is unavailable, and what to do instead. */
+  note?: string
+}
+
+export interface SetNetworkInput {
+  proxy?: string
+  idleTimeoutMs?: number
+  maxRetries?: number
+}
+
+// ─── Usage attribution (v2.0) ────────────────────────────────────────────────
+
+export interface UsageTotals {
+  calls: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  cost: number
+}
+
+export interface UsageBucket extends UsageTotals {
+  /** The purpose, or `provider/model` when grouping by model. */
+  key: string
+}
+
+export interface UsageReport {
+  sessionId: SessionId
+  /** Every token the session spent, across all purposes. */
+  total: UsageTotals
+  /** Split by purpose, so "why was this conversation expensive" has an answer. */
+  byPurpose: UsageBucket[]
+  byModel: UsageBucket[]
+}
+
 // ─── Plugins (v1.4) ──────────────────────────────────────────────────────────
 
 /** Stable plugin identity: `${name}@${source}`. */
@@ -875,6 +1023,17 @@ export interface CodexApi {
   /** Remove one entry (and its provider when that was its last model). */
   removeCustomModel(input: CustomModelRef): Promise<CustomModelWriteResult>
 
+  // ── Model routing (v2.0) ──
+  /** Which model each purpose resolves to, plus the catalogue's facts for them. */
+  listModelRoles(): Promise<RoutingState>
+  /** Bind a role to a model (or `null` to inherit `chat`). Resolves again after the write. */
+  setModelRole(input: SetModelRoleInput): Promise<RoutingState>
+  /** How model requests leave the machine. */
+  getNetworkSettings(): Promise<NetworkSettings>
+  /** Change it; applied to the running kernel where the kernel allows it. */
+  setNetworkSettings(input: SetNetworkInput): Promise<NetworkSettings>
+  /** Where one session's tokens went, split by purpose and by model. */
+  sessionUsage(sessionId: SessionId): Promise<UsageReport>
   /** Installed plugins (local + bundled). Not session-scoped. */
   listPlugins(): Promise<PluginSummary[]>
   /** Plugin detail: components + userConfig spec + diagnostics. */
@@ -972,6 +1131,11 @@ export const IPC = {
   customModelsPath: 'codex:customModelsPath',
   saveCustomModel: 'codex:saveCustomModel',
   removeCustomModel: 'codex:removeCustomModel',
+  listModelRoles: 'codex:listModelRoles',
+  setModelRole: 'codex:setModelRole',
+  getNetworkSettings: 'codex:getNetworkSettings',
+  setNetworkSettings: 'codex:setNetworkSettings',
+  sessionUsage: 'codex:sessionUsage',
   listSkillHubs: 'codex:listSkillHubs',
   addSkillHub: 'codex:addSkillHub',
   removeSkillHub: 'codex:removeSkillHub',

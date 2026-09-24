@@ -345,3 +345,27 @@ export function RegenerateIcon({ className }: IconProps) {
     </svg>
   )
 }
+
+/** One request in, several models out — Settings › Routing. */
+export function RoutingIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <circle cx="5" cy="12" r="2" />
+      <path d="M7 12h4" />
+      <path d="M11 12a5 5 0 0 1 5-5h2.5" />
+      <path d="M11 12a5 5 0 0 0 5 5h2.5" />
+    </svg>
+  )
+}
+
+/** Settings › Network. */
+export function NetworkIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M3.5 12h17" />
+      <path d="M12 3.5c2.4 2.4 3.7 5.3 3.7 8.5s-1.3 6.1-3.7 8.5c-2.4-2.4-3.7-5.3-3.7-8.5S9.6 5.9 12 3.5z" />
+    </svg>
+  )
+}
+

@@ -1,5 +1,6 @@
 import {
   ContractError,
+  MODEL_ROLES,
   type ApplyFileChangesInput,
   type ApplyFileChangesResult,
   type ChatMessage,
@@ -14,7 +15,11 @@ import {
   type InstallPluginInput,
   type KernelEvent,
   type ModelConfig,
+  type ModelFacts,
   type ModelOption,
+  type ModelRole,
+  type ModelRoleState,
+  type NetworkSettings,
   type PermissionDecision,
   type PluginChangeEvent,
   type PluginDetail,
@@ -23,11 +28,14 @@ import {
   type PromptAck,
   type PromptInput,
   type RespondPermissionInput,
+  type RoutingState,
   type SessionDetail,
   type SessionId,
   type SessionSearchHit,
   type SessionSummary,
   type SetModelInput,
+  type SetModelRoleInput,
+  type SetNetworkInput,
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
@@ -49,6 +57,9 @@ import {
   type TerminalResizeInput,
   type ThinkingLevel,
   type ToolCallId,
+  type UsageBucket,
+  type UsageReport,
+  type UsageTotals,
   type UserMcpSaveInput,
   type UserMcpServerConfig,
   type UserMcpServerSummary
@@ -740,6 +751,231 @@ export class MockCodexApi implements CodexApi {
 
   private customKey(ref: CustomModelRef): string {
     return `${ref.provider}\u0000${ref.id}`
+  }
+
+  // ── Model routing (v2.0) ──
+  // The same observable behaviour as the main process: the binding is stored,
+  // the kernel resolves it, and a binding that cannot resolve comes back as an
+  // `error` rather than being silently swapped for a default.
+
+  private readonly roleBindings = new Map<ModelRole, ModelOption>()
+
+  private readonly mockFacts: ModelFacts[] = [
+    {
+      provider: 'mimo',
+      id: 'mimo-v2.6-flash',
+      label: 'mimo-v2.6 Flash',
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+      input: ['text'],
+      costIn: 0.15,
+      costOut: 0.6
+    },
+    {
+      provider: 'qwen',
+      id: 'qwen-max',
+      label: 'Qwen Max',
+      contextWindow: 262_144,
+      maxTokens: 16_384,
+      input: ['text'],
+      costIn: 1.6,
+      costOut: 6.4
+    },
+    {
+      provider: 'anthropic',
+      id: 'claude-sonnet-4-5',
+      label: 'Claude Sonnet 4.5',
+      contextWindow: 200_000,
+      maxTokens: 64_000,
+      reasoning: true,
+      input: ['text', 'image'],
+      costIn: 3,
+      costOut: 15
+    }
+  ]
+
+  private optionOf(fact: ModelFacts): ModelOption {
+    return {
+      provider: fact.provider,
+      id: fact.id,
+      ...(fact.label !== undefined ? { label: fact.label } : {})
+    }
+  }
+
+  private routingState(): RoutingState {
+    const roles: ModelRoleState[] = MODEL_ROLES.map((role) => {
+      const bound = this.roleBindings.get(role)
+      if (bound !== undefined) {
+        const known =
+          this.mockFacts.some((fact) => fact.provider === bound.provider && fact.id === bound.id) ||
+          this.customModels.has(this.customKey(bound))
+        if (!known) {
+          return {
+            role,
+            source: 'binding',
+            model: null,
+            error: `The kernel does not know ${bound.provider}/${bound.id} any more.`
+          }
+        }
+        return { role, source: 'binding', model: { ...bound } }
+      }
+      // Unbound: `chat` falls back to the kernel's own default, every other role
+      // follows whatever the conversation is already running on (so nothing to
+      // report here).
+      const fallback = role === 'chat' ? this.mockFacts[0] : undefined
+      return { role, source: 'kernel', model: fallback === undefined ? null : this.optionOf(fallback) }
+    })
+    return {
+      path: '~/.flexagent/routing.json',
+      roles,
+      facts: this.mockFacts.map((fact) => ({ ...fact }))
+    }
+  }
+
+  async listModelRoles(): Promise<RoutingState> {
+    return this.routingState()
+  }
+
+  async setModelRole(input: SetModelRoleInput): Promise<RoutingState> {
+    if (input === null || typeof input !== 'object' || !MODEL_ROLES.includes(input.role)) {
+      throw new ContractError('INVALID_INPUT', `unknown model role: ${String(input?.role)}`)
+    }
+    if (input.model === null) {
+      this.roleBindings.delete(input.role)
+    } else {
+      if (typeof input.model.provider !== 'string' || typeof input.model.id !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'model must be { provider, id } or null')
+      }
+      this.roleBindings.set(input.role, { ...input.model })
+    }
+    return this.routingState()
+  }
+
+  // ── Network (v2.0) ──
+  // The real fields live in the kernel's settings.json; the mock keeps the same
+  // shape so the panel is identical in both bridges.
+
+  private mockNetwork = {
+    proxy: '',
+    idleTimeoutMs: 300_000,
+    maxRetries: 3
+  }
+
+  async getNetworkSettings(): Promise<NetworkSettings> {
+    return {
+      path: '~/.pi/agent/settings.json',
+      ...this.mockNetwork,
+      envProxy: null,
+      dispatcher: 'installed'
+    }
+  }
+
+  async setNetworkSettings(input: SetNetworkInput): Promise<NetworkSettings> {
+    if (input === null || typeof input !== 'object') {
+      throw new ContractError('INVALID_INPUT', 'expected { proxy?, idleTimeoutMs?, maxRetries? }')
+    }
+    if (input.proxy !== undefined) {
+      if (typeof input.proxy !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'proxy must be a string')
+      }
+      const value = input.proxy.trim()
+      if (value.length > 0 && !/^(https?|socks|socks5):\/\/\S+$/i.test(value)) {
+        throw new ContractError('INVALID_INPUT', 'proxy must be an http://, https:// or socks:// URL')
+      }
+      this.mockNetwork.proxy = value
+    }
+    if (input.idleTimeoutMs !== undefined) {
+      const next = input.idleTimeoutMs
+      if (!Number.isInteger(next) || next < 0 || next > 3_600_000) {
+        throw new ContractError('INVALID_INPUT', 'idleTimeoutMs must be 0–3600000')
+      }
+      this.mockNetwork.idleTimeoutMs = next
+    }
+    if (input.maxRetries !== undefined) {
+      const next = input.maxRetries
+      if (!Number.isInteger(next) || next < 0 || next > 10) {
+        throw new ContractError('INVALID_INPUT', 'maxRetries must be 0–10')
+      }
+      this.mockNetwork.maxRetries = next
+    }
+    return this.getNetworkSettings()
+  }
+
+  // ── Usage attribution (v2.0) ──
+
+  private static bucket(key: string): UsageBucket {
+    return { key, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+  }
+
+  async sessionUsage(sessionId: SessionId): Promise<UsageReport> {
+    const session = this.requireSession(sessionId)
+    const assistant = session.messages.filter((message) => message.role === 'assistant')
+    const calls = assistant.length
+    const output = assistant.reduce((sum, message) => sum + Math.ceil(message.content.length / 4), 0)
+    const input = calls * 6_400
+    const cacheRead = calls * 2_100
+    const model = session.modelConfig.model
+    const rate = model === null ? undefined : this.mockFacts.find(
+      (fact) => fact.provider === model.provider && fact.id === model.id
+    )
+    const cost = (input / 1_000_000) * (rate?.costIn ?? 1) + (output / 1_000_000) * (rate?.costOut ?? 3)
+
+    const chat = { ...MockCodexApi.bucket('chat'), calls, input, output, cacheRead, cacheWrite: 0, cost }
+    const byPurpose: UsageBucket[] = [chat]
+    const byModel: UsageBucket[] = [
+      {
+        ...MockCodexApi.bucket(model === null ? 'unknown' : `${model.provider}/${model.id}`),
+        calls,
+        input,
+        output,
+        cacheRead,
+        cacheWrite: 0,
+        cost
+      }
+    ]
+    // A long conversation has compacted at least once; the summariser is a
+    // separate line in the ledger, which is the whole point of the purpose axis.
+    if (session.messages.length >= 10) {
+      const sumCalls = Math.floor(session.messages.length / 10)
+      const sumInput = sumCalls * 24_000
+      const sumOutput = sumCalls * 900
+      const sumCost = (sumInput / 1_000_000) * 3 + (sumOutput / 1_000_000) * 15
+      byPurpose.push({
+        ...MockCodexApi.bucket('compaction'),
+        calls: sumCalls,
+        input: sumInput,
+        output: sumOutput,
+        cacheWrite: 0,
+        cost: sumCost
+      })
+      byModel.push({
+        ...MockCodexApi.bucket('tools/summaries'),
+        calls: sumCalls,
+        input: sumInput,
+        output: sumOutput,
+        cacheWrite: 0,
+        cost: sumCost
+      })
+    }
+
+    const total: UsageTotals = {
+      calls: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0
+    }
+    for (const bucket of byPurpose) {
+      total.calls += bucket.calls
+      total.input += bucket.input
+      total.output += bucket.output
+      total.cacheRead += bucket.cacheRead
+      total.cacheWrite += bucket.cacheWrite
+      total.cost += bucket.cost
+    }
+
+    return { sessionId, total, byPurpose, byModel }
   }
 
   async listPlugins(): Promise<PluginSummary[]> {

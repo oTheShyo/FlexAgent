@@ -25,6 +25,11 @@ import {
   type MemoryCard,
   type MemoryCardFile,
   type ModelConfig,
+  type NetworkSettings,
+  type RoutingState,
+  type SetModelRoleInput,
+  type SetNetworkInput,
+  type UsageReport,
   type ModelOption,
   type PluginChangeEvent,
   type PluginDetail,
@@ -193,6 +198,17 @@ const codex: CodexApi = {
 
   removeCustomModel: (input: CustomModelRef) =>
     invoke<CustomModelWriteResult>(IPC.removeCustomModel, input),
+
+  listModelRoles: () => invoke<RoutingState>(IPC.listModelRoles),
+
+  setModelRole: (input: SetModelRoleInput) => invoke<RoutingState>(IPC.setModelRole, input),
+
+  getNetworkSettings: () => invoke<NetworkSettings>(IPC.getNetworkSettings),
+
+  setNetworkSettings: (input: SetNetworkInput) =>
+    invoke<NetworkSettings>(IPC.setNetworkSettings, input),
+
+  sessionUsage: (sessionId: SessionId) => invoke<UsageReport>(IPC.sessionUsage, sessionId),
 
   listPlugins: () => invoke<PluginSummary[]>(IPC.listPlugins),
 

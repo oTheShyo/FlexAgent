@@ -10,15 +10,18 @@ import {
   type ModelOption,
   type PermissionDecision,
   type PromptDisposition,
+  type RoutingState,
   type RunState,
   type SessionId,
   type ThinkingLevel,
-  type ToolCallId
+  type ToolCallId,
+  type UsageReport
 } from '../shared/contract'
 import type {
   WorkerKernelEvent,
   WorkerRequest,
   WorkerResponse,
+  NetworkStatus,
   PluginResourceSpec,
   PluginMcpServerConfig
 } from '../shared/kernel-protocol'
@@ -33,6 +36,11 @@ import { perfStart } from './perf'
 import { interpolateHookTemplate } from './userConfig'
 import { runHook, type HookRunOptions, type HookRunResult } from './hooks/hookRunner'
 import { createSelfEvolutionExtension, SKILLS_HOME } from './skills/selfEvolution'
+import { buildUsageReport, resolveRoleModel, resolveRoles } from './modelRoles'
+import { createCompactionRoutingExtension } from './compactionRouting'
+import { loadKernelHttp } from './kernelHttp'
+import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from './kernelSettings'
+import { readJsonDocument } from './jsonFile'
 import {
   connectMcpClient,
   listMcpTools,
@@ -460,6 +468,125 @@ async function getModelRuntime(): Promise<import('@earendil-works/pi-coding-agen
   return modelRuntimePromise
 }
 
+/**
+ * Proxy variables that were already set before this process touched anything.
+ * PI's `applyHttpProxySettings` only fills these in when they are empty, so an
+ * ambient value wins over the setting — captured once so the UI can say which
+ * one is in charge instead of showing a field that loses silently.
+ */
+const ambientProxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? null
+
+/** The proxy this worker installed itself, so clearing the setting can undo it. */
+let installedProxy: string | null = null
+
+/** PI's own settings path. Not derived outside the worker — the agent dir is PI's. */
+async function kernelSettingsPath(): Promise<string> {
+  const { getAgentDir } = await loadPi()
+  return join(getAgentDir(), 'settings.json')
+}
+
+const DISPATCHER_MISSING =
+  "The kernel's HTTP dispatcher could not be located inside the installed kernel package, so a proxy cannot be installed from here. The idle timeout and retry settings still apply — they go through the kernel's own settings."
+
+async function networkStatus(): Promise<NetworkStatus> {
+  const http = await loadKernelHttp()
+  return http === null
+    ? { dispatcher: 'unavailable', envProxy: ambientProxy, note: DISPATCHER_MISSING }
+    : { dispatcher: 'installed', envProxy: ambientProxy }
+}
+
+/**
+ * Make the stored network settings true *in this process*.
+ *
+ * PI only calls `applyHttpProxySettings`/`configureHttpDispatcher` from its CLI
+ * entry point, which this app never runs, so the SDK path has no proxy at all —
+ * Node's default dispatcher ignores the proxy environment variables. Everything
+ * here is therefore done by hand, and the result is reported rather than assumed.
+ */
+async function applyNetwork(proxy: string, idleTimeoutMs: number): Promise<NetworkStatus> {
+  const base = await networkStatus()
+  const http = await loadKernelHttp()
+  let status: NetworkStatus = base
+  if (http !== null) {
+    try {
+      if (proxy.length > 0) {
+        http.applyProxy(proxy)
+        installedProxy = proxy
+      } else if (installedProxy !== null) {
+        // Only remove what we put there: a variable the user really exported must
+        // survive clearing the setting.
+        for (const name of ['HTTP_PROXY', 'HTTPS_PROXY'] as const) {
+          if (process.env[name] === installedProxy) delete process.env[name]
+        }
+        installedProxy = null
+      }
+      // Re-created each time: the dispatcher reads the proxy variables and the
+      // idle timeout at construction, so a change needs a new one.
+      http.configureDispatcher(idleTimeoutMs)
+    } catch (err) {
+      status = {
+        ...base,
+        dispatcher: 'unavailable',
+        note: `The kernel refused the network settings (${err instanceof Error ? err.message : String(err)}).`
+      }
+    }
+  }
+  // The file was already written; a *running* session only notices once its own
+  // SettingsManager re-reads it, and it reads per request. Without this, a new
+  // timeout or retry budget would sit on disk unused until the session is
+  // re-attached — the same "written ≠ in effect" trap as a custom model.
+  await reloadSessionSettings()
+  return status
+}
+
+/**
+ * Re-read the kernel settings for every attached session. Failures are per
+ * session: one broken session must not stop the others from picking up a change.
+ */
+async function reloadSessionSettings(): Promise<void> {
+  await Promise.all(
+    [...sessions.values()].map(async (host) => {
+      try {
+        await host.session.settingsManager.reload()
+      } catch {
+        // A disposed session can throw here; nothing to report, nothing to fix.
+      }
+    })
+  )
+}
+
+/**
+ * Apply the stored proxy and idle timeout once, before the first session can
+ * make a request. Doing it lazily (instead of in `applyNetwork`) means a proxy
+ * saved in a previous run is already in force when the window reopens — a
+ * setting that only works until you restart is not a setting.
+ */
+let networkBoot: Promise<void> | null = null
+function ensureNetworkApplied(): Promise<void> {
+  networkBoot ??= (async () => {
+    let proxy = ''
+    let idle = DEFAULT_HTTP_IDLE_TIMEOUT_MS
+    try {
+      // Same tolerant read the models service uses: the kernel's own file may
+      // carry comments, and a hand-edited one must not silently disable this.
+      const root = readJsonDocument(await kernelSettingsPath(), 'settings.json').root
+      const stored = root.httpProxy
+      if (typeof stored === 'string') proxy = stored.trim()
+      const timeout = root.httpIdleTimeoutMs
+      if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 0) idle = timeout
+    } catch {
+      // No settings file yet, or unreadable — leave the process as it is.
+    }
+    try {
+      await applyNetwork(proxy, idle)
+    } catch {
+      // applyNetwork already reports failures through its return value.
+    }
+  })()
+  return networkBoot
+}
+
+
 function toModelOption(model: {
   provider: string
   id: string
@@ -805,6 +932,11 @@ async function acquireResourceLoader(
       ],
       extensionFactories: [
         createSelfEvolutionExtension({ onSkillsChanged: () => resourceLoaders.clear() }),
+        createCompactionRoutingExtension({
+          resolveCompactionModel: async () =>
+            resolveRoleModel(await getModelRuntime(), 'compaction'),
+          getRuntime: () => getModelRuntime()
+        }),
         createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps, { tools: mcpTools })
       ]
     })
@@ -869,9 +1001,15 @@ async function profiled<T>(label: string, fn: () => Promise<T>): Promise<T> {
 async function attachSession(
   sessionId: SessionId,
   cwd: string,
-  sessionManager: SessionManagerType
+  sessionManager: SessionManagerType,
+  options: { applyChatRole?: boolean } = {}
 ): Promise<HostSession> {
   const perf = perfStart()
+  // Before anything can open a socket: a proxy saved in a previous run has to be
+  // in force for the MCP bridge and the model runtime alike. Resolves instantly
+  // after the first call, so this is not an attach-time cost.
+  await ensureNetworkApplied()
+  perf.mark('network')
   const { createAgentSession } = await loadPi()
   perf.mark('loadPi')
   if (!mcpStartupPromise) mcpStartupPromise = startMcpToolBridge()
@@ -885,8 +1023,19 @@ async function attachSession(
   // as PI's own service layer does across sessions.
   const modelRuntime = await getModelRuntime()
   perf.mark('getModelRuntime')
+  // Only for a session that has no history yet: PI restores a transcript's own
+  // model on attach, and a per-session switch the user made must win over the
+  // role. Passing nothing leaves PI's `defaultProvider`/`defaultModel` in charge.
+  const chatRoleModel = options.applyChatRole ? resolveRoleModel(modelRuntime, 'chat') : null
+  perf.mark('resolveChatRole')
   const { session } = await profiled('createAgentSession', () =>
-    createAgentSession({ cwd, sessionManager, resourceLoader, modelRuntime })
+    createAgentSession({
+      cwd,
+      sessionManager,
+      resourceLoader,
+      modelRuntime,
+      ...(chatRoleModel === null ? {} : { model: chatRoleModel })
+    })
   )
   perf.mark('createAgentSession')
   await session.bindExtensions({ mode: 'print' })
@@ -932,7 +1081,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       }
       const { SessionManager } = await loadPi()
       perf.mark('loadPi')
-      const host = await attachSession(req.sessionId, req.cwd, SessionManager.create(req.cwd))
+      const host = await attachSession(req.sessionId, req.cwd, SessionManager.create(req.cwd), {
+        applyChatRole: true
+      })
       perf.mark('attachSession')
       perf.done('createSession', { sessionId: req.sessionId, cwd: req.cwd })
       return { piSessionFile: host.session.sessionFile }
@@ -1209,6 +1360,27 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       }
       return undefined
     }
+    case 'settingsPath': {
+      // Same rule as modelsPath: the agent dir is PI's to define.
+      const { getAgentDir } = await loadPi()
+      return { path: join(getAgentDir(), 'settings.json') }
+    }
+    case 'resolveModelRoles': {
+      const runtime = await getModelRuntime()
+      const settingsFile = await kernelSettingsPath()
+      return resolveRoles(runtime, settingsFile)
+    }
+    case 'networkStatus': {
+      return networkStatus()
+    }
+    case 'applyNetwork': {
+      return applyNetwork(req.proxy, req.idleTimeoutMs)
+    }
+    case 'sessionUsage': {
+      const host = requireSession(req.sessionId)
+      return buildUsageReport(req.sessionId, host.session.sessionManager.getEntries())
+    }
+
     case 'shutdown': {
       for (const [id, host] of [...sessions]) {
         host.unsubscribe()

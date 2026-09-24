@@ -9,19 +9,33 @@ import { THEMES } from '../lib/themes'
 import type { ThemeOption } from '../lib/themes'
 import { pathBasename } from '../lib/paths'
 import { useCustomModels } from '../hooks/useCustomModels'
+import { useModelRouting } from '../hooks/useModelRouting'
+import { useNetworkSettings } from '../hooks/useNetworkSettings'
+import { useSessionUsage } from '../hooks/useSessionUsage'
 import ModelsSettings from './ModelsSettings'
+import RoutingSettings from './RoutingSettings'
+import NetworkSettings from './NetworkSettings'
 import {
   CloseIcon,
   InfoIcon,
   KeyboardIcon,
   ModelIcon,
+  NetworkIcon,
   PaletteIcon,
+  RoutingIcon,
   SettingsIcon
 } from './icons'
 import type { IconProps } from './icons'
 import { IconButton } from './ui'
 
-export type SettingsSectionId = 'general' | 'appearance' | 'shortcuts' | 'models' | 'about'
+export type SettingsSectionId =
+  | 'general'
+  | 'appearance'
+  | 'shortcuts'
+  | 'models'
+  | 'routing'
+  | 'network'
+  | 'about'
 
 interface SettingsNavEntry {
   id: SettingsSectionId
@@ -45,7 +59,14 @@ const NAV_GROUPS: { title?: string; entries: SettingsNavEntry[] }[] = [
   },
   {
     title: 'Models',
-    entries: [{ id: 'models', label: 'Custom models', Icon: ModelIcon }]
+    entries: [
+      { id: 'models', label: 'Custom models', Icon: ModelIcon },
+      { id: 'routing', label: 'Routing', Icon: RoutingIcon }
+    ]
+  },
+  {
+    title: 'Network',
+    entries: [{ id: 'network', label: 'Proxy & timeouts', Icon: NetworkIcon }]
   },
   {
     title: 'About',
@@ -58,6 +79,8 @@ const SECTION_TITLE: Record<SettingsSectionId, string> = {
   appearance: 'Appearance',
   shortcuts: 'Shortcuts',
   models: 'Custom models',
+  routing: 'Routing',
+  network: 'Proxy & timeouts',
   about: 'Storage'
 }
 
@@ -66,6 +89,8 @@ const SECTION_BLURB: Partial<Record<SettingsSectionId, string>> = {
   general: 'How this window is talking to the kernel right now.',
   appearance: 'Pick a palette — everything else in the app follows it.',
   shortcuts: 'What the app listens for, and nothing it does not.',
+  routing: 'Which model answers which kind of call, and what the session has spent.',
+  network: 'The kernel\u2019s own HTTP settings — proxy, stream timeout, retries.',
   about: 'What lives on this device, and what belongs to the kernel.'
 }
 
@@ -217,6 +242,8 @@ export interface SettingsPageProps {
   sessions: SessionSummary[]
   /** Workspace of the open session, if any — shown under General. */
   activeCwd: string | null
+  /** Open chat whose usage ledger is shown under Routing. */
+  activeSessionId: string | null
   onClose: () => void
   /** After a models.json write, so the composer re-reads the model list. */
   onModelsChanged?: () => void
@@ -231,12 +258,23 @@ function noteClass(): string {
  *
  * The model controller is owned here rather than inside the Models section so
  * that switching sections does not re-read models.json; the write still goes
- * through the kernel-supplied path (see hooks/useCustomModels).
+ * through the kernel-supplied path (see hooks/useCustomModels). The routing and
+ * network controllers follow the same rule: one read per window, not one per
+ * section switch.
  */
-function SettingsPage({ sessions, activeCwd, onClose, onModelsChanged }: SettingsPageProps) {
+function SettingsPage({
+  sessions,
+  activeCwd,
+  activeSessionId,
+  onClose,
+  onModelsChanged
+}: SettingsPageProps) {
   const [section, setSection] = useState<SettingsSectionId>('general')
   const [themePref, setThemePref] = useState<ThemePreference>(() => readTheme())
   const customModels = useCustomModels(onModelsChanged)
+  const routing = useModelRouting()
+  const networkSettings = useNetworkSettings()
+  const usage = useSessionUsage(activeSessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -338,6 +376,18 @@ function SettingsPage({ sessions, activeCwd, onClose, onModelsChanged }: Setting
           </section>
         )
 
+      case 'routing':
+        return (
+          <RoutingSettings
+            controller={routing}
+            usage={usage}
+            hasSession={activeSessionId !== null}
+          />
+        )
+
+      case 'network':
+        return <NetworkSettings controller={networkSettings} />
+
       case 'about':
         return (
           <>
@@ -345,16 +395,24 @@ function SettingsPage({ sessions, activeCwd, onClose, onModelsChanged }: Setting
               <Row label="Models file" title={customModels.path ?? undefined}>
                 <code className="font-mono text-[11px]">{customModels.path ?? 'reading…'}</code>
               </Row>
+              <Row label="Kernel settings" title={networkSettings.settings?.path ?? undefined}>
+                <code className="font-mono text-[11px]">
+                  {networkSettings.settings?.path ?? 'reading…'}
+                </code>
+              </Row>
               <Row label="Sessions & transcripts">Belong to the kernel</Row>
             </Card>
             <Card title="This device">
               <Row label="Theme">Applied locally</Row>
               <Row label="Chat names & archives">Local overlay — not synced</Row>
+              <Row label="Routing file" title={routing.path ?? undefined}>
+                <code className="font-mono text-[11px]">{routing.path ?? 'reading…'}</code>
+              </Row>
             </Card>
             <p className={noteClass()}>
               Clearing this device&apos;s local storage drops the theme preference and any renamed
-              or archived chats, but leaves sessions, transcripts and custom models untouched —
-              those are the kernel&apos;s files, not the window&apos;s.
+              or archived chats, but leaves sessions, transcripts, custom models and model routing
+              untouched — those are files on disk, not window state.
             </p>
           </>
         )
@@ -362,8 +420,12 @@ function SettingsPage({ sessions, activeCwd, onClose, onModelsChanged }: Setting
   }, [
     section,
     activeCwd,
+    activeSessionId,
     bridgeLabel,
     customModels,
+    networkSettings,
+    routing,
+    usage,
     handleThemeSelect,
     platformLabel,
     sessions.length,

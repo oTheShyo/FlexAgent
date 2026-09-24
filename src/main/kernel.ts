@@ -2,8 +2,21 @@ import { BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { Worker } from 'worker_threads'
-import { IPC, type KernelEvent, type RunState, type SessionId } from '../shared/contract'
-import type { WorkerKernelEvent, WorkerRequest, WorkerRequestInput, WorkerResponse } from '../shared/kernel-protocol'
+import {
+  IPC,
+  type KernelEvent,
+  type RoutingState,
+  type RunState,
+  type SessionId,
+  type UsageReport
+} from '../shared/contract'
+import type {
+  NetworkStatus,
+  WorkerKernelEvent,
+  WorkerRequest,
+  WorkerRequestInput,
+  WorkerResponse
+} from '../shared/kernel-protocol'
 
 type Pending = {
   resolve: (value: unknown) => void
@@ -162,6 +175,45 @@ export class KernelHost {
       | { error?: string }
       | undefined
     return result?.error
+  }
+
+  /** PI's own `settings.json`; the network settings are stored there. */
+  async settingsPath(): Promise<string> {
+    const result = (await this.request({ type: 'settingsPath' })) as { path?: string } | undefined
+    if (result?.path === undefined) throw { ...KERNEL_INTERNAL }
+    return result.path
+  }
+
+  /** Every routing role resolved against the live ModelRuntime, plus model facts. */
+  async resolveModelRoles(): Promise<RoutingState> {
+    const result = (await this.request({ type: 'resolveModelRoles' })) as RoutingState | undefined
+    if (result === undefined) throw { ...KERNEL_INTERNAL }
+    return result
+  }
+
+  /** Whether this process installed the kernel's HTTP dispatcher, and what env says. */
+  async networkStatus(): Promise<NetworkStatus> {
+    const result = (await this.request({ type: 'networkStatus' })) as NetworkStatus | undefined
+    if (result === undefined) throw { ...KERNEL_INTERNAL }
+    return result
+  }
+
+  /** Push the stored network settings into the running kernel. */
+  async applyNetwork(proxy: string, idleTimeoutMs: number): Promise<NetworkStatus> {
+    const result = (await this.request({ type: 'applyNetwork', proxy, idleTimeoutMs })) as
+      | NetworkStatus
+      | undefined
+    if (result === undefined) throw { ...KERNEL_INTERNAL }
+    return result
+  }
+
+  /** One session's tokens, attributed to the purpose that spent them. */
+  async sessionUsage(sessionId: SessionId): Promise<UsageReport> {
+    const result = (await this.request({ type: 'sessionUsage', sessionId })) as
+      | UsageReport
+      | undefined
+    if (result === undefined) throw { ...KERNEL_INTERNAL }
+    return result
   }
 
   async shutdown(): Promise<void> {

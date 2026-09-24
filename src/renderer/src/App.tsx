@@ -546,6 +546,7 @@ export default function App({ children }: AppProps) {
           <SettingsPage
             sessions={sessions}
             activeCwd={activeProjectCwd ?? null}
+            activeSessionId={activeSessionId}
             onClose={handleCloseSettings}
             onModelsChanged={refreshModels}
           />

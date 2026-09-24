@@ -26,7 +26,6 @@
  *
  * Errors are ContractErrors so the renderer sees a specific reason.
  */
-import { existsSync, readFileSync } from 'fs'
 import { ContractError, CUSTOM_MODEL_APIS } from '../shared/contract'
 import type {
   CustomModelApi,
@@ -35,7 +34,8 @@ import type {
   CustomModelSaveInput,
   CustomModelWriteResult
 } from '../shared/contract'
-import { writeFileAtomically } from './marketplaceAtomic'
+import { asString, isRecord, readJsonDocument, writeJsonDocument } from './jsonFile'
+import type { JsonDocument } from './jsonFile'
 
 const PROVIDER_RE = /^[a-zA-Z0-9_-]{1,64}$/
 const MAX_ID_LENGTH = 200
@@ -48,104 +48,21 @@ const MAX_ID_LENGTH = 200
  */
 const PROVIDER_KEEP_KEYS = ['modelOverrides', 'headers', 'compat', 'oauth', 'name']
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-interface Document {
-  path: string
-  /** Whole parsed root — unknown top-level keys are preserved on write. */
-  root: Record<string, unknown>
+interface Document extends JsonDocument {
   providers: Record<string, Record<string, unknown>>
-  /** Detected indent so a write does not reformat a hand-edited file. */
-  indent: number
 }
 
-function emptyDocument(path: string): Document {
-  return { path, root: {}, providers: {}, indent: 2 }
-}
-
-/** Detect the file's own indentation; falls back to 2 spaces for a new file. */
-function detectIndent(raw: string): number {
-  const match = /\n(\s+)"/.exec(raw)
-  if (match === null) return 2
-  const width = match[1].replace(/\t/g, '').length
-  return width >= 1 && width <= 8 ? width : 2
-}
-
-/** Read + parse. An unreadable file is reported, never silently swallowed. */
+/** Read + parse, then lift the provider map out of the root. */
 function readDocument(path: string): Document {
-  if (!existsSync(path)) return emptyDocument(path)
-  let raw: string
-  try {
-    raw = readFileSync(path, 'utf8')
-  } catch (err) {
-    throw new ContractError(
-      'INVALID_INPUT',
-      `Cannot read models.json (${err instanceof Error ? err.message : String(err)})`
-    )
-  }
-  let parsed: unknown
-  try {
-    // PI tolerates comments; JSON.parse does not. Strip them so a commented
-    // file stays editable from here.
-    parsed = JSON.parse(stripJsonComments(raw))
-  } catch (err) {
-    throw new ContractError(
-      'INVALID_INPUT',
-      `models.json is not valid JSON (${err instanceof Error ? err.message : String(err)}). File: ${path}`
-    )
-  }
-  if (!isRecord(parsed)) {
-    throw new ContractError('INVALID_INPUT', `models.json root must be an object. File: ${path}`)
-  }
+  const document = readJsonDocument(path, 'models.json')
   const providers: Record<string, Record<string, unknown>> = {}
-  if (isRecord(parsed.providers)) {
-    for (const [id, entry] of Object.entries(parsed.providers)) {
+  const declared = document.root.providers
+  if (isRecord(declared)) {
+    for (const [id, entry] of Object.entries(declared)) {
       if (isRecord(entry)) providers[id] = { ...entry }
     }
   }
-  return { path, root: { ...parsed }, providers, indent: detectIndent(raw) }
-}
-
-/** Minimal JSONC support (`//` and block comments) — same leniency as PI's loader. */
-function stripJsonComments(text: string): string {
-  let out = ''
-  let inString = false
-  let escaped = false
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i]
-    const next = text[i + 1]
-    if (inString) {
-      out += char
-      if (escaped) escaped = false
-      else if (char === '\\') escaped = true
-      else if (char === '"') inString = false
-      continue
-    }
-    if (char === '"') {
-      inString = true
-      out += char
-      continue
-    }
-    if (char === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') i += 1
-      out += '\n'
-      continue
-    }
-    if (char === '/' && next === '*') {
-      i += 2
-      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i += 1
-      i += 1
-      continue
-    }
-    out += char
-  }
-  return out
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+  return { ...document, providers }
 }
 
 function requireProvider(value: unknown): string {
@@ -255,18 +172,8 @@ async function persist(document: Document): Promise<void> {
   const providers: Record<string, unknown> = {}
   // Provider keys are sorted for a stable diff; model arrays keep file order.
   for (const key of Object.keys(document.providers).sort()) providers[key] = document.providers[key]
-  const payload = { ...document.root, providers }
-  try {
-    await writeFileAtomically(
-      document.path,
-      JSON.stringify(payload, null, document.indent) + '\n'
-    )
-  } catch (err) {
-    throw new ContractError(
-      'KERNEL_INTERNAL',
-      `Failed to write models.json: ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
+  document.root = { ...document.root, providers }
+  await writeJsonDocument(document, 'models.json')
 }
 
 /** Drop an entry, and its provider once nothing meaningful is left in it. */
