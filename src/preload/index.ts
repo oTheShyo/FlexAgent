@@ -2,14 +2,22 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import {
   ContractError,
+  CONTRACT_ERROR_CODES,
   IPC,
   type ApplyFileChangesInput,
   type ApplyFileChangesResult,
   type CodexApi,
   type ContractErrorCode,
   type CreateSessionInput,
+  type InstallFromMarketplaceInput,
   type InstallPluginInput,
   type KernelEvent,
+  type MarketplaceApi,
+  type MarketplaceInfo,
+  type MarketplaceProgressEvent,
+  type MarketplaceSearchInput,
+  type MarketplaceSearchResult,
+  type AddMarketplaceInput,
   type ModelConfig,
   type ModelOption,
   type PluginChangeEvent,
@@ -34,23 +42,10 @@ interface IpcFailure {
   details?: unknown
 }
 
-const CONTRACT_ERROR_CODES = new Set<string>([
-  'SESSION_NOT_FOUND',
-  'SESSION_BUSY',
-  'INVALID_INPUT',
-  'PERMISSION_EXPIRED',
-  'TERMINAL_NOT_FOUND',
-  'TERMINAL_LIMIT',
-  'PLUGIN_NOT_FOUND',
-  'PLUGIN_ALREADY_INSTALLED',
-  'PLUGIN_MANIFEST_INVALID',
-  'PLUGIN_COMPONENT_INVALID',
-  'PLUGIN_PATH_INVALID',
-  'KERNEL_INTERNAL'
-])
+const CONTRACT_ERROR_CODE_SET = new Set<string>(CONTRACT_ERROR_CODES)
 
 function toContractErrorCode(code: string): ContractErrorCode {
-  return CONTRACT_ERROR_CODES.has(code) ? (code as ContractErrorCode) : 'KERNEL_INTERNAL'
+  return CONTRACT_ERROR_CODE_SET.has(code) ? (code as ContractErrorCode) : 'KERNEL_INTERNAL'
 }
 
 function failureFromIpcError(err: unknown): IpcFailure {
@@ -192,13 +187,37 @@ const diag = {
   killWorker: () => invoke<{ killed: boolean }>('diag:killWorker')
 }
 
-contextBridge.exposeInMainWorld('electron', { codex, diag })
+const marketplace: MarketplaceApi = {
+  listMarketplaces: () => invoke<MarketplaceInfo[]>(IPC.listMarketplaces),
+
+  addMarketplace: (input: AddMarketplaceInput) =>
+    invoke<MarketplaceInfo>(IPC.addMarketplace, input),
+
+  searchMarketplaces: (input: MarketplaceSearchInput) =>
+    invoke<MarketplaceSearchResult[]>(IPC.searchMarketplaces, input),
+
+  installFromMarketplace: (input: InstallFromMarketplaceInput) =>
+    invoke<PluginSummary>(IPC.installFromMarketplace, input),
+
+  subscribeMarketplaceProgress(listener: (event: MarketplaceProgressEvent) => void): () => void {
+    const handler = (_event: IpcRendererEvent, payload: MarketplaceProgressEvent): void => {
+      listener(payload)
+    }
+    ipcRenderer.on(IPC.marketplaceProgress, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.marketplaceProgress, handler)
+    }
+  }
+}
+
+contextBridge.exposeInMainWorld('electron', { codex, diag, marketplace })
 
 declare global {
   interface Window {
     electron?: {
       codex: CodexApi
       diag?: { killWorker: () => Promise<{ killed: boolean }> }
+      marketplace?: MarketplaceApi
     }
   }
 }

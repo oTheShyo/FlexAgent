@@ -4,9 +4,16 @@ import { registerIpcHandlers } from './ipc'
 import { KernelHost } from './kernel'
 import { SessionRegistry } from './registry'
 import { TerminalManager } from './pty'
-import { PluginRegistry } from './pluginRegistry'
+import { PluginRegistry, pluginsStorageRoot } from './pluginRegistry'
 import { PluginService } from './plugins'
-import { IPC, type PluginChangeEvent, type PluginSummary } from '../shared/contract'
+import { MarketplaceService } from './pluginMarketplace'
+import { registerMarketplaceIpc } from './marketplaceIpc'
+import {
+  IPC,
+  type MarketplaceProgressEvent,
+  type PluginChangeEvent,
+  type PluginSummary
+} from '../shared/contract'
 
 const registry = new SessionRegistry()
 const pluginRegistry = new PluginRegistry()
@@ -17,6 +24,12 @@ function broadcastPluginsChanged(plugins: PluginSummary[]): void {
   const payload: PluginChangeEvent = { plugins }
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.pluginsChanged, payload)
+  }
+}
+
+function broadcastMarketplaceProgress(event: MarketplaceProgressEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.marketplaceProgress, event)
   }
 }
 
@@ -43,12 +56,22 @@ app.whenReady().then(() => {
   registry.load()
   pluginRegistry.load()
   kernel.start()
+  // Sole runState persistence path: kernel run_state events (fanOut in kernel.ts)
+  // are the runtime authority; registry.runState is a pure projection (fix #6).
   kernel.setRunStateListener((sessionId, runState) => registry.setRunState(sessionId, runState))
   terminals = new TerminalManager(kernel, registry)
   const pluginService = new PluginService(pluginRegistry, kernel, () =>
     broadcastPluginsChanged(pluginService.list())
   )
   registerIpcHandlers(kernel, registry, terminals, pluginService)
+  const marketplaceService = new MarketplaceService({
+    registry: pluginRegistry,
+    storageRoot: pluginsStorageRoot(),
+    notify: () => broadcastPluginsChanged(pluginService.list()),
+    reloadKernel: () => pluginService.reloadKernel(),
+    onProgress: broadcastMarketplaceProgress
+  })
+  registerMarketplaceIpc(marketplaceService)
   void pluginService.pushResourceSpec()
   createWindow()
 

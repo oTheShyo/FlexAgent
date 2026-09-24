@@ -180,7 +180,7 @@ export class PluginService {
   async uninstall(id: PluginId): Promise<void> {
     const rec = this.registry.require(id)
     this.registry.remove(id)
-    if (rec.sourceKind === 'local' && existsSync(rec.rootPath)) {
+    if ((rec.sourceKind === 'local' || rec.sourceKind === 'marketplace') && existsSync(rec.rootPath)) {
       rmSync(rec.rootPath, { recursive: true, force: true })
     }
     this.notify()

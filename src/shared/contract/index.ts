@@ -77,8 +77,41 @@ export type ContractErrorCode =
   | 'PLUGIN_COMPONENT_INVALID'
   /** Plugin source path does not exist / is not a directory. */
   | 'PLUGIN_PATH_INVALID'
+  /** Marketplace/plugin source string failed to parse, or a recognized-but-unsupported source kind. */
+  | 'PLUGIN_SOURCE_INVALID'
+  /** Downloading or verifying a remote plugin/marketplace archive failed (network, HTTP status, sha256). */
+  | 'PLUGIN_DOWNLOAD_FAILED'
   /** Kernel/PI internal failure not attributable to a single event. */
   | 'KERNEL_INTERNAL'
+
+/**
+ * Runtime mirror of {@link ContractErrorCode} — single source for the IPC
+ * error-code allowlists in main/preload/marketplace. `satisfies` pins every
+ * entry to the union; `_ContractErrorCodeArrayCoversUnion` fails compilation
+ * if a union member is ever missing here.
+ */
+export const CONTRACT_ERROR_CODES = [
+  'SESSION_NOT_FOUND',
+  'SESSION_BUSY',
+  'INVALID_INPUT',
+  'PERMISSION_EXPIRED',
+  'TERMINAL_NOT_FOUND',
+  'TERMINAL_LIMIT',
+  'PLUGIN_NOT_FOUND',
+  'PLUGIN_ALREADY_INSTALLED',
+  'PLUGIN_MANIFEST_INVALID',
+  'PLUGIN_COMPONENT_INVALID',
+  'PLUGIN_PATH_INVALID',
+  'PLUGIN_SOURCE_INVALID',
+  'PLUGIN_DOWNLOAD_FAILED',
+  'KERNEL_INTERNAL'
+] as const satisfies readonly ContractErrorCode[]
+
+/** Compile-time drift guard: errors if a ContractErrorCode is missing above. */
+type AssertTrue<T extends true> = T
+export type _ContractErrorCodeArrayCoversUnion = AssertTrue<
+  Exclude<ContractErrorCode, (typeof CONTRACT_ERROR_CODES)[number]> extends never ? true : false
+>
 
 export class ContractError extends Error {
   readonly code: ContractErrorCode
@@ -284,6 +317,95 @@ export interface InstallPluginInput {
  */
 export interface PluginChangeEvent {
   plugins: PluginSummary[]
+}
+
+// ─── Marketplace (v1.5 / P3) ─────────────────────────────────────────────────
+
+/** A marketplace registered in `known_marketplaces.json`. */
+export interface MarketplaceInfo {
+  /** Marketplace manifest name (stable id, e.g. `community`). */
+  id: string
+  name: string
+  description?: string
+  /** Human-readable canonical source (URL / `owner/repo` / local path). */
+  source: string
+  pluginCount: number
+  addedAt: string
+  lastUpdated?: string
+}
+
+/** One searchable plugin entry projected from a configured marketplace index. */
+export interface MarketplaceSearchResult {
+  marketplace: string
+  name: string
+  version?: string
+  description?: string
+  tags?: string[]
+  installed: boolean
+  installedVersion?: string
+  /** Installed version is older than the entry version (semver-ish compare). */
+  updateAvailable?: boolean
+}
+
+export interface MarketplaceSearchInput {
+  /** Case-insensitive substring match on name/description/tags. Empty = list all. */
+  query?: string
+  /** Restrict to one configured marketplace id. */
+  marketplace?: string
+}
+
+export interface AddMarketplaceInput {
+  /** Raw source string: HTTPS URL, `owner/repo[#ref]`, git SSH URL, local file/directory path. */
+  source: string
+}
+
+/**
+ * Where to install a plugin from, outside the configured-index flow.
+ * - `path`  — local directory or `.zip` file.
+ * - `url`   — remote source string (same grammar as AddMarketplaceInput.source):
+ *             GitHub repo URL / zip URL / git URL.
+ * - `entry` — a plugin entry inside an already-configured marketplace index.
+ */
+export type MarketplaceInstallSource =
+  | { kind: 'path'; path: string }
+  | { kind: 'url'; url: string }
+  | { kind: 'entry'; marketplace: string; name: string }
+
+export interface InstallFromMarketplaceInput {
+  source: MarketplaceInstallSource
+  /** Replace an already-installed plugin (atomic backup/rollback). Default: reject with PLUGIN_ALREADY_INSTALLED. */
+  overwrite?: boolean
+}
+
+export type MarketplaceProgressPhase =
+  | 'resolve'
+  | 'download'
+  | 'extract'
+  | 'install'
+  | 'done'
+  | 'error'
+
+export interface MarketplaceProgressEvent {
+  phase: MarketplaceProgressPhase
+  /** Redacted source display string, when known. */
+  source?: string
+  pluginId?: PluginId
+  message?: string
+}
+
+/**
+ * Marketplace surface. Exposed by the preload bridge as
+ * `window.electron.marketplace` — separate from CodexApi so the P1 mock
+ * (which implements CodexApi only) keeps typechecking until the frontend
+ * track opts in.
+ */
+export interface MarketplaceApi {
+  listMarketplaces(): Promise<MarketplaceInfo[]>
+  addMarketplace(input: AddMarketplaceInput): Promise<MarketplaceInfo>
+  searchMarketplaces(input: MarketplaceSearchInput): Promise<MarketplaceSearchResult[]>
+  installFromMarketplace(input: InstallFromMarketplaceInput): Promise<PluginSummary>
+  /** Subscribe to install/refresh progress (global channel, mirror of subscribePlugins). */
+  subscribeMarketplaceProgress(listener: (event: MarketplaceProgressEvent) => void): () => void
 }
 
 // ─── Events (kernel → renderer), one discriminated union ─────────────────────
@@ -496,7 +618,13 @@ export const IPC = {
   /** main → renderer push for PluginChangeEvent (global, per webContents). */
   pluginsChanged: 'codex:pluginsChanged',
   /** main → renderer push for KernelEvent (per webContents). */
-  kernelEvent: 'codex:kernelEvent'
+  kernelEvent: 'codex:kernelEvent',
+  listMarketplaces: 'codex:listMarketplaces',
+  addMarketplace: 'codex:addMarketplace',
+  searchMarketplaces: 'codex:searchMarketplaces',
+  installFromMarketplace: 'codex:installFromMarketplace',
+  /** main → renderer push for MarketplaceProgressEvent (global, per webContents). */
+  marketplaceProgress: 'codex:marketplaceProgress'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
