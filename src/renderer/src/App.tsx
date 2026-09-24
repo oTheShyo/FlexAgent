@@ -104,12 +104,16 @@ export default function App({ children }: AppProps) {
   const onRegenerate = canRegenerate ? handleRegenerate : undefined
 
   const handleNewChat = useCallback((): void => {
+    setShowPlugins(false)
+    closeDetail()
     void createSession()
-  }, [createSession])
+  }, [createSession, closeDetail])
 
   const handleChooseProject = useCallback((): void => {
+    setShowPlugins(false)
+    closeDetail()
     void pickDirectoryOrNewSession()
-  }, [pickDirectoryOrNewSession])
+  }, [pickDirectoryOrNewSession, closeDetail])
 
   const handleSetModel = useCallback(
     (provider: string, id: string): void => {
@@ -127,9 +131,11 @@ export default function App({ children }: AppProps) {
 
   const handleSelectSession = useCallback(
     (sessionId: string): void => {
+      setShowPlugins(false)
+      closeDetail()
       void openSession(sessionId)
     },
-    [openSession]
+    [openSession, closeDetail]
   )
 
   const handleRetryConnection = useCallback((): void => {

@@ -1,24 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  CodexApi,
-  InstallPluginInput,
   PluginChangeEvent,
   PluginDetail,
   PluginId,
   PluginSummary
 } from '../types'
 import { codexApi } from '../api'
-
-type PluginApi = CodexApi & {
-  listPlugins(): Promise<PluginSummary[]>
-  getPlugin(id: PluginId): Promise<PluginDetail>
-  setPluginEnabled(id: PluginId, enabled: boolean): Promise<PluginSummary>
-  installPlugin(input: InstallPluginInput): Promise<PluginSummary>
-  uninstallPlugin(id: PluginId): Promise<void>
-  subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void
-}
-
-const pluginApi = codexApi as PluginApi
 
 const BUSY_FALLBACK_MS = 5000
 
@@ -42,6 +29,7 @@ function errorMessageOf(err: unknown): string {
 }
 
 export function usePlugins(): UsePluginsResult {
+  const pluginApi = codexApi
   const [plugins, setPlugins] = useState<PluginSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
@@ -137,15 +125,25 @@ export function usePlugins(): UsePluginsResult {
     setDetail(null)
   }, [])
 
-  const uninstall = useCallback(async (id: PluginId): Promise<void> => {
-    setError(null)
-    try {
-      await pluginApi.uninstallPlugin(id)
-      setDetail((current) => (current !== null && current.id === id ? null : current))
-    } catch (err) {
-      setError(errorMessageOf(err))
-    }
-  }, [])
+  const uninstall = useCallback(
+    async (id: PluginId): Promise<void> => {
+      setBusyId(id)
+      setError(null)
+      if (busyTimerRef.current !== null) window.clearTimeout(busyTimerRef.current)
+      busyTimerRef.current = window.setTimeout(() => {
+        busyTimerRef.current = null
+        setBusyId((current) => (current === id ? null : current))
+      }, BUSY_FALLBACK_MS)
+      try {
+        await pluginApi.uninstallPlugin(id)
+        setDetail((current) => (current !== null && current.id === id ? null : current))
+      } catch (err) {
+        setError(errorMessageOf(err))
+        clearBusy()
+      }
+    },
+    [clearBusy]
+  )
 
   return {
     plugins,
