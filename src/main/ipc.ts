@@ -28,6 +28,15 @@ import {
   rejectSkillWrite
 } from './skills/skillManage'
 import { listSkills } from './skills/skillService'
+import {
+  addSkillHub,
+  browseSkillHub,
+  installSkill,
+  listSkillHubs,
+  removeSkillHub,
+  uninstallSkill
+} from './skills/skillHub'
+import type { InstallSkillSource } from '../shared/contract'
 import { addMemoryCard, listMemoryCards, removeMemoryCard } from './skills/memoryStore'
 import { searchSessionRecords } from './skills/sessionSearch'
 
@@ -459,6 +468,83 @@ export function registerIpcHandlers(
         throw new ContractError('INVALID_INPUT', 'id is required')
       }
       rejectSkillWrite(id)
+    })
+  )
+
+  // ── Skill Hub (v1.8) ──
+
+  ipcMain.handle(IPC.listSkillHubs, () => guard(() => listSkillHubs()))
+
+  ipcMain.handle(IPC.addSkillHub, (_e, input: { name?: unknown; url?: unknown }) =>
+    guard(() => {
+      if (!input || typeof input.name !== 'string' || typeof input.url !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'name and url are required')
+      }
+      return addSkillHub({ name: input.name, url: input.url })
+    })
+  )
+
+  ipcMain.handle(IPC.removeSkillHub, (_e, id: unknown) =>
+    guard(() => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      removeSkillHub(id)
+    })
+  )
+
+  ipcMain.handle(IPC.browseSkillHub, (_e, id: unknown) =>
+    guard(() =>
+      browseSkillHub(id === undefined || id === null ? undefined : (id as string))
+    )
+  )
+
+  ipcMain.handle(IPC.installSkill, (_e, input: { source?: unknown; overwrite?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.source !== 'object' || input.source === null) {
+        throw new ContractError('INVALID_INPUT', 'source is required')
+      }
+      const src = input.source as { kind?: unknown; hub?: unknown; name?: unknown; folderPath?: unknown; source?: unknown }
+      let parsed: InstallSkillSource
+      if (src.kind === 'hub') {
+        if (typeof src.hub !== 'string' || typeof src.name !== 'string') {
+          throw new ContractError('INVALID_INPUT', 'hub source requires hub and name')
+        }
+        parsed = { kind: 'hub', hub: src.hub, name: src.name }
+      } else if (src.kind === 'folder') {
+        if (typeof src.folderPath !== 'string' || !src.folderPath) {
+          throw new ContractError('INVALID_INPUT', 'folder source requires folderPath')
+        }
+        parsed = { kind: 'folder', folderPath: src.folderPath }
+      } else if (src.kind === 'source') {
+        if (typeof src.source !== 'string' || !src.source) {
+          throw new ContractError('INVALID_INPUT', 'source kind requires a source string')
+        }
+        parsed = { kind: 'source', source: src.source }
+      } else {
+        throw new ContractError('INVALID_INPUT', `Unknown installSkill source kind: ${String(src.kind)}`)
+      }
+      const summary = await installSkill(parsed, input.overwrite === true)
+      try {
+        await kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: the restart path rebuilds loaders from scratch anyway.
+      }
+      return summary
+    })
+  )
+
+  ipcMain.handle(IPC.uninstallSkill, (_e, name: unknown) =>
+    guard(async () => {
+      if (typeof name !== 'string' || !name) {
+        throw new ContractError('INVALID_INPUT', 'name is required')
+      }
+      uninstallSkill(name)
+      try {
+        await kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: the restart path rebuilds loaders from scratch anyway.
+      }
     })
   )
 

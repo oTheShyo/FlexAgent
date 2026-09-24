@@ -27,9 +27,15 @@ import {
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
+  type SkillHubInfo,
+  type SkillHubEntry,
+  type AddSkillHubInput,
+  type InstallSkillInput,
   type SkillSummary,
   type MemoryCard,
   type MemoryCardFile,
+  type McpServerStatusEntry,
+  type McpServerStatusEvent,
   type SlashCommandSummary,
   type TerminalCreateAck,
   type TerminalCreateInput,
@@ -37,7 +43,10 @@ import {
   type TerminalInputInput,
   type TerminalResizeInput,
   type ThinkingLevel,
-  type ToolCallId
+  type ToolCallId,
+  type UserMcpSaveInput,
+  type UserMcpServerConfig,
+  type UserMcpServerSummary
 } from '../types'
 
 type WithoutMeta<E> = E extends unknown ? Omit<E, keyof EventMeta> : never
@@ -755,6 +764,67 @@ export class MockCodexApi implements CodexApi {
     return commands
   }
 
+  // ── User-level MCP servers (v1.8 fixtures) ──
+
+  private readonly userMcpServers = new Map<string, UserMcpServerConfig>()
+  private readonly mcpStatusListeners = new Set<(event: McpServerStatusEvent) => void>()
+
+  async listUserMcpServers(): Promise<UserMcpServerSummary[]> {
+    return [...this.userMcpServers.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, config]) => ({ name, config: { ...config } }))
+  }
+
+  async saveUserMcpServer(input: UserMcpSaveInput): Promise<UserMcpServerSummary[]> {
+    if (input === null || typeof input !== 'object' || typeof input.name !== 'string') {
+      throw new ContractError('INVALID_INPUT', 'expected { name, config }')
+    }
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(input.name)) {
+      throw new ContractError('INVALID_INPUT', 'name must match [a-zA-Z0-9_-]{1,64}')
+    }
+    if (
+      input.config === null ||
+      typeof input.config !== 'object' ||
+      (input.config.type !== 'stdio' && input.config.type !== 'http')
+    ) {
+      throw new ContractError('INVALID_INPUT', 'config.type must be "stdio" or "http"')
+    }
+    this.userMcpServers.set(input.name, { ...input.config })
+    return this.listUserMcpServers()
+  }
+
+  async removeUserMcpServer(name: string): Promise<UserMcpServerSummary[]> {
+    if (!this.userMcpServers.delete(name)) {
+      throw new ContractError('USER_MCP_NOT_FOUND', `Unknown MCP server: ${name}`)
+    }
+    return this.listUserMcpServers()
+  }
+
+  async toggleUserMcpServer(name: string, enabled: boolean): Promise<UserMcpServerSummary[]> {
+    const config = this.userMcpServers.get(name)
+    if (config === undefined) {
+      throw new ContractError('USER_MCP_NOT_FOUND', `Unknown MCP server: ${name}`)
+    }
+    this.userMcpServers.set(name, { ...config, enabled })
+    return this.listUserMcpServers()
+  }
+
+  async listMcpServerStatus(): Promise<McpServerStatusEntry[]> {
+    const servers: McpServerStatusEntry[] = []
+    for (const [name, config] of this.userMcpServers) {
+      if (config.enabled === false) continue
+      servers.push({ key: `user:${name}`, source: 'user', type: config.type, connected: true, toolCount: 0 })
+    }
+    return servers
+  }
+
+  subscribeMcpStatus(listener: (event: McpServerStatusEvent) => void): () => void {
+    this.mcpStatusListeners.add(listener)
+    return () => {
+      this.mcpStatusListeners.delete(listener)
+    }
+  }
+
   // ── Skills / Memory / History (v1.7 fixtures) ──
 
   private readonly pendingSkillWrites: SkillPendingWrite[] = [
@@ -833,8 +903,7 @@ export class MockCodexApi implements CodexApi {
     }
   }
 
-  async searchSessions(query: string): Promise<SessionSearchHit[]> {
-    const needle = query.trim().toLowerCase()
+  async searchSessions(query: string): Promise<SessionSearchHit[]> {    const needle = query.trim().toLowerCase()
     if (needle.length === 0) return []
     const hits: SessionSearchHit[] = []
     for (const session of this.sessions.values()) {
@@ -865,6 +934,110 @@ export class MockCodexApi implements CodexApi {
       if (hits.length >= 20) break
     }
     return hits
+  }
+
+  private mockSkillHubs: SkillHubInfo[] = [
+    { id: 'official', name: 'Official', url: 'github:anthropics/skills', builtIn: true, skillCount: 4 }
+  ]
+
+  private mockHubEntries: SkillHubEntry[] = [
+    {
+      hub: 'official',
+      name: 'document-skills-docx',
+      description: 'Create and edit Word documents with tracked changes and formatting.',
+      source: 'github:anthropics/skills/document-skills/docx',
+      installed: false
+    },
+    {
+      hub: 'official',
+      name: 'document-skills-pdf',
+      description: 'Read, merge, split and fill PDF files.',
+      source: 'github:anthropics/skills/document-skills/pdf',
+      installed: false
+    },
+    {
+      hub: 'official',
+      name: 'artifacts-builder',
+      description: 'Build elaborate claude.ai HTML artifacts with modern frontend tooling.',
+      source: 'github:anthropics/skills/artifacts-builder',
+      installed: false
+    },
+    {
+      hub: 'official',
+      name: 'webapp-testing',
+      description: 'Drive Playwright against local web apps to verify and debug UI behavior.',
+      source: 'github:anthropics/skills/webapp-testing',
+      installed: false
+    }
+  ]
+
+  async listSkillHubs(): Promise<SkillHubInfo[]> {
+    return this.mockSkillHubs.map((hub) => ({ ...hub }))
+  }
+
+  async addSkillHub(input: AddSkillHubInput): Promise<SkillHubInfo> {
+    const name = input.name.trim().toLowerCase()
+    if (this.mockSkillHubs.some((hub) => hub.id === name)) {
+      throw new ContractError('INVALID_INPUT', `hub "${name}" already exists`)
+    }
+    const info: SkillHubInfo = { id: name, name, url: input.url, builtIn: false, skillCount: 0 }
+    this.mockSkillHubs.push(info)
+    this.mockHubEntries.push({
+      hub: name,
+      name: `${name}-sample-skill`,
+      description: `Fixture entry for the mock hub "${name}".`,
+      source: 'github:example/sample',
+      installed: false
+    })
+    return { ...info }
+  }
+
+  async removeSkillHub(id: string): Promise<void> {
+    if (id === 'official') throw new ContractError('INVALID_INPUT', 'the built-in hub cannot be removed')
+    this.mockSkillHubs = this.mockSkillHubs.filter((hub) => hub.id !== id)
+    this.mockHubEntries = this.mockHubEntries.filter((entry) => entry.hub !== id)
+  }
+
+  async browseSkillHub(id?: string): Promise<SkillHubEntry[]> {
+    return this.mockHubEntries
+      .filter((entry) => id === undefined || entry.hub === id)
+      .map((entry) => ({
+        ...entry,
+        installed: this.mockSkillHubs.length >= 0 && entry.installed
+      }))
+  }
+
+  async installSkill(input: InstallSkillInput): Promise<SkillSummary> {
+    const src = input.source
+    let entry: SkillHubEntry | undefined
+    if (src.kind === 'hub') {
+      entry = this.mockHubEntries.find(
+        (candidate) => candidate.hub === src.hub && candidate.name === src.name
+      )
+    } else if (src.kind === 'source') {
+      entry = this.mockHubEntries.find((candidate) => candidate.source === src.source)
+    } else {
+      entry = undefined
+    }
+    if (entry === undefined) {
+      const name = src.kind === 'folder' ? src.folderPath.split(/[\\/]/u).pop() ?? 'local-skill' : 'skill'
+      return { name, description: 'Installed from local folder (mock).', source: 'user', path: `~/.flexagent/skills/${name}` }
+    }
+    if (entry.installed && input.overwrite !== true) {
+      throw new ContractError('SKILL_ALREADY_INSTALLED', `"${entry.name}" is already installed`)
+    }
+    entry.installed = true
+    return {
+      name: entry.name,
+      ...(entry.description !== undefined ? { description: entry.description } : {}),
+      source: 'user',
+      path: `~/.flexagent/skills/${entry.name}`
+    }
+  }
+
+  async uninstallSkill(name: string): Promise<void> {
+    const entry = this.mockHubEntries.find((candidate) => candidate.name === name)
+    if (entry !== undefined) entry.installed = false
   }
 
   adoptPlugin(detail: PluginDetail): void {

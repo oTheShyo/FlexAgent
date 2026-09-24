@@ -1,0 +1,578 @@
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { cp, mkdir, rename, rm } from 'fs/promises'
+import { homedir } from 'os'
+import { basename, join, resolve } from 'path'
+import {
+  ContractError,
+  type AddSkillHubInput,
+  type SkillHubEntry,
+  type SkillHubInfo,
+  type SkillSummary,
+  type InstallSkillSource
+} from '../../shared/contract'
+import { resolveGitHubArchiveSource } from '../marketplaceGithub'
+import { cleanupPluginSourceBestEffort } from '../marketplaceHelpers'
+import { resolveHttpZipSource, type ResolvedZipPluginSourceRoot } from '../marketplaceZip'
+import { listUserSkillDirs, readSkillMeta, SKILLS_HOME } from './skillManage'
+
+/**
+ * Skill Hub (v1.8): browsable remote skill catalogs + local-folder loading.
+ *
+ * Mirrors the WorkBuddy/Claude marketplace UX at skill granularity:
+ * - a built-in hub (anthropics/skills, GitHub directory mode) works out of the box
+ * - users can register their own hubs: a GitHub repo (`github:owner/repo`) or a
+ *   JSON index (`https://…/skills.json` → `{ skills: [{ name, description, source }] }`)
+ * - installing resolves the source (GitHub zipball / https zip / local folder),
+ *   validates the SKILL.md frontmatter, and atomically swaps it into
+ *   `~/.flexagent/skills/<name>`
+ */
+
+const HUBS_FILE = join(homedir(), '.flexagent', 'skillhubs.json')
+const BROWSE_TTL_MS = 10 * 60 * 1000
+const BROWSE_CACHE_MAX = 20
+const MAX_ENTRIES_PER_HUB = 60
+/** SKILL.md frontmatter fetches per browse; entries beyond this are name-only. */
+const MAX_META_FETCH = 24
+const FETCH_TIMEOUT_MS = 15_000
+
+const BUILTIN_HUB: SkillHubInfo = {
+  id: 'official',
+  name: 'Official',
+  url: 'github:anthropics/skills',
+  builtIn: true,
+  skillCount: 0
+}
+
+const HUB_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
+const SKILL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u
+const UA = 'FlexAgent-SkillHub-Installer'
+
+interface StoredHub {
+  id: string
+  name: string
+  url: string
+}
+
+// ─── Source-string grammar ────────────────────────────────────────────────────
+
+interface ParsedGithubSource {
+  kind: 'github'
+  owner: string
+  repo: string
+  ref?: string
+  path?: string
+}
+
+interface ParsedZipSource {
+  kind: 'zip'
+  url: string
+}
+
+type ParsedSource = ParsedGithubSource | ParsedZipSource
+
+const GITHUB_SEGMENT = /^[A-Za-z0-9_.-]+$/u
+
+/** `github:owner/repo[@ref][/sub/path]` — also accepts a full https github.com URL. */
+export function parseSkillSource(raw: string): ParsedSource {
+  const value = raw.trim()
+  if (value.length === 0) {
+    throw new ContractError('SKILL_SOURCE_INVALID', 'Skill source is empty')
+  }
+  let rest = value
+  if (rest.startsWith('github:')) {
+    rest = `https://github.com/${rest.slice('github:'.length)}`
+  }
+  if (rest.startsWith('https://')) {
+    let url: URL
+    try {
+      url = new URL(rest)
+    } catch {
+      throw new ContractError('SKILL_SOURCE_INVALID', `Skill source is not a valid URL: ${value}`)
+    }
+    const host = url.hostname.toLowerCase()
+    const segments = url.pathname.split('/').filter(Boolean)
+    if ((host === 'github.com' || host === 'www.github.com') && segments.length >= 2) {
+      const owner = segments[0] ?? ''
+      const repo = (segments[1] ?? '').replace(/\.git$/u, '')
+      if (!GITHUB_SEGMENT.test(owner) || !GITHUB_SEGMENT.test(repo)) {
+        throw new ContractError('SKILL_SOURCE_INVALID', `Invalid GitHub repository: ${value}`)
+      }
+      // `github.com/owner/repo/tree/<ref>[/more/path…]`
+      if (segments[2] === 'tree' && segments.length >= 4) {
+        const ref = segments[3] ?? ''
+        const path = segments.slice(4).join('/') || undefined
+        return { kind: 'github', owner, repo, ref: ref || undefined, path }
+      }
+      // Query/hash forms are tolerated and dropped.
+      return { kind: 'github', owner, repo }
+    }
+    if (url.pathname.toLowerCase().endsWith('.zip')) {
+      return { kind: 'zip', url: rest }
+    }
+    throw new ContractError(
+      'SKILL_SOURCE_INVALID',
+      `Unsupported skill source: ${value} (use github:owner/repo[/path], a github.com tree URL, or an https .zip URL)`
+    )
+  }
+  throw new ContractError(
+    'SKILL_SOURCE_INVALID',
+    `Unsupported skill source: ${value} (use github:owner/repo[/path] or an https .zip URL)`
+  )
+}
+
+/** Canonical installable source string for a hub entry. */
+function sourceToString(parsed: ParsedGithubSource): string {
+  const ref = parsed.ref !== undefined ? `@${parsed.ref}` : ''
+  const path = parsed.path !== undefined && parsed.path.length > 0 ? `/${parsed.path}` : ''
+  return `github:${parsed.owner}/${parsed.repo}${ref}${path}`
+}
+
+// ─── Hub persistence ─────────────────────────────────────────────────────────
+
+function readStoredHubs(): StoredHub[] {
+  try {
+    if (!existsSync(HUBS_FILE)) return []
+    const raw = JSON.parse(readFileSync(HUBS_FILE, 'utf8')) as unknown
+    if (!Array.isArray(raw)) return []
+    return raw.filter(
+      (entry): entry is StoredHub =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as StoredHub).id === 'string' &&
+        typeof (entry as StoredHub).url === 'string'
+    )
+  } catch {
+    return []
+  }
+}
+
+export function listSkillHubs(): SkillHubInfo[] {
+  const stored = readStoredHubs().map((hub) => ({
+    id: hub.id,
+    name: hub.name,
+    url: hub.url,
+    builtIn: false,
+    skillCount: browseCache.get(hub.id)?.entries.length ?? 0
+  }))
+  return [
+    { ...BUILTIN_HUB, skillCount: browseCache.get(BUILTIN_HUB.id)?.entries.length ?? 0 },
+    ...stored
+  ]
+}
+
+export function addSkillHub(input: AddSkillHubInput): SkillHubInfo {
+  const name = input.name.trim().toLowerCase()
+  if (!HUB_ID_PATTERN.test(name)) {
+    throw new ContractError(
+      'INVALID_INPUT',
+      `Hub id must match ${HUB_ID_PATTERN.source}: ${input.name}`
+    )
+  }
+  if (name === BUILTIN_HUB.id) {
+    throw new ContractError('INVALID_INPUT', `Hub id "${name}" is reserved`)
+  }
+  parseHubUrl(input.url) // validate early
+  const stored = readStoredHubs()
+  if (stored.some((hub) => hub.id === name)) {
+    stored.splice(
+      stored.findIndex((hub) => hub.id === name),
+      1
+    )
+  }
+  stored.push({ id: name, name, url: input.url.trim() })
+  persistHubs(stored)
+  return { id: name, name, url: input.url.trim(), builtIn: false, skillCount: 0 }
+}
+
+export function removeSkillHub(id: string): void {
+  if (id === BUILTIN_HUB.id) {
+    throw new ContractError('INVALID_INPUT', 'The built-in hub cannot be removed')
+  }
+  const stored = readStoredHubs()
+  const next = stored.filter((hub) => hub.id !== id)
+  if (next.length === stored.length) {
+    throw new ContractError('SKILL_HUB_UNAVAILABLE', `Unknown skill hub: ${id}`)
+  }
+  persistHubs(next)
+  browseCache.delete(id)
+}
+
+function persistHubs(hubs: StoredHub[]): void {
+  writeFileSync(HUBS_FILE, `${JSON.stringify(hubs, null, 2)}\n`, 'utf8')
+}
+
+/** Split a hub url into github-dir mode, normalized (JSON hubs end in .json and skip this). */
+function parseHubUrl(url: string): ParsedGithubSource {
+  const parsed = parseSkillSource(url)
+  if (parsed.kind === 'zip') {
+    throw new ContractError(
+      'SKILL_SOURCE_INVALID',
+      `Hub url must be a GitHub repo or a .json index, not a zip: ${url}`
+    )
+  }
+  return parsed
+}
+
+// ─── Browse ───────────────────────────────────────────────────────────────────
+
+interface BrowseCacheEntry {
+  entries: SkillHubEntry[]
+  fetchedAt: number
+}
+
+const browseCache = new Map<string, BrowseCacheEntry>()
+
+export async function browseSkillHub(id?: string): Promise<SkillHubEntry[]> {
+  const hubs = id === undefined ? listSkillHubs() : listSkillHubs().filter((hub) => hub.id === id)
+  if (id !== undefined && hubs.length === 0) {
+    throw new ContractError('SKILL_HUB_UNAVAILABLE', `Unknown skill hub: ${id}`)
+  }
+  const installed = new Set(listUserSkillDirs().map((skill) => skill.name))
+  const results: SkillHubEntry[] = []
+  for (const hub of hubs) {
+    const cached = browseCache.get(hub.id)
+    if (cached !== undefined && Date.now() - cached.fetchedAt < BROWSE_TTL_MS) {
+      // Installed flags must reflect installs/uninstalls that happened after
+      // this cache entry was fetched.
+      for (const entry of cached.entries) entry.installed = installed.has(entry.name)
+      results.push(...cached.entries)
+      continue
+    }
+    const entries = await fetchHubEntries(hub)
+    for (const entry of entries) {
+      entry.installed = installed.has(entry.name)
+    }
+    browseCache.set(hub.id, { entries, fetchedAt: Date.now() })
+    if (browseCache.size > BROWSE_CACHE_MAX) {
+      const oldest = browseCache.keys().next().value
+      if (oldest !== undefined) browseCache.delete(oldest)
+    }
+    results.push(...entries)
+  }
+  return results
+}
+
+async function fetchHubEntries(hub: SkillHubInfo): Promise<SkillHubEntry[]> {
+  if (hub.url.toLowerCase().endsWith('.json')) {
+    return fetchJsonHubEntries(hub)
+  }
+  return fetchGithubRepoEntries(hub, parseHubUrl(hub.url))
+}
+
+async function fetchJsonHubEntries(hub: SkillHubInfo): Promise<SkillHubEntry[]> {
+  const raw = await fetchText(hub.url)
+  let doc: unknown
+  try {
+    doc = JSON.parse(raw)
+  } catch {
+    throw new ContractError('SKILL_HUB_UNAVAILABLE', `Hub index is not valid JSON: ${hub.url}`)
+  }
+  const skills = (doc as { skills?: unknown }).skills
+  if (!Array.isArray(skills)) {
+    throw new ContractError('SKILL_HUB_UNAVAILABLE', `Hub index has no "skills" array: ${hub.url}`)
+  }
+  const out: SkillHubEntry[] = []
+  for (const item of skills.slice(0, MAX_ENTRIES_PER_HUB)) {
+    if (typeof item !== 'object' || item === null) continue
+    const record = item as { name?: unknown; description?: unknown; source?: unknown }
+    if (typeof record.name !== 'string' || typeof record.source !== 'string') continue
+    parseSkillSource(record.source) // validate early so install never surprises
+    out.push({
+      hub: hub.id,
+      name: record.name,
+      ...(typeof record.description === 'string' ? { description: record.description } : {}),
+      source: record.source,
+      installed: false
+    })
+  }
+  return out
+}
+
+/** GitHub directory mode: enumerate every nested SKILL.md via one trees-API call. */
+async function fetchGithubRepoEntries(
+  hub: SkillHubInfo,
+  parsed: ParsedGithubSource
+): Promise<SkillHubEntry[]> {
+  const skillPaths = await listGithubSkillPaths(parsed)
+  const prefix = parsed.path !== undefined && parsed.path.length > 0 ? `${parsed.path.replace(/\/+$/u, '')}/` : ''
+  const dirs = skillPaths
+    .map((p) => p.slice(0, -'/SKILL.md'.length))
+    .filter((dir) => prefix.length === 0 || dir.startsWith(prefix))
+    .slice(0, MAX_ENTRIES_PER_HUB)
+
+  const out: SkillHubEntry[] = []
+  for (const dir of dirs) {
+    // Frontmatter fetch is rate-limited (anonymous GitHub: 60 req/h) — only the
+    // first entries get descriptions; the rest stay name-only.
+    const meta =
+      out.length < MAX_META_FETCH
+        ? await fetchGithubFileText(parsed.owner, parsed.repo, parsed.ref, `${dir}/SKILL.md`)
+        : null
+    const name = meta?.name ?? dir.split('/').pop() ?? dir
+    const shortDir = prefix.length > 0 ? dir.slice(prefix.length) : dir
+    pushUnique(out, {
+      hub: hub.id,
+      name,
+      ...(meta?.description !== undefined ? { description: meta.description } : {}),
+      source: sourceToString({ ...parsed, path: dir }),
+      installed: false,
+      ...(shortDir !== name ? { label: shortDir } : {})
+    })
+  }
+  return out
+}
+
+function pushUnique(out: SkillHubEntry[], entry: SkillHubEntry): void {
+  if (!out.some((existing) => existing.name === entry.name)) out.push(entry)
+}
+
+/**
+ * One `git/trees?recursive=1` call per browse (anonymous GitHub: 60 req/h, and
+ * this avoids raw.githubusercontent.com, which is unreachable on some networks).
+ */
+async function listGithubSkillPaths(parsed: ParsedGithubSource): Promise<string[]> {
+  const ref = parsed.ref !== undefined && parsed.ref.length > 0 ? parsed.ref : 'HEAD'
+  const url = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`
+  const raw = await fetchText(url, {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': UA
+  })
+  let doc: { tree?: unknown; truncated?: unknown }
+  try {
+    doc = JSON.parse(raw) as { tree?: unknown; truncated?: unknown }
+  } catch {
+    throw new ContractError('SKILL_HUB_UNAVAILABLE', `GitHub trees response is not JSON: ${url}`)
+  }
+  if (!Array.isArray(doc.tree)) {
+    throw new ContractError(
+      'SKILL_HUB_UNAVAILABLE',
+      `GitHub tree not found or rate-limited: ${parsed.owner}/${parsed.repo}@${ref}`
+    )
+  }
+  const paths: string[] = []
+  for (const item of doc.tree) {
+    if (typeof item !== 'object' || item === null) continue
+    const path = (item as { path?: unknown }).path
+    if (typeof path !== 'string' || !path.endsWith('/SKILL.md')) continue
+    if (path.split('/').some((segment) => segment.startsWith('.'))) continue
+    paths.push(path)
+  }
+  return paths
+}
+
+/** Contents-API fetch of a single file (base64); null on 404. */
+async function fetchGithubFileText(
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  path: string
+): Promise<{ name?: string; description?: string } | null> {
+  const refPart = ref !== undefined && ref.length > 0 ? `?ref=${encodeURIComponent(ref)}` : ''
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}${refPart}`
+  let raw: string
+  try {
+    raw = await fetchText(url, {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': UA
+    })
+  } catch (error) {
+    if (error instanceof ContractError && error.code === 'SKILL_SOURCE_INVALID') return null
+    throw error
+  }
+  let doc: { content?: unknown; encoding?: unknown }
+  try {
+    doc = JSON.parse(raw) as { content?: unknown; encoding?: unknown }
+  } catch {
+    return null
+  }
+  if (doc.encoding !== 'base64' || typeof doc.content !== 'string') return null
+  const text = Buffer.from(doc.content.replace(/\s+/gu, ''), 'base64').toString('utf8')
+  return parseFrontmatterFields(text)
+}
+
+function parseFrontmatterFields(raw: string): { name?: string; description?: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(raw)
+  if (match === null) return {}
+  const lines = (match[1] ?? '').split(/\r?\n/u)
+  const out: { name?: string; description?: string } = {}
+  for (let i = 0; i < lines.length; i++) {
+    const kv = /^([A-Za-z_-]+):\s*(.*)$/u.exec(lines[i] ?? '')
+    if (kv === null) continue
+    const key = kv[1] ?? ''
+    if (key !== 'name' && key !== 'description') continue
+    if (out[key as 'name' | 'description'] !== undefined) continue
+    let value = (kv[2] ?? '').trim()
+    if (/^[>|][+-]?\d*$/u.test(value)) {
+      // YAML block scalar (`>` folded / `|` literal): collect the indented body.
+      const parts: string[] = []
+      i++
+      while (i < lines.length) {
+        const line = lines[i] ?? ''
+        if (line.trim().length > 0 && !/^\s/u.test(line)) break
+        parts.push(line.trim())
+        i++
+      }
+      value = parts.filter(Boolean).join(' ')
+    } else {
+      value = value.replace(/^['"]|['"]$/gu, '')
+    }
+    if (value.length > 0) out[key] = value
+  }
+  return out
+}
+
+async function fetchText(url: string, headers?: Record<string, string>): Promise<string> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal })
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new ContractError('SKILL_SOURCE_INVALID', `Not found (404): ${url}`)
+      }
+      throw new ContractError(
+        'SKILL_HUB_UNAVAILABLE',
+        `HTTP ${response.status} fetching ${url}${response.status === 403 ? ' (GitHub rate limit?)' : ''}`
+      )
+    }
+    return await response.text()
+  } catch (error) {
+    if (error instanceof ContractError) throw error
+    throw new ContractError(
+      'SKILL_HUB_UNAVAILABLE',
+      `Failed to fetch ${url}: ${error instanceof Error ? error.message : String(error)}`
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// ─── Install / uninstall ──────────────────────────────────────────────────────
+
+export async function installSkill(
+  source: InstallSkillSource,
+  overwrite = false
+): Promise<SkillSummary> {
+  let root: string | null = null
+  let cleanup: (() => Promise<void>) | null = null
+  try {
+    if (source.kind === 'folder') {
+      const folder = resolve(source.folderPath)
+      if (!existsSync(join(folder, 'SKILL.md'))) {
+        throw new ContractError(
+          'SKILL_SOURCE_INVALID',
+          `Not a skill folder (no SKILL.md): ${folder}`
+        )
+      }
+      root = folder
+    } else {
+      let rawSource: string
+      if (source.kind === 'hub') {
+        const entries = await browseSkillHub(source.hub)
+        const entry = entries.find((candidate) => candidate.name === source.name)
+        if (entry === undefined) {
+          throw new ContractError(
+            'SKILL_SOURCE_INVALID',
+            `Skill "${source.name}" not found in hub "${source.hub}"`
+          )
+        }
+        rawSource = entry.source
+      } else {
+        rawSource = source.source
+      }
+      const parsed = parseSkillSource(rawSource)
+      let resolved: ResolvedZipPluginSourceRoot
+      if (parsed.kind === 'github') {
+        resolved = await resolveGitHubArchiveSource({
+          url: `https://github.com/${parsed.owner}/${parsed.repo}`,
+          ...(parsed.ref !== undefined ? { pin: parsed.ref } : {}),
+          ...(parsed.path !== undefined && parsed.path.length > 0 ? { path: parsed.path } : {})
+        })
+      } else {
+        resolved = await resolveHttpZipSource({ url: parsed.url })
+      }
+      root = resolved.path
+      cleanup = resolved.cleanup
+      if (!existsSync(join(root, 'SKILL.md'))) {
+        throw new ContractError(
+          'SKILL_SOURCE_INVALID',
+          'Source archive does not contain a SKILL.md at its root (multi-skill repositories need a path to one skill)'
+        )
+      }
+    }
+
+    const meta = readSkillMeta(root)
+    const name = meta.name !== undefined && SKILL_NAME_PATTERN.test(meta.name)
+      ? meta.name
+      : basename(root).replace(/[^a-zA-Z0-9._-]/gu, '-')
+    if (name.length === 0 || name === '.' || name === '..') {
+      throw new ContractError('SKILL_SOURCE_INVALID', 'Cannot derive a skill name from the source')
+    }
+
+    await mkdir(SKILLS_HOME, { recursive: true })
+    const target = join(SKILLS_HOME, name)
+    const targetExists = existsSync(target)
+    if (targetExists && !overwrite) {
+      throw new ContractError(
+        'SKILL_ALREADY_INSTALLED',
+        `Skill "${name}" is already installed (uninstall it first or set overwrite)`
+      )
+    }
+
+    // Stage a same-volume copy first, then swap, so a failed download never
+    // leaves a half-installed skill (or a wiped old one).
+    const staged = join(SKILLS_HOME, `.${name}.staging-${Date.now()}`)
+    await cp(root, staged, {
+      recursive: true,
+      filter: (src) => {
+        const base = basename(src)
+        return base !== '.git' && base !== 'node_modules' && base !== '.DS_Store'
+      }
+    })
+    if (targetExists) {
+      await rm(target, { recursive: true, force: true })
+    }
+    try {
+      await rename(staged, target)
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true })
+      throw error
+    }
+    const finalMeta = readSkillMeta(target)
+    return {
+      name,
+      ...(finalMeta.description !== undefined ? { description: finalMeta.description } : {}),
+      source: 'user',
+      path: target
+    }
+  } finally {
+    if (cleanup !== null) {
+      const cleanupError = await cleanupPluginSourceBestEffort(cleanup)
+      if (cleanupError !== null && root === null) {
+        throw cleanupError
+      }
+    }
+  }
+}
+
+export function uninstallSkill(name: string): void {
+  if (!SKILL_NAME_PATTERN.test(name)) {
+    throw new ContractError('INVALID_INPUT', `Invalid skill name: ${name}`)
+  }
+  const target = resolve(SKILLS_HOME, name)
+  if (!target.startsWith(resolve(SKILLS_HOME))) {
+    throw new ContractError('INVALID_INPUT', `Skill name escapes the skills home: ${name}`)
+  }
+  if (!existsSync(join(target, 'SKILL.md'))) {
+    throw new ContractError('SKILL_NOT_FOUND', `No user skill named "${name}" in ${SKILLS_HOME}`)
+  }
+  try {
+    // App-managed directory under the skills home — rm is the point here.
+    rmSync(target, { recursive: true, force: true })
+  } catch (error) {
+    throw new ContractError(
+      'KERNEL_INTERNAL',
+      `Failed to remove skill "${name}": ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+}

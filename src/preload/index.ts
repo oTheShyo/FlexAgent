@@ -37,6 +37,10 @@ import {
   type SessionSearchHit,
   type SkillPendingWrite,
   type SkillSummary,
+  type SkillHubInfo,
+  type SkillHubEntry,
+  type AddSkillHubInput,
+  type InstallSkillInput,
   type SlashCommandSummary,
   type TerminalCreateInput,
   type TerminalInputInput,
@@ -211,7 +215,19 @@ const codex: CodexApi = {
   removeMemoryCard: (file: MemoryCardFile, index: number) =>
     invoke<void>(IPC.removeMemoryCard, { file, index }),
 
-  searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query)
+  searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query),
+
+  listSkillHubs: () => invoke<SkillHubInfo[]>(IPC.listSkillHubs),
+
+  addSkillHub: (input: AddSkillHubInput) => invoke<SkillHubInfo>(IPC.addSkillHub, input),
+
+  removeSkillHub: (id: string) => invoke<void>(IPC.removeSkillHub, id),
+
+  browseSkillHub: (id?: string) => invoke<SkillHubEntry[]>(IPC.browseSkillHub, id),
+
+  installSkill: (input: InstallSkillInput) => invoke<SkillSummary>(IPC.installSkill, input),
+
+  uninstallSkill: (name: string) => invoke<void>(IPC.uninstallSkill, name)
 }
 
 // Not CodexApi — §7.3 accept-disconnect only; frontend must not depend on it.

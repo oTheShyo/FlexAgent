@@ -81,6 +81,16 @@ export type ContractErrorCode =
   | 'PLUGIN_SOURCE_INVALID'
   /** Downloading or verifying a remote plugin/marketplace archive failed (network, HTTP status, sha256). */
   | 'PLUGIN_DOWNLOAD_FAILED'
+  /** No user-level MCP server with the given name (~/.flexagent/mcp.json). */
+  | 'USER_MCP_NOT_FOUND'
+  /** No user-level skill with the given name (~/.flexagent/skills). */
+  | 'SKILL_NOT_FOUND'
+  /** A user-level skill with the same name already exists and overwrite was not set. */
+  | 'SKILL_ALREADY_INSTALLED'
+  /** Skill hub entry source or local folder failed to parse / validate (no SKILL.md). */
+  | 'SKILL_SOURCE_INVALID'
+  /** Fetching a skill hub index failed (network, HTTP status, rate limit). */
+  | 'SKILL_HUB_UNAVAILABLE'
   /** Kernel/PI internal failure not attributable to a single event. */
   | 'KERNEL_INTERNAL'
 
@@ -104,6 +114,11 @@ export const CONTRACT_ERROR_CODES = [
   'PLUGIN_PATH_INVALID',
   'PLUGIN_SOURCE_INVALID',
   'PLUGIN_DOWNLOAD_FAILED',
+  'USER_MCP_NOT_FOUND',
+  'SKILL_NOT_FOUND',
+  'SKILL_ALREADY_INSTALLED',
+  'SKILL_SOURCE_INVALID',
+  'SKILL_HUB_UNAVAILABLE',
   'KERNEL_INTERNAL'
 ] as const satisfies readonly ContractErrorCode[]
 
@@ -527,6 +542,54 @@ export interface SessionSearchHit {
   updatedAt: number
 }
 
+// ─── Skill Hub (v1.8, additive) ──────────────────────────────────────────────
+
+/** A browsable skill catalog: the built-in one plus user-registered ones. */
+export interface SkillHubInfo {
+  id: string
+  name: string
+  /**
+   * Index source. Two shapes:
+   * - `github:owner/repo[@ref][/subpath]` — every dir with a SKILL.md is listed.
+   * - an https URL ending in `.json` — `{ skills: [{ name, description?, source }] }`.
+   */
+  url: string
+  /** The built-in hub cannot be removed. */
+  builtIn: boolean
+  /** Entries found by the last browse (0 until browsed this session). */
+  skillCount: number
+}
+
+/** One installable skill entry inside a hub. */
+export interface SkillHubEntry {
+  hub: string
+  name: string
+  /** Repo-relative path when it differs from the frontmatter name (display hint). */
+  label?: string
+  description?: string
+  /** Installable source: `github:owner/repo[@ref][/path]` or an https .zip URL. */
+  source: string
+  installed: boolean
+}
+
+export interface AddSkillHubInput {
+  /** Hub id; must be unique among user hubs (`[a-z0-9][a-z0-9._-]*`). */
+  name: string
+  url: string
+}
+
+/** Where an installSkill call pulls from. */
+export type InstallSkillSource =
+  | { kind: 'hub'; hub: string; name: string }
+  | { kind: 'folder'; folderPath: string }
+  | { kind: 'source'; source: string }
+
+export interface InstallSkillInput {
+  source: InstallSkillSource
+  /** Replace an existing user skill of the same name (staged swap). */
+  overwrite?: boolean
+}
+
 // ─── Events (kernel → renderer), one discriminated union ─────────────────────
 
 /** Every event is stamped with session + monotonic per-session sequence. */
@@ -757,6 +820,18 @@ export interface CodexApi {
   removeMemoryCard(file: MemoryCardFile, index: number): Promise<void>
   /** Substring search across stored session transcripts (titles + messages). */
   searchSessions(query: string): Promise<SessionSearchHit[]>
+
+  // ── Skill Hub (v1.8) ──
+  /** Built-in hub + user-registered hubs (~/.flexagent/skillhubs.json). */
+  listSkillHubs(): Promise<SkillHubInfo[]>
+  addSkillHub(input: AddSkillHubInput): Promise<SkillHubInfo>
+  removeSkillHub(id: string): Promise<void>
+  /** Browse a hub's installable skills (cached ~10 min per hub). Omit for all hubs. */
+  browseSkillHub(id?: string): Promise<SkillHubEntry[]>
+  /** Install into `~/.flexagent/skills` from a hub entry, direct source, or local folder. */
+  installSkill(input: InstallSkillInput): Promise<SkillSummary>
+  /** Remove a user-level skill (never plugin skills). */
+  uninstallSkill(name: string): Promise<void>
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -782,6 +857,12 @@ export const IPC = {
   setModel: 'codex:setModel',
   setThinkingLevel: 'codex:setThinkingLevel',
   pickDirectory: 'codex:pickDirectory',
+  listSkillHubs: 'codex:listSkillHubs',
+  addSkillHub: 'codex:addSkillHub',
+  removeSkillHub: 'codex:removeSkillHub',
+  browseSkillHub: 'codex:browseSkillHub',
+  installSkill: 'codex:installSkill',
+  uninstallSkill: 'codex:uninstallSkill',
   listPlugins: 'codex:listPlugins',
   getPlugin: 'codex:getPlugin',
   setPluginEnabled: 'codex:setPluginEnabled',
