@@ -223,6 +223,32 @@ async function main() {
         })()`
       )) === true
     )
+    const box = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector('[data-testid="settings-panel"]')
+        const r = el.getBoundingClientRect()
+        return {
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          vw: window.innerWidth,
+          vh: window.innerHeight,
+          radius: getComputedStyle(el).borderRadius,
+          backdrop: [...el.parentElement.children].some((c) => c.getAttribute('aria-hidden') === 'true')
+        }
+      })()`
+    )
+    check(
+      'it is a bounded window, not the whole viewport',
+      box.w < box.vw * 0.97 && box.h < box.vh * 0.97,
+      `${box.w}×${box.h} inside ${box.vw}×${box.vh}`
+    )
+    check(
+      'and it sits on a backdrop with rounded edges',
+      box.radius !== '0px' && box.backdrop === true,
+      `radius=${box.radius} backdrop=${box.backdrop}`
+    )
+
     check(
       'the palette is gone once settings is up',
       (await evaluate(cdp, `document.querySelector('[data-testid="command-palette"]') === null`)) ===
@@ -369,17 +395,20 @@ async function main() {
     const paint = await evaluate(
       cdp,
       `(() => {
-        const cur = document.querySelector('[data-testid="settings-nav-about"]')
-        const other = document.querySelector('[data-testid="settings-nav-general"]')
-        const a = getComputedStyle(cur)
-        const b = getComputedStyle(other)
-        return { cur: a.backgroundColor, other: b.backgroundColor, weight: a.fontWeight }
+        const cur = getComputedStyle(document.querySelector('[data-testid="settings-nav-about"]'))
+        const other = getComputedStyle(document.querySelector('[data-testid="settings-nav-general"]'))
+        return {
+          weight: cur.fontWeight, idleWeight: other.fontWeight,
+          bg: cur.backgroundColor, idleBg: other.backgroundColor
+        }
       })()`
     )
     check(
-      'the open entry is painted differently',
-      paint.cur !== paint.other,
-      `${paint.cur} vs ${paint.other} @${paint.weight}`
+      'the open entry is painted as active',
+      // font-weight is not part of transition-colors, so it cannot be caught
+      // mid-transition the way the background colour can.
+      paint.weight !== paint.idleWeight && paint.bg !== paint.idleBg,
+      `weight ${paint.weight} vs ${paint.idleWeight}; bg ${paint.bg} vs ${paint.idleBg}`
     )
 
     // ── closing ──
@@ -414,6 +443,19 @@ async function main() {
     await evaluate(cdp, `document.querySelector('[data-testid="settings-close"]').click()`)
     await delay(250)
     check('the close button works', await closed(cdp))
+
+    await openFromSidebar(cdp)
+    await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector('[data-testid="settings-panel"]')
+        const backdrop = [...el.parentElement.children].find((c) => c.getAttribute('aria-hidden') === 'true')
+        backdrop.click()
+        return true
+      })()`
+    )
+    await delay(250)
+    check('clicking the backdrop closes it too', await closed(cdp))
   } catch (err) {
     check('the walkthrough ran to the end', false, String(err && err.message))
   } finally {
