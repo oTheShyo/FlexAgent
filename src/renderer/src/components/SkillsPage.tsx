@@ -3,6 +3,7 @@ import type {
   SkillHubEntry,
   SkillHubInfo,
   SkillPendingWrite,
+  SkillProvenance,
   SkillSummary
 } from '../types'
 import { codexApi } from '../api'
@@ -15,6 +16,34 @@ const SOURCE_LABEL: Record<SkillSummary['source'], string> = {
 }
 
 const SOURCE_ORDER: SkillSummary['source'][] = ['user', 'plugin']
+
+/** Origin line — where an installed skill came from, and how recent it is. */
+function describeProvenance(record: SkillProvenance): { origin: string; meta: string } {
+  const parts: string[] = []
+  if (record.kind === 'folder') {
+    parts.push(record.folderPath ?? 'local folder')
+  } else if (record.source !== undefined && record.source.length > 0) {
+    parts.push(record.source)
+  } else if (record.hub !== undefined) {
+    parts.push(`${record.hub} hub`)
+  } else {
+    parts.push('unknown origin')
+  }
+  if (record.ref !== undefined) parts.push(`@${record.ref}`)
+  const origin = parts.join(' ')
+  const meta = [
+    record.contentHash !== undefined ? record.contentHash.slice(0, 7) : null,
+    new Date(record.updatedAt ?? record.installedAt).toLocaleDateString()
+  ].filter((part): part is string => part !== null)
+  return { origin, meta: meta.join(' · ') }
+}
+
+/** True when there is a recorded source to re-install from. */
+function isReinstallable(record: SkillProvenance | undefined): boolean {
+  if (record === undefined || record.kind === 'agent') return false
+  if (record.kind === 'folder') return record.folderPath !== undefined
+  return record.source !== undefined && record.source.length > 0
+}
 
 function SkillsSkeleton() {
   return (
@@ -496,6 +525,21 @@ function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
     [refresh]
   )
 
+  const handleReinstall = useCallback(
+    async (name: string): Promise<void> => {
+      setBusyId(`reinstall-${name}`)
+      try {
+        await codexApi.reinstallSkill(name)
+        await refresh()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [refresh]
+  )
+
   const sections = useMemo(() => {
     return SOURCE_ORDER.map((source) => ({
       source,
@@ -543,39 +587,77 @@ function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
               <div key={section.source}>
                 <div className="text-[11px] font-medium text-[var(--text-muted)]">{section.label}</div>
                 <div className="mt-1.5 space-y-2">
-                  {section.items.map((skill) => (
-                    <div
-                      key={`${skill.source}-${skill.pluginId ?? ''}-${skill.name}`}
-                      data-testid={`skill-row-${skill.name}`}
-                      className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
-                    >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-secondary)]">
-                        <PluginsIcon />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-[var(--text)]">{skill.name}</div>
-                        {skill.description !== undefined && (
-                          <div className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
-                            {skill.description}
+                  {section.items.map((skill) => {
+                    const provenance = skill.provenance
+                    const reinstallable = isReinstallable(provenance)
+                    const described =
+                      provenance !== undefined ? describeProvenance(provenance) : undefined
+                    return (
+                      <div
+                        key={`${skill.source}-${skill.pluginId ?? ''}-${skill.name}`}
+                        data-testid={`skill-row-${skill.name}`}
+                        className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-secondary)]">
+                          <PluginsIcon />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-[var(--text)]">
+                            {skill.name}
                           </div>
+                          {skill.description !== undefined && (
+                            <div className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
+                              {skill.description}
+                            </div>
+                          )}
+                          <div
+                            data-testid={`skill-origin-${skill.name}`}
+                            className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-[11px] text-[var(--text-muted)]"
+                            title={described?.origin ?? 'No recorded install source'}
+                          >
+                            <span className="truncate font-mono">
+                              {described?.origin ?? 'no recorded source'}
+                            </span>
+                            {described !== undefined && described.meta.length > 0 && (
+                              <span className="shrink-0 text-[var(--text-subtle)]">
+                                {described.meta}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+                          {skill.source === 'user' ? 'user' : (skill.pluginId ?? 'plugin')}
+                        </span>
+                        {skill.source === 'user' && reinstallable && (
+                          <Button
+                            variant="secondary"
+                            disabled={busyId !== null}
+                            onClick={() => void handleReinstall(skill.name)}
+                            data-testid={`skill-reinstall-${skill.name}`}
+                            title={
+                              skill.provenance?.ref !== undefined
+                                ? 'Re-install from the pinned source'
+                                : 'Re-install (follows the source default branch — acts as an update check)'
+                            }
+                            className="h-7 shrink-0 px-2 text-[11px]"
+                          >
+                            Update
+                          </Button>
+                        )}
+                        {skill.source === 'user' && (
+                          <Button
+                            variant="secondary"
+                            disabled={busyId !== null}
+                            onClick={() => void handleUninstall(skill.name)}
+                            data-testid={`skill-uninstall-${skill.name}`}
+                            className="h-7 shrink-0 px-2 text-[11px]"
+                          >
+                            Uninstall
+                          </Button>
                         )}
                       </div>
-                      <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
-                        {skill.source === 'user' ? 'user' : (skill.pluginId ?? 'plugin')}
-                      </span>
-                      {skill.source === 'user' && (
-                        <Button
-                          variant="secondary"
-                          disabled={busyId !== null}
-                          onClick={() => void handleUninstall(skill.name)}
-                          data-testid={`skill-uninstall-${skill.name}`}
-                          className="h-7 shrink-0 px-2 text-[11px]"
-                        >
-                          Uninstall
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             ))}

@@ -325,6 +325,48 @@ async function main() {
       JSON.stringify(skills.v?.filter((s) => s.source === 'user').map((s) => s.name) ?? [])
     )
 
+    // ── Install provenance (v1.9) ──
+    const installedSkill = skills.ok
+      ? skills.v.find((s) => s.source === 'user' && s.name === installedName)
+      : undefined
+    check(
+      'provenance: sidecar surives a listing round trip',
+      installedSkill?.provenance?.kind === 'hub' &&
+        installedSkill.provenance.hub === 'official' &&
+        typeof installedSkill.provenance.source === 'string' &&
+        /^github:/.test(installedSkill.provenance.source) === true &&
+        typeof installedSkill.provenance.resolvedRef === 'string' &&
+        typeof installedSkill.provenance.contentHash === 'string',
+      JSON.stringify(installedSkill?.provenance ?? null)
+    )
+    check(
+      'provenance: .flexagent-source.json written to disk',
+      existsSync(join(SKILLS_HOME, installedName, '.flexagent-source.json'))
+    )
+    const reinstalled = await ev(
+      cdp,
+      `window.electron.codex.reinstallSkill(${JSON.stringify(installedName)})`
+    )
+    check(
+      'reinstallSkill from recorded source',
+      reinstalled.ok === true && reinstalled.v?.name === installedName,
+      reinstalled.error || JSON.stringify(reinstalled.v ?? null)
+    )
+    check(
+      'reinstall keeps installedAt, sets updatedAt, content hash stable',
+      reinstalled.ok === true &&
+        reinstalled.v?.provenance?.installedAt === installedSkill?.provenance?.installedAt &&
+        typeof reinstalled.v?.provenance?.updatedAt === 'number' &&
+        reinstalled.v?.provenance?.contentHash === installedSkill?.provenance?.contentHash,
+      JSON.stringify(reinstalled.v?.provenance ?? null)
+    )
+    const noSource = await ev(cdp, `window.electron.codex.reinstallSkill('definitely-not-installed')`)
+    check(
+      'reinstallSkill rejects a skill with no recorded source',
+      noSource.ok === false && noSource.code === 'SKILL_SOURCE_INVALID',
+      noSource.code || noSource.error || ''
+    )
+
     // Cache-hit browse must reflect the install.
     const browse2 = await ev(cdp, `window.electron.codex.browseSkillHub('official')`)
     const entry2 = browse2.ok ? browse2.v.find((e) => e.name === installedName) : null
@@ -365,6 +407,18 @@ async function main() {
             `Boolean(document.querySelector('[data-testid="skill-uninstall-${installedName}"]'))`
           )
           check('UI: uninstall button present for user skill', unBtn === true)
+          const provText = await cdp.evaluate(
+            `document.querySelector('[data-testid="skill-origin-${installedName}"]')?.textContent ?? ''`
+          )
+          check(
+            'UI: origin line shows the install source',
+            typeof provText === 'string' && provText.includes('github:') === true,
+            String(provText).slice(0, 120)
+          )
+          const updBtn = await cdp.evaluate(
+            `Boolean(document.querySelector('[data-testid="skill-reinstall-${installedName}"]'))`
+          )
+          check('UI: Update button present for a reinstallable skill', updBtn === true)
           if (unBtn) {
             await cdp.evaluate(`document.querySelector('[data-testid="skill-uninstall-${installedName}"]').click()`)
             await waitFor(

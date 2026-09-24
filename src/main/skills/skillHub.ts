@@ -7,6 +7,7 @@ import {
   type AddSkillHubInput,
   type SkillHubEntry,
   type SkillHubInfo,
+  type SkillProvenance,
   type SkillSummary,
   type InstallSkillSource
 } from '../../shared/contract'
@@ -17,6 +18,13 @@ import {
   type ResolvedZipPluginSourceRoot
 } from '../marketplaceZip'
 import { listUserSkillDirs, readSkillMeta, SKILLS_HOME } from './skillManage'
+import {
+  computeTreeHash,
+  isReinstallable,
+  PROVENANCE_FILE,
+  readProvenance,
+  writeProvenance
+} from './skillProvenance'
 
 /**
  * Skill Hub (v1.8): browsable remote skill catalogs + local-folder loading.
@@ -398,6 +406,8 @@ interface CachedRepo {
   cleanup: () => Promise<void>
   expiresAt: number
   refs: number
+  /** Ref spec the download actually resolved (`refs/heads/main`, …). */
+  resolvedRef: string
 }
 
 const REPO_CACHE_TTL_MS = 15 * 60 * 1000
@@ -412,13 +422,14 @@ const repoCache = new Map<string, CachedRepo>()
  */
 async function acquireRepoZipball(
   parsed: ParsedGithubSource
-): Promise<{ root: string; release: () => void }> {
+): Promise<{ root: string; resolvedRef: string; release: () => void }> {
   const key = `${parsed.owner}/${parsed.repo}@${parsed.ref ?? 'default'}`
   const cached = repoCache.get(key)
   if (cached !== undefined && cached.expiresAt > Date.now()) {
     cached.refs += 1
     return {
       root: cached.root,
+      resolvedRef: cached.resolvedRef,
       release: () => {
         cached.refs -= 1
         if (cached.refs <= 0) evictRepo(key)
@@ -430,11 +441,13 @@ async function acquireRepoZipball(
     root: resolved.path,
     cleanup: resolved.cleanup,
     expiresAt: Date.now() + REPO_CACHE_TTL_MS,
-    refs: 1
+    refs: 1,
+    resolvedRef: resolved.resolvedRef
   }
   repoCache.set(key, entry)
   return {
     root: entry.root,
+    resolvedRef: entry.resolvedRef,
     release: () => {
       entry.refs -= 1
       if (entry.refs <= 0) evictRepo(key)
@@ -450,13 +463,45 @@ function evictRepo(key: string): void {
 }
 
 /**
+ * One-out-of-three stays-soft retry for transport failures.
+ *
+ * Downloads here fail intermittently even when the network looks healthy —
+ * undici's connect attempts get reset/timeout (10 s default) while curl to the
+ * same URL succeeds. Only network-level failures are retried; HTTP status
+ * errors (404/403 rate limiting) propagate so the caller's own semantics hold.
+ */
+async function retryTransient<T>(label: string, run: () => Promise<T>): Promise<T> {
+  const MAX_ATTEMPTS = 3
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+      const status = error instanceof PluginZipDownloadError ? error.status : undefined
+      const http = typeof status === 'number'
+      if (http) throw error
+      if (attempt === MAX_ATTEMPTS) break
+      await new Promise((r) => setTimeout(r, 400 * 2 ** (attempt - 1)))
+      console.warn(`[skillHub] ${label}: attempt ${attempt} failed, retrying`)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} failed: ${String(lastError)}`)
+}
+
+/**
  * codeload zipball for a repo, trying plausible ref locations. `refs/heads/HEAD`
  * does not exist there, hence main → master, and heads → tags → bare sha for an
  * explicit ref.
  */
+interface ResolvedGithubZipball extends ResolvedZipPluginSourceRoot {
+  /** Which codeload candidate URL won (`refs/heads/main`, `refs/tags/v2`, …). */
+  resolvedRef: string
+}
+
 async function resolveRepoZipball(
   parsed: ParsedGithubSource
-): Promise<ResolvedZipPluginSourceRoot> {
+): Promise<ResolvedGithubZipball> {
   const ref = parsed.ref
   if (ref !== undefined && !GITHUB_SEGMENT.test(ref)) {
     throw new ContractError('SKILL_SOURCE_INVALID', `Invalid git ref in skill source: ${ref}`)
@@ -469,12 +514,15 @@ async function resolveRepoZipball(
   for (const suffix of candidates) {
     const url = `https://codeload.github.com/${parsed.owner}/${parsed.repo}/zip/${suffix}`
     try {
-      return await resolveHttpZipSource({
-        headers: { 'User-Agent': UA },
-        requireSingleRoot: true,
-        stripRoot: true,
-        url
-      })
+      const resolved = await retryTransient(`codeload ${suffix}`, () =>
+        resolveHttpZipSource({
+          headers: { 'User-Agent': UA },
+          requireSingleRoot: true,
+          stripRoot: true,
+          url
+        })
+      )
+      return { ...resolved, resolvedRef: suffix }
     } catch (error) {
       if (error instanceof PluginZipDownloadError && (error.status === 403 || error.status === 404)) {
         lastError = error
@@ -536,29 +584,39 @@ function parseFrontmatterFields(raw: string): { name?: string; description?: str
 }
 
 async function fetchText(url: string, headers?: Record<string, string>): Promise<string> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-  try {
-    const response = await fetch(url, { headers, signal: controller.signal })
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new ContractError('SKILL_SOURCE_INVALID', `Not found (404): ${url}`)
+  const MAX_ATTEMPTS = 3
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal })
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new ContractError('SKILL_SOURCE_INVALID', `Not found (404): ${url}`)
+        }
+        throw new ContractError(
+          'SKILL_HUB_UNAVAILABLE',
+          `HTTP ${response.status} fetching ${url}${
+            response.status === 403 ? ' (GitHub rate limit?)' : ''
+          }`
+        )
       }
-      throw new ContractError(
-        'SKILL_HUB_UNAVAILABLE',
-        `HTTP ${response.status} fetching ${url}${response.status === 403 ? ' (GitHub rate limit?)' : ''}`
-      )
+      return await response.text()
+    } catch (error) {
+      lastError = error
+      if (error instanceof ContractError) throw error
+      if (attempt === MAX_ATTEMPTS) break
+      await new Promise((r) => setTimeout(r, 400 * 2 ** (attempt - 1)))
+      console.warn(`[skillHub] fetch ${url}: attempt ${attempt} failed, retrying`)
+    } finally {
+      clearTimeout(timer)
     }
-    return await response.text()
-  } catch (error) {
-    if (error instanceof ContractError) throw error
-    throw new ContractError(
-      'SKILL_HUB_UNAVAILABLE',
-      `Failed to fetch ${url}: ${error instanceof Error ? error.message : String(error)}`
-    )
-  } finally {
-    clearTimeout(timer)
   }
+  throw new ContractError(
+    'SKILL_HUB_UNAVAILABLE',
+    `Failed to fetch ${url}: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+  )
 }
 
 // ─── Install / uninstall ──────────────────────────────────────────────────────
@@ -570,6 +628,7 @@ export async function installSkill(
   let root: string | null = null
   let cleanup: (() => Promise<void>) | null = null
   let cleanupRef: (() => void) | null = null
+  let provenance: SkillProvenance | undefined
   try {
     if (source.kind === 'folder') {
       const folder = resolve(source.folderPath)
@@ -580,6 +639,7 @@ export async function installSkill(
         )
       }
       root = folder
+      provenance = { kind: 'folder', folderPath: folder, installedAt: Date.now() }
     } else {
       let rawSource: string
       if (source.kind === 'hub') {
@@ -592,15 +652,23 @@ export async function installSkill(
           )
         }
         rawSource = entry.source
+        provenance = {
+          kind: 'hub',
+          hub: source.hub,
+          hubEntry: source.name,
+          source: entry.source,
+          installedAt: Date.now()
+        }
       } else {
         rawSource = source.source
+        provenance = { kind: 'source', source: rawSource, installedAt: Date.now() }
       }
       const parsed = parseSkillSource(rawSource)
       let resolved: ResolvedZipPluginSourceRoot
       if (parsed.kind === 'github') {
         // Whole-repo codeload zipball (unmetered, reused from a recent browse),
         // then the skill subdir inside it.
-        const { root: repoRoot, release } = await acquireRepoZipball(parsed)
+        const { root: repoRoot, resolvedRef, release } = await acquireRepoZipball(parsed)
         cleanupRef = release
         let selected = repoRoot
         if (parsed.path !== undefined && parsed.path.length > 0) {
@@ -614,8 +682,15 @@ export async function installSkill(
           selected = subdir
         }
         resolved = { cleanup: async () => {}, path: selected }
+        provenance = {
+          ...provenance,
+          ...(parsed.ref !== undefined ? { ref: parsed.ref } : {}),
+          resolvedRef
+        }
       } else {
-        resolved = await resolveHttpZipSource({ url: parsed.url })
+        resolved = await retryTransient(`zip source ${parsed.url}`, () =>
+          resolveHttpZipSource({ url: parsed.url })
+        )
       }
       root = resolved.path
       cleanup = resolved.cleanup
@@ -636,6 +711,7 @@ export async function installSkill(
     }
 
     await mkdir(SKILLS_HOME, { recursive: true })
+    await sweepStaleStaging()
     const target = join(SKILLS_HOME, name)
     const targetExists = existsSync(target)
     if (targetExists && !overwrite) {
@@ -652,10 +728,22 @@ export async function installSkill(
       recursive: true,
       filter: (src) => {
         const base = basename(src)
-        return base !== '.git' && base !== 'node_modules' && base !== '.DS_Store'
+        // Never carry someone else's provenance sidecar across installs.
+        return (
+          base !== '.git' &&
+          base !== 'node_modules' &&
+          base !== '.DS_Store' &&
+          base !== PROVENANCE_FILE
+        )
       }
     })
+    // Sidecars are excluded by the copy filter, so a reinstall cannot inherit the
+    // previous install's origin — this record is always written fresh below.
     if (targetExists) {
+      const previous = readProvenance(target)
+      if (previous !== undefined) {
+        provenance = { ...provenance, installedAt: previous.installedAt, updatedAt: Date.now() }
+      }
       await rm(target, { recursive: true, force: true })
     }
     try {
@@ -665,11 +753,17 @@ export async function installSkill(
       throw error
     }
     const finalMeta = readSkillMeta(target)
+    if (provenance !== undefined) {
+      provenance.contentHash = await computeTreeHash(target)
+      // Audit metadata is not worth failing an install over.
+      await writeProvenance(target, provenance).catch(() => undefined)
+    }
     return {
       name,
       ...(finalMeta.description !== undefined ? { description: finalMeta.description } : {}),
       source: 'user',
-      path: target
+      path: target,
+      ...(provenance !== undefined ? { provenance } : {})
     }
   } finally {
     // The copied target lives on its own; releasing here only drops the shared
@@ -681,6 +775,76 @@ export async function installSkill(
         throw cleanupError
       }
     }
+  }
+}
+
+/**
+ * Re-install from the recorded source — the payoff of keeping provenance.
+ *
+ * Unpinned GitHub sources follow whatever the default branch is today, so this
+ * doubles as "check for updates": the content hash changes only if upstream (or
+ * the local copy) actually differs.
+ */
+export async function reinstallSkill(name: string): Promise<SkillSummary> {
+  const dir = resolve(SKILLS_HOME, name)
+  if (!dir.startsWith(resolve(SKILLS_HOME))) {
+    throw new ContractError('INVALID_INPUT', `Skill name escapes the skills home: ${name}`)
+  }
+  const record = readProvenance(dir)
+  if (record !== undefined && isReinstallable(record)) {
+    if (record.kind === 'folder' && record.folderPath !== undefined) {
+      if (!existsSync(join(record.folderPath, 'SKILL.md'))) {
+        throw new ContractError(
+          'SKILL_SOURCE_INVALID',
+          `Original folder no longer contains a skill: ${record.folderPath}`
+        )
+      }
+      return installSkill({ kind: 'folder', folderPath: record.folderPath }, true)
+    }
+    if (record.source !== undefined && record.kind !== 'agent') {
+      const parsed = parseSkillSource(record.source)
+      if (parsed.kind === 'zip') {
+        return installSkill({ kind: 'source', source: record.source }, true)
+      }
+      // GitHub: honour `@ref` only when it was pinned (and we recorded it), so
+      // an unpinned install intentionally stays on the default branch.
+      const source =
+        parsed.ref !== undefined || record.ref !== undefined
+          ? `github:${parsed.owner}/${parsed.repo}${
+              record.ref !== undefined ? `@${record.ref}` : ''
+            }${parsed.path !== undefined ? `/${parsed.path}` : ''}`
+          : sourceToString(parsed)
+      return installSkill({ kind: 'source', source }, true)
+    }
+  }
+  throw new ContractError(
+    'SKILL_SOURCE_INVALID',
+    `Skill "${name}" has no recorded install source — it was written locally, so there is nothing to reinstall from`
+  )
+}
+
+/**
+ * Remove `.<name>.staging-<ms>` leftovers from crashed installs. Listed skills
+ * skip hidden dirs, so nothing here is user-visible — but they do hold disk.
+ */
+async function sweepStaleStaging(): Promise<void> {
+  const STAGING_TTL_MS = 60 * 60 * 1000
+  let entries
+  try {
+    entries = await readdir(SKILLS_HOME, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('.')) continue
+    const match = /^\..+\.staging-(\d+)$/u.exec(entry.name)
+    if (match === null) continue
+    const created = Number(match[1] ?? '0')
+    if (!Number.isFinite(created) || created === 0) continue
+    if (Date.now() - created < STAGING_TTL_MS) continue
+    await rm(join(SKILLS_HOME, entry.name), { recursive: true, force: true }).catch(
+      () => undefined
+    )
   }
 }
 

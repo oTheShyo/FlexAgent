@@ -36,6 +36,7 @@ import {
   browseSkillHub,
   installSkill,
   listSkillHubs,
+  reinstallSkill,
   removeSkillHub,
   uninstallSkill
 } from './skills/skillHub'
@@ -575,6 +576,21 @@ export function registerIpcHandlers(
       } catch {
         // Worker down: the restart path rebuilds loaders from scratch anyway.
       }
+    })
+  )
+
+  ipcMain.handle(IPC.reinstallSkill, (_e, name: unknown) =>
+    guard(async () => {
+      if (typeof name !== 'string' || !name) {
+        throw new ContractError('INVALID_INPUT', 'name is required')
+      }
+      const summary = await reinstallSkill(name)
+      try {
+        await kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: the restart path rebuilds loaders from scratch anyway.
+      }
+      return summary
     })
   )
 

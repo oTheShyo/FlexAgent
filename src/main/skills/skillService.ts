@@ -1,6 +1,7 @@
 import type { SkillSummary } from '../../shared/contract'
 import type { PluginService } from '../plugins'
 import { listUserSkillDirs } from './skillManage'
+import { readProvenance } from './skillProvenance'
 
 /**
  * Global skill listing for the Skills page (v1.7).
@@ -15,11 +16,13 @@ import { listUserSkillDirs } from './skillManage'
 export function listSkills(plugins: PluginService): SkillSummary[] {
   const out: SkillSummary[] = []
   for (const skill of listUserSkillDirs()) {
+    const provenance = readProvenance(skill.dir)
     out.push({
       name: skill.name,
       ...(skill.description !== undefined ? { description: skill.description } : {}),
       source: 'user',
-      path: skill.dir
+      path: skill.dir,
+      ...(provenance !== undefined ? { provenance } : {})
     })
   }
   for (const plugin of plugins.list()) {

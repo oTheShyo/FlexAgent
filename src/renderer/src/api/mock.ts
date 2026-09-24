@@ -33,6 +33,7 @@ import {
   type SkillPendingWrite,
   type SkillHubInfo,
   type SkillHubEntry,
+  type SkillProvenance,
   type AddSkillHubInput,
   type InstallSkillInput,
   type SkillSummary,
@@ -1012,6 +1013,8 @@ export class MockCodexApi implements CodexApi {
     { id: 'official', name: 'Official', url: 'github:anthropics/skills', builtIn: true, skillCount: 4 }
   ]
 
+  private mockProvenance = new Map<string, SkillProvenance>()
+
   private mockHubEntries: SkillHubEntry[] = [
     {
       hub: 'official',
@@ -1098,13 +1101,35 @@ export class MockCodexApi implements CodexApi {
     if (entry.installed && input.overwrite !== true) {
       throw new ContractError('SKILL_ALREADY_INSTALLED', `"${entry.name}" is already installed`)
     }
+    const previous = this.mockProvenance.get(entry.name)
+    const provenance: SkillProvenance = {
+      kind: src.kind === 'hub' ? 'hub' : 'source',
+      source: entry.source,
+      ...(src.kind === 'hub' ? { hub: src.hub, hubEntry: src.name } : {}),
+      contentHash: 'mockhash',
+      installedAt: previous?.installedAt ?? Date.now(),
+      ...(previous !== undefined ? { updatedAt: Date.now() } : {})
+    }
     entry.installed = true
+    this.mockProvenance.set(entry.name, provenance)
     return {
       name: entry.name,
       ...(entry.description !== undefined ? { description: entry.description } : {}),
       source: 'user',
-      path: `~/.flexagent/skills/${entry.name}`
+      path: `~/.flexagent/skills/${entry.name}`,
+      provenance
     }
+  }
+
+  async reinstallSkill(name: string): Promise<SkillSummary> {
+    const record = this.mockProvenance.get(name)
+    if (record === undefined || record.source === undefined) {
+      throw new ContractError(
+        'SKILL_SOURCE_INVALID',
+        `Skill "${name}" has no recorded install source`
+      )
+    }
+    return this.installSkill({ source: { kind: 'source', source: record.source }, overwrite: true })
   }
 
   async uninstallSkill(name: string): Promise<void> {

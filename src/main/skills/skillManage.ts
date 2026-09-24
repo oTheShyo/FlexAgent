@@ -665,13 +665,16 @@ export function listUserSkillDirs(): DiscoveredSkill[] {
   }
   for (const entry of readdirSync(SKILLS_HOME, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
+    // Hidden dirs are ours: install staging copies live at
+    // `.<name>.staging-<ms>` and must never surface as a second skill.
+    if (entry.name.startsWith('.')) continue
     const dir = join(SKILLS_HOME, entry.name)
     if (existsSync(join(dir, 'SKILL.md'))) {
       out.push(readSkillMeta(dir))
       continue
     }
     for (const sub of readdirSync(dir, { withFileTypes: true })) {
-      if (!sub.isDirectory()) continue
+      if (!sub.isDirectory() || sub.name.startsWith('.')) continue
       const subDir = join(dir, sub.name)
       if (existsSync(join(subDir, 'SKILL.md'))) out.push(readSkillMeta(subDir))
     }

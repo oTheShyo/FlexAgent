@@ -581,6 +581,36 @@ export interface SkillSummary {
   /** `user`: absolute skill dir; `plugin`: path relative to the plugin root. */
   path: string
   pluginId?: PluginId
+  /** Where this skill came from — absent for skills the agent wrote itself. */
+  provenance?: SkillProvenance
+}
+
+/** How a user-level skill got into `~/.flexagent/skills`. */
+export type SkillProvenanceKind = 'hub' | 'source' | 'folder' | 'agent'
+
+/**
+ * Install-side audit record, written as `.flexagent-source.json` inside the
+ * skill dir. Answers "who put this here, from which source, at which revision,
+ * and has it been edited since?" — without a network call (GitHub's anonymous
+ * quota is 60 req/h, so we cannot afford to re-ask later).
+ */
+export interface SkillProvenance {
+  kind: SkillProvenanceKind
+  /** Canonical resolvable source string (`github:owner/repo[@ref][/path]` or https .zip). */
+  source?: string
+  hub?: string
+  /** Entry name inside the hub, if installed from one. */
+  hubEntry?: string
+  /** Absolute folder this was loaded from (`kind: 'folder'`). */
+  folderPath?: string
+  /** Git ref the source pinned, absent when tracking the default branch. */
+  ref?: string
+  /** Ref the downloader actually resolved to (e.g. `refs/heads/main`). */
+  resolvedRef?: string
+  /** sha256 over the installed tree; changes on edit and on upstream drift. */
+  contentHash?: string
+  installedAt: number
+  updatedAt?: number
 }
 
 export interface SkillPendingWrite {
@@ -911,6 +941,8 @@ export interface CodexApi {
   installSkill(input: InstallSkillInput): Promise<SkillSummary>
   /** Remove a user-level skill (never plugin skills). */
   uninstallSkill(name: string): Promise<void>
+  /** Re-install a skill from its recorded source (`.flexagent-source.json`). */
+  reinstallSkill(name: string): Promise<SkillSummary>
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -946,6 +978,7 @@ export const IPC = {
   browseSkillHub: 'codex:browseSkillHub',
   installSkill: 'codex:installSkill',
   uninstallSkill: 'codex:uninstallSkill',
+  reinstallSkill: 'codex:reinstallSkill',
   listPlugins: 'codex:listPlugins',
   getPlugin: 'codex:getPlugin',
   setPluginEnabled: 'codex:setPluginEnabled',

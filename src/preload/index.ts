@@ -268,7 +268,9 @@ const codex: CodexApi = {
 
   installSkill: (input: InstallSkillInput) => invoke<SkillSummary>(IPC.installSkill, input),
 
-  uninstallSkill: (name: string) => invoke<void>(IPC.uninstallSkill, name)
+  uninstallSkill: (name: string) => invoke<void>(IPC.uninstallSkill, name),
+
+  reinstallSkill: (name: string) => invoke<SkillSummary>(IPC.reinstallSkill, name)
 }
 
 // Not CodexApi — §7.3 accept-disconnect only; frontend must not depend on it.
