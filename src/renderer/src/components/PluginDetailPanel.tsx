@@ -1,6 +1,7 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import type { PluginComponentKind, PluginDetail } from '../types'
-import { PluginIcon } from './pluginIcons'
+import { ComponentKindIcon, PluginIcon } from './pluginIcons'
+import { Button, IconButton } from './ui'
 
 export interface PluginDetailPanelProps {
   open: boolean
@@ -80,6 +81,8 @@ function PluginDetailPanel({
   onClose,
   onUninstall
 }: PluginDetailPanelProps) {
+  const [configOpen, setConfigOpen] = useState(false)
+
   if (!open) return null
 
   const grouped = new Map<PluginComponentKind, PluginDetail['components']>()
@@ -100,7 +103,7 @@ function PluginDetailPanel({
         aria-label="Close plugin details"
         tabIndex={-1}
         onClick={onClose}
-        className="absolute inset-0 h-full w-full cursor-default bg-zinc-950/20"
+        className="absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
       />
       <aside
         role="dialog"
@@ -122,14 +125,14 @@ function PluginDetailPanel({
               </span>
             )}
           </div>
-          <button
-            type="button"
-            aria-label="Close plugin details"
+          <IconButton
+            variant="ghost"
+            label="Close plugin details"
             onClick={onClose}
-            className="shrink-0 rounded-md p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="shrink-0"
           >
             <CloseIcon />
-          </button>
+          </IconButton>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
@@ -194,9 +197,12 @@ function PluginDetailPanel({
                     if (items === undefined) return null
                     return (
                       <div key={kind} className="mt-3">
-                        <div className="text-xs font-medium text-[var(--text)]">
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text)]">
+                          <span className="text-[var(--text-muted)]">
+                            <ComponentKindIcon kind={kind} />
+                          </span>
                           {KIND_HEADING[kind]}
-                          <span className="ml-1.5 text-[11px] font-normal text-[var(--text-muted)]">
+                          <span className="text-[11px] font-normal text-[var(--text-muted)]">
                             {items.length}
                           </span>
                         </div>
@@ -239,8 +245,8 @@ function PluginDetailPanel({
                         key={`${diagnostic.code}:${diagnostic.message}`}
                         className={`rounded-md border px-2.5 py-2 text-[11px] leading-4 ${
                           diagnostic.severity === 'error'
-                            ? 'border-red-200 bg-red-50 text-red-800'
-                            : 'border-amber-200 bg-amber-50 text-amber-800'
+                            ? 'border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]'
+                            : 'border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-text)]'
                         }`}
                       >
                         <span className="font-mono font-medium">{diagnostic.code}</span>
@@ -254,54 +260,74 @@ function PluginDetailPanel({
 
               {detail.userConfig !== undefined && detail.userConfig.length > 0 && (
                 <section aria-label="Plugin configuration">
-                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                  <button
+                    type="button"
+                    onClick={() => setConfigOpen((value) => !value)}
+                    aria-expanded={configOpen}
+                    className="flex w-full items-center gap-1.5 rounded-md text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)] transition-colors hover:text-[var(--text-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    data-testid="plugin-config-toggle"
+                  >
                     Configuration (read-only)
-                  </h3>
-                  <ul className="mt-1.5 space-y-1.5">
-                    {detail.userConfig.map((spec) => (
-                      <li
-                        key={spec.key}
-                        title={
-                          spec.sensitive === true
-                            ? "Sensitive values can't be edited yet"
-                            : undefined
-                        }
-                        className={`rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 ${
-                          spec.sensitive === true ? 'opacity-60' : ''
-                        }`}
-                      >
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-xs font-medium text-[var(--text)]">
-                            {spec.title}
-                          </span>
-                          <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
-                            {spec.type}
-                          </span>
-                          {spec.required === true && (
-                            <span className="rounded-full border border-[var(--border-strong)] bg-[var(--active)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)]">
-                              Required
+                    <svg
+                      className={`h-3 w-3 transition-transform ${configOpen ? 'rotate-180' : ''}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
+                  {configOpen && (
+                    <ul className="mt-1.5 space-y-1.5">
+                      {detail.userConfig.map((spec) => (
+                        <li
+                          key={spec.key}
+                          title={
+                            spec.sensitive === true
+                              ? "Sensitive values can't be edited yet"
+                              : undefined
+                          }
+                          className={`rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 ${
+                            spec.sensitive === true ? 'opacity-60' : ''
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs font-medium text-[var(--text)]">
+                              {spec.title}
                             </span>
-                          )}
-                          {spec.sensitive === true && (
-                            <span className="rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
-                              Sensitive
+                            <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
+                              {spec.type}
                             </span>
+                            {spec.required === true && (
+                              <span className="rounded-full border border-[var(--border-strong)] bg-[var(--active)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)]">
+                                Required
+                              </span>
+                            )}
+                            {spec.sensitive === true && (
+                              <span className="rounded-full border border-[var(--warning-border)] bg-[var(--warning-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--warning-text)]">
+                                Sensitive
+                              </span>
+                            )}
+                          </div>
+                          {spec.description !== undefined && (
+                            <p className="mt-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                              {spec.description}
+                            </p>
                           )}
-                        </div>
-                        {spec.description !== undefined && (
-                          <p className="mt-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
-                            {spec.description}
-                          </p>
-                        )}
-                        {spec.default !== undefined && (
-                          <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                            Default:{' '}
-                            <span className="font-mono">{String(spec.default)}</span>
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                          {spec.default !== undefined && (
+                            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                              Default:{' '}
+                              <span className="font-mono">{String(spec.default)}</span>
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
               )}
             </div>
@@ -312,17 +338,16 @@ function PluginDetailPanel({
           <span className="text-[11px] text-[var(--text-muted)]">
             {uninstallBusy ? 'Uninstalling…' : undefined}
           </span>
-          <button
-            type="button"
+          <Button
+            variant="danger"
             disabled={detail === null || uninstallBusy}
             onClick={() => {
               if (detail !== null) onUninstall(detail.id)
             }}
             data-testid="plugin-uninstall"
-            className="h-8 rounded bg-red-600 px-3 text-xs font-medium text-white transition-colors hover:bg-red-500 active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Uninstall
-          </button>
+          </Button>
         </footer>
       </aside>
     </div>

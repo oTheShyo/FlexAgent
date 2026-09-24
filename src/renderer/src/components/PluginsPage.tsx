@@ -1,6 +1,7 @@
-import { memo, useEffect, useState } from 'react'
-import type { PluginComponentKind, PluginSummary } from '../types'
+import { memo, useEffect, useMemo, useState } from 'react'
+import type { PluginComponentKind, PluginSummary, PluginSourceKind } from '../types'
 import { PluginIcon } from './pluginIcons'
+import { Button, Chip } from './ui'
 
 export interface PluginsPageProps {
   plugins: PluginSummary[]
@@ -21,6 +22,22 @@ const KIND_LABEL: Record<PluginComponentKind, string> = {
   hook: 'Hooks',
   mcp: 'MCP'
 }
+
+const SOURCE_SECTION_ORDER: PluginSourceKind[] = ['bundled', 'local', 'marketplace']
+
+const SOURCE_SECTION_LABEL: Record<PluginSourceKind, string> = {
+  bundled: 'Bundled',
+  local: 'Local',
+  marketplace: 'Marketplace'
+}
+
+type StatusFilter = 'all' | 'enabled' | 'disabled'
+
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'enabled', label: 'Enabled' },
+  { key: 'disabled', label: 'Disabled' }
+]
 
 export function kindHeading(kind: PluginComponentKind): string {
   return KIND_LABEL[kind]
@@ -57,8 +74,8 @@ function PluginListSkeleton() {
           className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3"
         >
           <span aria-hidden="true" className="h-8 w-8 animate-pulse rounded-lg bg-[var(--active)]" />
-          <span aria-hidden="true" className="h-3 animate-pulse rounded bg-[var(--active)]" style={{ width }} />
-          <span aria-hidden="true" className="ml-auto h-4 w-10 animate-pulse rounded bg-[var(--active)]" />
+          <span aria-hidden="true" className="h-3 animate-pulse rounded-md bg-[var(--active)]" style={{ width }} />
+          <span aria-hidden="true" className="ml-auto h-4 w-10 animate-pulse rounded-md bg-[var(--active)]" />
         </li>
       ))}
     </ul>
@@ -175,6 +192,8 @@ function PluginsPage({
   onOpenDetail
 }: PluginsPageProps) {
   const [dismissedError, setDismissedError] = useState(false)
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
 
   useEffect(() => {
     setDismissedError(false)
@@ -182,36 +201,100 @@ function PluginsPage({
 
   const showError = error !== null && !dismissedError
 
+  const normalizedQuery = query.trim().toLowerCase()
+
+  const filtered = useMemo(() => {
+    return plugins.filter((plugin) => {
+      if (statusFilter === 'enabled' && !plugin.enabled) return false
+      if (statusFilter === 'disabled' && plugin.enabled) return false
+      if (normalizedQuery.length === 0) return true
+      const haystack =
+        `${plugin.name} ${plugin.description ?? ''} ${plugin.source.label}`.toLowerCase()
+      return haystack.includes(normalizedQuery)
+    })
+  }, [plugins, statusFilter, normalizedQuery])
+
+  const sections = useMemo(() => {
+    return SOURCE_SECTION_ORDER.map((kind) => ({
+      kind,
+      label: SOURCE_SECTION_LABEL[kind],
+      items: filtered.filter((plugin) => plugin.source.kind === kind)
+    })).filter((section) => section.items.length > 0)
+  }, [filtered])
+
+  const searchEmpty = !loading && plugins.length > 0 && filtered.length === 0
+
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6" data-testid="plugins-page">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text)]">Plugins</h1>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={installFromDirectory}
           data-testid="plugins-install"
-          className="h-8 shrink-0 rounded bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-contrast)] transition-colors hover:bg-[var(--accent-hover)] active:translate-y-px focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2"
+          className="shrink-0"
         >
           Install from folder
-        </button>
+        </Button>
       </div>
+
+      {!loading && plugins.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-48 flex-1">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[var(--text-subtle)]"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+              </svg>
+            </span>
+            <input
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search plugins"
+              aria-label="Search plugins"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-8 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] pl-8 pr-2 text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              data-testid="plugins-search"
+            />
+          </div>
+          <div className="flex items-center gap-1.5" role="group" aria-label="Filter by state">
+            {STATUS_FILTERS.map((filter) => (
+              <Chip
+                key={filter.key}
+                active={statusFilter === filter.key}
+                onClick={() => setStatusFilter(filter.key)}
+                aria-pressed={statusFilter === filter.key}
+                data-testid={`plugins-filter-${filter.key}`}
+                className="h-7 px-2.5 text-[11px]"
+              >
+                {filter.label}
+              </Chip>
+            ))}
+          </div>
+        </div>
+      )}
 
       {showError && (
         <div
           role="alert"
           data-testid="plugins-error"
-          className="mt-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+          className="mt-4 flex items-center gap-2 rounded-lg border border-[var(--warning-border)] bg-[var(--warning-bg)] px-3 py-2 text-xs text-[var(--warning-text)]"
         >
           <span
             aria-hidden="true"
-            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
+            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--warning)]"
           />
           <span className="min-w-0 flex-1 truncate">{error}</span>
           <button
             type="button"
             onClick={() => setDismissedError(true)}
             aria-label="Dismiss error"
-            className="shrink-0 rounded border border-amber-300 bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1"
+            className="shrink-0 rounded-md border border-[var(--warning-border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning)] transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1"
           >
             Dismiss
           </button>
@@ -233,16 +316,37 @@ function PluginsPage({
               Install a plugin from a folder to extend FlexAgent.
             </p>
           </div>
+        ) : searchEmpty ? (
+          <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-[var(--border)] px-6 py-12 text-center">
+            <h2 className="text-sm font-semibold tracking-tight text-[var(--text)]">
+              No matching plugins
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+              Try a different keyword or state filter.
+            </p>
+          </div>
         ) : (
-          <div className="space-y-2">
-            {plugins.map((plugin) => (
-              <PluginRow
-                key={plugin.id}
-                plugin={plugin}
-                busy={busyId === plugin.id}
-                toggleEnabled={toggleEnabled}
-                onOpenDetail={onOpenDetail}
-              />
+          <div className="space-y-5">
+            {sections.map((section) => (
+              <section key={section.kind} aria-label={section.label}>
+                <h2 className="flex items-baseline gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                  {section.label}
+                  <span className="font-normal normal-case tracking-normal text-[var(--text-muted)]">
+                    {section.items.length}
+                  </span>
+                </h2>
+                <div className="mt-2 space-y-2">
+                  {section.items.map((plugin) => (
+                    <PluginRow
+                      key={plugin.id}
+                      plugin={plugin}
+                      busy={busyId === plugin.id}
+                      toggleEnabled={toggleEnabled}
+                      onOpenDetail={onOpenDetail}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}
