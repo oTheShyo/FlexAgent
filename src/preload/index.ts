@@ -24,6 +24,8 @@ import {
   type AddMarketplaceInput,
   type MemoryCard,
   type MemoryCardFile,
+  type MemoryCardRef,
+  type MemoryWriteReceipt,
   type ModelConfig,
   type NetworkSettings,
   type RoutingState,
@@ -267,10 +269,10 @@ const codex: CodexApi = {
   listMemoryCards: () => invoke<MemoryCard[]>(IPC.listMemoryCards),
 
   addMemoryCard: (file: MemoryCardFile, text: string) =>
-    invoke<void>(IPC.addMemoryCard, { file, text }),
+    invoke<MemoryWriteReceipt>(IPC.addMemoryCard, { file, text }),
 
-  removeMemoryCard: (file: MemoryCardFile, index: number) =>
-    invoke<void>(IPC.removeMemoryCard, { file, index }),
+  removeMemoryCard: (file: MemoryCardFile, ref: MemoryCardRef) =>
+    invoke<void>(IPC.removeMemoryCard, { file, ref }),
 
   searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query),
 

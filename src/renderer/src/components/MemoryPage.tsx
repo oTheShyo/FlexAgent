@@ -23,6 +23,7 @@ export default function MemoryPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [memoryFile, setMemoryFile] = useState<MemoryCardFile>('MEMORY')
   const [draft, setDraft] = useState('')
+  const [notices, setNotices] = useState<string[]>([])
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -43,8 +44,12 @@ export default function MemoryPage() {
     const text = draft.trim()
     if (text.length === 0) return
     setBusyId('memory-add')
+    setNotices([])
     try {
-      await codexApi.addMemoryCard(memoryFile, text)
+      // Advisory only: the card is stored even when the linter objects, so the
+      // warning is shown rather than thrown. A rejected card does throw.
+      const receipt = await codexApi.addMemoryCard(memoryFile, text)
+      setNotices(receipt.warnings ?? [])
       setDraft('')
       await refresh()
     } catch (err) {
@@ -56,9 +61,11 @@ export default function MemoryPage() {
 
   const handleRemove = useCallback(
     async (card: MemoryCard): Promise<void> => {
-      setBusyId(`memory-${card.file}-${card.index}`)
+      setBusyId(`memory-${card.file}-${card.id}`)
       try {
-        await codexApi.removeMemoryCard(card.file, card.index)
+        // By id, not position: an index captured before an earlier removal
+        // points at whatever shifted into its place.
+        await codexApi.removeMemoryCard(card.file, card.id)
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -148,6 +155,18 @@ export default function MemoryPage() {
         </Button>
       </form>
 
+      {notices.length > 0 && (
+        <ul
+          role="status"
+          data-testid="memory-notices"
+          className="mt-3 space-y-1 rounded-lg border border-[var(--warning-border)] bg-[var(--warning-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--warning-text)]"
+        >
+          {notices.map((notice) => (
+            <li key={notice}>Stored, but: {notice}</li>
+          ))}
+        </ul>
+      )}
+
       {loading ? (
         <div role="status" aria-busy="true" aria-label="Loading memory cards" className="mt-4 space-y-2">
           {['78%', '62%', '70%'].map((width) => (
@@ -174,7 +193,7 @@ export default function MemoryPage() {
                 <ul className="mt-1.5 space-y-1.5">
                   {group.items.map((card) => (
                     <li
-                      key={`${card.file}-${card.index}`}
+                      key={`${card.file}-${card.id}`}
                       data-testid={`memory-card-${card.file}-${card.index}`}
                       className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
                     >

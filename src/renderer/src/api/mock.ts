@@ -47,6 +47,8 @@ import {
   type SkillSummary,
   type MemoryCard,
   type MemoryCardFile,
+  type MemoryCardRef,
+  type MemoryWriteReceipt,
   type McpServerStatusEntry,
   type McpServerStatusEvent,
   type SlashCommandSummary,
@@ -150,6 +152,14 @@ function tokenize(reply: string): string[] {
 function dirBasename(path: string): string {
   const parts = path.split(/[\\/]+/).filter((part) => part.length > 0)
   return parts.length > 0 ? (parts[parts.length - 1] ?? path) : path
+}
+
+/** Stand-in for the main process' content-derived card id (see memoryStore). */
+function mockCardId(text: string): string {
+  let hash = 0
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ')
+  for (let i = 0; i < normalized.length; i += 1) hash = (hash * 31 + normalized.charCodeAt(i)) | 0
+  return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 10)
 }
 
 export { dirBasename }
@@ -1147,9 +1157,9 @@ export class MockCodexApi implements CodexApi {
   ]
 
   private readonly memoryCards: MemoryCard[] = [
-    { file: 'MEMORY', index: 0, text: 'Runtime config lives in realtime-cv-inversion-0521/config.json, not the -wbh workdir.' },
-    { file: 'MEMORY', index: 1, text: 'Contract changes are additive only — never repurpose existing fields.' },
-    { file: 'USER', index: 0, text: 'Prefers concise, table-first answers with evidence.' }
+    { file: 'MEMORY', index: 0, id: 'mock000001', text: 'Runtime config lives in realtime-cv-inversion-0521/config.json, not the -wbh workdir.' },
+    { file: 'MEMORY', index: 1, id: 'mock000002', text: 'Contract changes are additive only — never repurpose existing fields.' },
+    { file: 'USER', index: 0, id: 'mock000003', text: 'Prefers concise, table-first answers with evidence.' }
   ]
 
   async listSkills(): Promise<SkillSummary[]> {
@@ -1195,15 +1205,26 @@ export class MockCodexApi implements CodexApi {
     return this.memoryCards.map((card) => ({ ...card }))
   }
 
-  async addMemoryCard(file: MemoryCardFile, text: string): Promise<void> {
+  async addMemoryCard(file: MemoryCardFile, text: string): Promise<MemoryWriteReceipt> {
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (trimmed.length === 0) throw new ContractError('INVALID_INPUT', 'text is required')
-    this.memoryCards.push({ file, index: this.memoryCards.filter((c) => c.file === file).length, text: trimmed })
+    const id = mockCardId(trimmed)
+    const existing = this.memoryCards.find((card) => card.id === id)
+    if (existing !== undefined) return { id: existing.id, warnings: [] }
+    this.memoryCards.push({
+      file,
+      id,
+      index: this.memoryCards.filter((c) => c.file === file).length,
+      text: trimmed
+    })
+    return { id, warnings: [] }
   }
 
-  async removeMemoryCard(file: MemoryCardFile, index: number): Promise<void> {
-    const globalIndex = this.memoryCards.findIndex((card) => card.file === file && card.index === index)
-    if (globalIndex < 0) throw new ContractError('INVALID_INPUT', 'card index out of range')
+  async removeMemoryCard(file: MemoryCardFile, ref: MemoryCardRef): Promise<void> {
+    const globalIndex = this.memoryCards.findIndex((card) =>
+      card.file === file && (typeof ref === 'string' ? card.id === ref : card.index === ref)
+    )
+    if (globalIndex < 0) throw new ContractError('INVALID_INPUT', 'no such memory card')
     this.memoryCards.splice(globalIndex, 1)
     // Reindex remaining cards of that file.
     let next = 0

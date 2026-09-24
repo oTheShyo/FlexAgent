@@ -778,8 +778,33 @@ export interface MemoryCard {
   file: MemoryCardFile
   /** 0-based index within the card list of that file; stable for remove(). */
   index: number
+  /**
+   * Content-derived identity (v1.10, additive). Indexes shift when a card above
+   * is removed — across turns that makes "delete what I listed earlier" hit the
+   * wrong line. The id survives removals and is what remove() prefers.
+   */
+  id: string
   text: string
 }
+
+/**
+ * Acknowledgement for a memory write (v1.10, additive).
+ *
+ * `warnings` carries advisory lint output the writer should see — the write
+ * happened, but something about the card is probably wrong (transient state,
+ * describing the agent rather than the user). Rejections surface as errors;
+ * warnings are the band where the caller may know better than the linter.
+ */
+export interface MemoryWriteReceipt {
+  id: string
+  warnings: string[]
+}
+
+/**
+ * What remove() accepts (v1.10, additive): `number` keeps working as the old
+ * positional index, `string` targets a card by id. Prefer the id — see above.
+ */
+export type MemoryCardRef = number | string
 
 export interface SessionSearchHit {
   sessionId: SessionId
@@ -1084,8 +1109,9 @@ export interface CodexApi {
   rejectSkillWrite(id: string): Promise<void>
   /** Curated memory cards across sessions (`~/.flexagent/memory/`). */
   listMemoryCards(): Promise<MemoryCard[]>
-  addMemoryCard(file: MemoryCardFile, text: string): Promise<void>
-  removeMemoryCard(file: MemoryCardFile, index: number): Promise<void>
+  /** Returns the id so callers can remove precisely later; see v1.10 note above. */
+  addMemoryCard(file: MemoryCardFile, text: string): Promise<MemoryWriteReceipt>
+  removeMemoryCard(file: MemoryCardFile, ref: MemoryCardRef): Promise<void>
   /** Substring search across stored session transcripts (titles + messages). */
   searchSessions(query: string): Promise<SessionSearchHit[]>
 

@@ -48,7 +48,8 @@ import {
 } from './skills/skillHub'
 import type { InstallSkillSource } from '../shared/contract'
 import { addMemoryCard, listMemoryCards, removeMemoryCard } from './skills/memoryStore'
-import { searchSessionRecords } from './skills/sessionSearch'
+import { RECALL_BUDGET, extractRecallQueries, searchSessionRecords } from './skills/sessionSearch'
+import type { SessionSearchHit } from '../shared/contract'
 
 interface IpcFailure {
   code?: unknown
@@ -138,6 +139,34 @@ export function registerIpcHandlers(
   customModels: UserModelsService,
   network: KernelSettingsService
 ): void {
+  /**
+   * Short-term memory for a turn: which earlier sessions already covered this.
+   *
+   * Lives here rather than in the worker because the session registry does — the
+   * worker holds transcripts, not the index. Every prompt pays this, so it runs
+   * under the recall budget and never throws: a turn that starts slightly less
+   * informed beats one that does not start.
+   */
+  const RECALL_MIN_PROMPT = 6
+  const RECALL_MAX_HITS = 5
+  const recallForPrompt = (text: string, currentSessionId: string): SessionSearchHit[] => {
+    const prompt = text.trim()
+    if (prompt.length < RECALL_MIN_PROMPT) return []
+    try {
+      const records = registry.list().filter((record) => record.id !== currentSessionId)
+      const merged = new Map<string, SessionSearchHit>()
+      for (const query of extractRecallQueries(prompt)) {
+        for (const hit of searchSessionRecords(records, query, 3, RECALL_BUDGET)) {
+          if (!merged.has(hit.sessionId)) merged.set(hit.sessionId, hit)
+        }
+        if (merged.size >= RECALL_MAX_HITS) break
+      }
+      return [...merged.values()].slice(0, RECALL_MAX_HITS)
+    } catch {
+      return []
+    }
+  }
+
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
   ipcMain.handle(IPC.createSession, (_e, input: { cwd?: unknown; title?: unknown }) =>
@@ -280,11 +309,21 @@ export function registerIpcHandlers(
           : mode === 'followUp'
             ? ('queued' as const)
             : ('steering' as const)
+      // Short-term memory: what earlier sessions already know about this. The
+      // registry is here and the worker cannot reach it, so it rides the prompt
+      // request. Failure must never block the turn.
+      let recall: ReturnType<typeof searchSessionRecords> | undefined
+      try {
+        recall = recallForPrompt(input.text, input.sessionId)
+      } catch {
+        recall = undefined
+      }
       const ack = (await kernel.request({
         type: 'prompt',
         sessionId: input.sessionId,
         text: input.text,
-        disposition
+        disposition,
+        ...(recall !== undefined ? { recall } : {})
       })) as { disposition?: string } | undefined
       registry.touch(input.sessionId)
       return { disposition: ack?.disposition ?? disposition }
@@ -679,19 +718,27 @@ export function registerIpcHandlers(
       if (typeof input.text !== 'string' || !input.text.trim()) {
         throw new ContractError('INVALID_INPUT', 'text is required')
       }
-      addMemoryCard(input.file, input.text)
+      // Written straight to disk: the UI is not mid-run, so there is no turn to
+      // defer to. Warnings go back to the caller — the card was stored, but
+      // something about it is probably wrong and the user can judge that.
+      const result = addMemoryCard(input.file, input.text)
+      return { id: result.id, warnings: result.warnings }
     })
   )
 
-  ipcMain.handle(IPC.removeMemoryCard, (_e, input: { file?: unknown; index?: unknown }) =>
+  ipcMain.handle(IPC.removeMemoryCard, (_e, input: { file?: unknown; ref?: unknown; index?: unknown }) =>
     guard(() => {
       if (!input || (input.file !== 'MEMORY' && input.file !== 'USER')) {
         throw new ContractError('INVALID_INPUT', 'file must be MEMORY or USER')
       }
-      if (typeof input.index !== 'number' || !Number.isInteger(input.index) || input.index < 0) {
-        throw new ContractError('INVALID_INPUT', 'index must be a non-negative integer')
+      // `ref` is the v1.10 form (id or index); `index` is what v1.7 sent.
+      const ref = input.ref !== undefined ? input.ref : input.index
+      if (typeof ref === 'string') {
+        if (ref.length === 0) throw new ContractError('INVALID_INPUT', 'card id must be a non-empty string')
+      } else if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 0) {
+        throw new ContractError('INVALID_INPUT', 'card reference must be an id string or a non-negative integer index')
       }
-      removeMemoryCard(input.file, input.index)
+      removeMemoryCard(input.file, ref)
     })
   )
 

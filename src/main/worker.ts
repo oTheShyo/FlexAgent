@@ -13,6 +13,7 @@ import {
   type RoutingState,
   type RunState,
   type SessionId,
+  type SessionSearchHit,
   type ThinkingLevel,
   type ToolCallId,
   type UsageReport
@@ -35,7 +36,12 @@ import { parseHooksContent } from './hookSources'
 import { perfStart } from './perf'
 import { interpolateHookTemplate } from './userConfig'
 import { runHook, type HookRunOptions, type HookRunResult } from './hooks/hookRunner'
-import { createSelfEvolutionExtension, SKILLS_HOME } from './skills/selfEvolution'
+import {
+  createSelfEvolutionExtension,
+  flushPendingMemoryWrites,
+  SKILLS_HOME
+} from './skills/selfEvolution'
+import { buildJudgePrompt, parseJudgeReply } from './skills/memoryDedupe'
 import { buildUsageReport, resolveRoleModel, resolveRoles } from './modelRoles'
 import { createCompactionRoutingExtension } from './compactionRouting'
 import { loadKernelHttp } from './kernelHttp'
@@ -587,6 +593,73 @@ function ensureNetworkApplied(): Promise<void> {
 }
 
 
+const MEMORY_JUDGE_SYSTEM_PROMPT = [
+  'You decide whether a new note duplicates an existing one.',
+  'They are duplicates when a reader would act identically knowing either one.',
+  'They are NOT duplicates merely for mentioning the same topic.',
+  'Reply with only the number of the duplicate entry, or 0 if it is genuinely new.'
+].join(' ')
+
+/**
+ * Same rule as the permission chain's classifier, for the same measured reason:
+ * a reasoning model spends its whole budget thinking and returns no answer.
+ *
+ * Duplicated rather than shared — that helper belongs to another track's pending
+ * work, and depending on it would tie this change to a landing order.
+ * The model type is derived from the runtime itself so it tracks whatever the
+ * kernel calls it, rather than a local alias that may move.
+ */
+type JudgeModel = Parameters<
+  import('@earendil-works/pi-coding-agent').ModelRuntime['completeSimple']
+>[0]
+
+function pickJudgeModel(snapshot: readonly JudgeModel[]): JudgeModel | undefined {
+  return snapshot.find((model) => (model as { reasoning?: boolean }).reasoning !== true) ?? snapshot[0]
+}
+
+/**
+ * Duplicate decisions for memory cards — one small model call per candidate
+ * batch, never for cards the rules already settled.
+ *
+ * Failures mean "no duplicate", i.e. the card gets written. Duplicates are
+ * cheap to prune later; a fact the user loses because a judge was unavailable
+ * is not.
+ */
+const DUPLICATE_COOLDOWN_MS = 60_000
+let duplicateJudgeDisabledUntil = 0
+
+async function judgeMemoryDuplicate(
+  newText: string,
+  candidates: string[]
+): Promise<number | null> {
+  if (candidates.length === 0) return null
+  if (Date.now() < duplicateJudgeDisabledUntil) return null
+  try {
+    const runtime = await getModelRuntime()
+    const model = pickJudgeModel(runtime.getAvailableSnapshot())
+    if (!model) return null
+    const prompt = buildJudgePrompt(newText, candidates)
+    const reply = await runtime.completeSimple(
+      model,
+      {
+        systemPrompt: MEMORY_JUDGE_SYSTEM_PROMPT,
+        messages: [{ role: 'user' as const, content: prompt, timestamp: Date.now() }]
+      },
+      { maxTokens: 8, temperature: 0 }
+    )
+    const blocks = Array.isArray(reply?.content) ? reply.content : []
+    const text = String(blocks.map((block) => (block as { text?: unknown })?.text ?? '')).trim()
+    if (!text) {
+      duplicateJudgeDisabledUntil = Date.now() + DUPLICATE_COOLDOWN_MS
+      return null
+    }
+    return parseJudgeReply(text, candidates.length)
+  } catch {
+    duplicateJudgeDisabledUntil = Date.now() + DUPLICATE_COOLDOWN_MS
+    return null
+  }
+}
+
 function toModelOption(model: {
   provider: string
   id: string
@@ -910,6 +983,25 @@ function buildMessages(session: AgentSession): ChatMessage[] {
  */
 const resourceLoaders = new Map<string, Promise<DefaultResourceLoaderType>>()
 
+/**
+ * Hand-off slot for this turn's short-term recall.
+ *
+ * Main computes the hits (it owns the registry) and ships them with the prompt;
+ * `before_agent_start` consumes them. There is no session identity in that
+ * event, but there is also only one worker thread: the run that owns this slot
+ * is the run whose `before_agent_start` is executing. `RECALL_TTL_MS` bounds the
+ * window so a stalled prompt cannot season some later turn's context.
+ */
+const RECALL_TTL_MS = 5_000
+let recallSlot: { hits: SessionSearchHit[]; at: number } | undefined
+
+function consumeRecall(): SessionSearchHit[] {
+  const slot = recallSlot
+  if (slot === undefined) return []
+  recallSlot = undefined
+  return Date.now() - slot.at > RECALL_TTL_MS ? [] : slot.hits
+}
+
 async function acquireResourceLoader(
   cwd: string,
   mcpTools: McpToolBridgeDef[]
@@ -931,7 +1023,11 @@ async function acquireResourceLoader(
         ...(existsSync(SKILLS_HOME) ? [SKILLS_HOME] : [])
       ],
       extensionFactories: [
-        createSelfEvolutionExtension({ onSkillsChanged: () => resourceLoaders.clear() }),
+        createSelfEvolutionExtension({
+          onSkillsChanged: () => resourceLoaders.clear(),
+          judgeDuplicate: judgeMemoryDuplicate,
+          recallHistory: async (_prompt, limit) => consumeRecall().slice(0, limit)
+        }),
         createCompactionRoutingExtension({
           resolveCompactionModel: async () =>
             resolveRoleModel(await getModelRuntime(), 'compaction'),
@@ -1147,6 +1243,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     case 'prompt': {
       const host = requireSession(req.sessionId)
       const text = req.text
+      // Published for the before_agent_start that follows this prompt; consumed
+      // there. Set before anything can await, so the run always sees it.
+      recallSlot = req.recall === undefined ? undefined : { hits: req.recall, at: Date.now() }
       // Disposition authority (contract §2.1): the table keys on runState, and
       // host.runState is the origin of the run_state fanOut (setRunState →
       // kernel.runStates → registry projection → UI). Consume it directly;
@@ -1240,6 +1339,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       host.unsubscribe()
       for (const p of host.pending.values()) p.resolve('deny')
       host.pending.clear()
+      // A disposed session will not see another turn_end, and event handlers do
+      // not run for a dispose forced from outside. Commit whatever it queued.
+      flushPendingMemoryWrites()
       host.session.dispose()
       sessions.delete(req.sessionId)
       return undefined
@@ -1382,6 +1484,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
 
     case 'shutdown': {
+      // Nothing is guaranteed to fire another lifecycle event past this point:
+      // commit every queued card before anything is torn down.
+      flushPendingMemoryWrites()
       for (const [id, host] of [...sessions]) {
         host.unsubscribe()
         for (const p of host.pending.values()) p.resolve('deny')

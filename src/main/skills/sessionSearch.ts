@@ -77,16 +77,76 @@ function snippetAround(text: string, lowerQuery: string): string | null {
   return `${start > 0 ? '…' : ''}${body}${end < text.length ? '…' : ''}`
 }
 
+export interface SearchBudget {
+  maxSessions?: number
+  maxFileBytes?: number
+}
+
+/**
+ * Per-turn recall budget. Every prompt pays this, unlike the user-driven search
+ * box which pays once per keystroke-settled query: fewer sessions, smaller
+ * transcripts. Kept small enough to sit inside the gap before the first token.
+ */
+export const RECALL_BUDGET: SearchBudget = { maxSessions: 8, maxFileBytes: 512 * 1024 }
+
+/** Longest–first is a crude but decent proxy for "this is what the ask is about". */
+const STOP_ISH = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'then', 'when',
+  'please', '帮我', '帮帮我', '可以', '能不能', '需要'
+])
+
+/**
+ * Terms worth searching past sessions for.
+ *
+ * The search is substring-based, so a whole sentence is a useless query — it
+ * will not appear verbatim anywhere. Terms are extracted instead: an
+ * identifier-shaped word, or a 4-character sliding window over CJK text (no
+ * word boundaries exist there to split on).
+ */
+export function extractRecallQueries(prompt: string, maxQueries = 2): string[] {
+  const queries: string[] = []
+  const seen = new Set<string>()
+  const push = (value: string): void => {
+    const key = value.toLowerCase()
+    if (key.length < 3 || STOP_ISH.has(key) || seen.has(key)) return
+    seen.add(key)
+    queries.push(value)
+  }
+
+  const words = [...prompt.matchAll(/[A-Za-z_][A-Za-z0-9_.-]{3,}/g)]
+    .map((match) => match[0])
+    .sort((a, b) => b.length - a.length)
+  for (const word of words) {
+    if (queries.length >= maxQueries) break
+    push(word)
+  }
+
+  // Lump every non-CJK run out, then walk the remainder in 4-character steps.
+  const cjk = prompt.replace(/[^\u4e00-\u9fff]+/g, ' ')
+  for (const run of cjk.split(' ')) {
+    if (run.length < 2) continue
+    for (let i = 0; i + 4 <= run.length && queries.length < maxQueries; i += 4) {
+      push(run.slice(i, i + 4))
+    }
+    if (queries.length >= maxQueries) break
+  }
+
+  return queries
+}
+
 export function searchSessionRecords(
   records: SessionRecordLike[],
   rawQuery: string,
-  limit = MAX_HITS
+  limit = MAX_HITS,
+  budget: SearchBudget = {}
 ): SessionSearchHit[] {
   const query = rawQuery.trim()
   if (query.length === 0) return []
+  const maxSessions = budget.maxSessions ?? MAX_SESSIONS
+  const maxFileBytes = budget.maxFileBytes ?? MAX_FILE_BYTES
   const lowerQuery = query.toLowerCase()
   const hits: SessionSearchHit[] = []
-  const sorted = [...records].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS)
+  const sorted = [...records].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, maxSessions)
 
   for (const record of sorted) {
     if (hits.length >= limit) break
@@ -95,7 +155,7 @@ export function searchSessionRecords(
     let transcriptMatch: string | null = null
     if (!titleMatch && record.piSessionFile && existsSync(record.piSessionFile)) {
       try {
-        if (statSync(record.piSessionFile).size > MAX_FILE_BYTES) continue
+        if (statSync(record.piSessionFile).size > maxFileBytes) continue
         const raw = readFileSync(record.piSessionFile, 'utf8')
         for (const line of raw.split('\n')) {
           if (!line.trim()) continue

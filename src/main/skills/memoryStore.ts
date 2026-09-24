@@ -1,11 +1,13 @@
+import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { ContractError } from '../../shared/contract'
-import type { MemoryCard, MemoryCardFile } from '../../shared/contract'
+import type { MemoryCard, MemoryCardFile, MemoryCardRef } from '../../shared/contract'
+import { firstRejection, lintCard } from './memoryLint'
 
 /**
- * Agent-curated memory cards (Hermes-aligned, M3).
+ * Agent-curated memory cards (Hermes-aligned, M3; hardened in v1.10).
  *
  * Two markdown files hold small persistent facts:
  * - MEMORY.md — facts that should survive across sessions ("the runtime config
@@ -13,7 +15,12 @@ import type { MemoryCard, MemoryCardFile } from '../../shared/contract'
  * - USER.md   — who the user is and how they work.
  *
  * Cards are `- text` list lines; everything else in the file is preserved
- * untouched (headers, blank lines, free-form notes).
+ * untouched (headers, blank lines, free-form notes) so the files stay pleasant
+ * to open by hand.
+ *
+ * Identity is derived from content rather than written into the file: a store
+ * that required an ID column would stop being hand-editable, and hand-editing
+ * is the property worth protecting here.
  */
 
 export const MEMORY_HOME = join(homedir(), '.flexagent', 'memory')
@@ -32,6 +39,19 @@ function filePath(file: MemoryCardFile): string {
   return join(MEMORY_HOME, FILES[file])
 }
 
+function normalizeText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ')
+}
+
+/**
+ * Stable id for a card's text. Whitespace- and case-insensitive, so restating a
+ * fact with different spacing still collapses onto the same card rather than
+ * accumulating near-identical duplicates.
+ */
+export function cardId(text: string): string {
+  return createHash('sha1').update(normalizeText(text).toLowerCase()).digest('hex').slice(0, 10)
+}
+
 function ensureFile(path: string): void {
   if (!existsSync(path)) {
     mkdirSync(MEMORY_HOME, { recursive: true })
@@ -47,19 +67,21 @@ function isCardLine(line: string): boolean {
   return CARD_RE.test(line) && line.trim().length > 1
 }
 
+function cardText(line: string): string {
+  return (line.match(CARD_RE)?.[1] ?? '').trim()
+}
+
 export function listMemoryCards(): MemoryCard[] {
   const out: MemoryCard[] = []
   for (const file of ['MEMORY', 'USER'] as MemoryCardFile[]) {
     const path = filePath(file)
     if (!existsSync(path)) continue
-    const indexByCard = new Map<string, number>()
     let cardIndex = 0
     for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
       if (!isCardLine(line)) continue
-      indexByCard.set(line, cardIndex)
-      const text = (line.match(CARD_RE)?.[1] ?? '').trim()
+      const text = cardText(line)
       if (text.length > 0) {
-        out.push({ file, index: cardIndex, text })
+        out.push({ file, index: cardIndex, id: cardId(text), text })
       }
       cardIndex += 1
     }
@@ -67,43 +89,93 @@ export function listMemoryCards(): MemoryCard[] {
   return out
 }
 
-export function addMemoryCard(file: MemoryCardFile, text: string): MemoryCard {
-  const trimmed = text.trim()
+export interface AddCardResult {
+  id: string
+  text: string
+  /** False when an identical card was already present — nothing was written. */
+  written: boolean
+  warnings: string[]
+}
+
+/**
+ * Append a card. Rejects what a card must never contain (see memoryLint) and
+ * returns advisory warnings rather than silently accepting everything.
+ */
+export function addMemoryCard(file: MemoryCardFile, text: string): AddCardResult {
+  const trimmed = normalizeText(text)
   if (trimmed.length === 0) {
     throw new ContractError('INVALID_INPUT', 'card text must be a non-empty string')
   }
   if (trimmed.length > 2000) {
     throw new ContractError('INVALID_INPUT', 'card text is too long (max 2000 chars)')
   }
+  const lint = lintCard(trimmed)
+  const rejection = firstRejection(lint)
+  if (rejection !== undefined) {
+    throw new ContractError(
+      'INVALID_INPUT',
+      `memory card rejected (${rejection.rule}): ${rejection.message}`
+    )
+  }
+
+  const id = cardId(trimmed)
+  const warnings = lint.warnings.map((w) => `${w.rule}: ${w.message}`)
   const path = filePath(file)
   ensureFile(path)
-  const card = `- ${trimmed.replace(/\s*\r?\n\s*/g, ' ')}`
+  const card = `- ${trimmed}`
   const existing = readFileSync(path, 'utf8')
-  // Duplicate suppression: identical card text is a no-op (MemoryStore folds
-  // byte-identical entries — Hermes semantics).
-  if (existing.split(/\r?\n/).some((line) => line.trim() === card.trim())) {
-    return { file, index: -1, text: trimmed }
+  // Identical text ⇒ identical id ⇒ nothing to write.
+  if (existing.split(/\r?\n/).some((line) => isCardLine(line) && cardId(cardText(line)) === id)) {
+    return { id, text: trimmed, written: false, warnings }
   }
   const needsNewline = existing.length > 0 && !existing.endsWith('\n')
   writeFileSync(path, `${existing}${needsNewline ? '\n' : ''}${card}\n`, 'utf8')
-  return { file, index: listMemoryCards().filter((card2) => card2.file === file).length - 1, text: trimmed }
+  return { id, text: trimmed, written: true, warnings }
 }
 
-export function removeMemoryCard(file: MemoryCardFile, index: number): void {
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ContractError('INVALID_INPUT', 'index must be a non-negative integer')
-  }
+/**
+ * Remove a card by id (`string`) or by position (`number`).
+ *
+ * Prefer the id: it survives intervening removals, whereas an index captured a
+ * few turns ago silently points at a different line once something above it is
+ * deleted. The numeric form is kept because that is what shipped in v1.7.
+ */
+export function removeMemoryCard(file: MemoryCardFile, ref: MemoryCardRef): void {
   const path = filePath(file)
   if (!existsSync(path)) {
     throw new ContractError('INVALID_INPUT', `no memory cards in ${file}`)
   }
-  const lines = readFileSync(path, 'utf8').split(/\r?\n/)
-  const cardLineIndexes = lines
-    .map((line, i) => (isCardLine(line) ? i : -1))
-    .filter((i) => i >= 0)
-  if (index >= cardLineIndexes.length) {
-    throw new ContractError('INVALID_INPUT', `card index ${index} out of range (0..${cardLineIndexes.length - 1})`)
+  if (typeof ref === 'string') {
+    if (ref.length === 0) {
+      throw new ContractError('INVALID_INPUT', 'card id must be a non-empty string')
+    }
+  } else if (!Number.isInteger(ref) || ref < 0) {
+    throw new ContractError(
+      'INVALID_INPUT',
+      'card reference must be an id string or a non-negative integer index'
+    )
   }
-  lines.splice(cardLineIndexes[index]!, 1)
+
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/)
+  const cardLineIndexes = lines.map((line, i) => (isCardLine(line) ? i : -1)).filter((i) => i >= 0)
+
+  let target = -1
+  if (typeof ref === 'string') {
+    const hit = cardLineIndexes.find((i) => cardId(cardText(lines[i]!)) === ref)
+    if (hit === undefined) {
+      throw new ContractError('INVALID_INPUT', `no card with id ${ref} in ${file}`)
+    }
+    target = hit
+  } else {
+    if (ref >= cardLineIndexes.length) {
+      throw new ContractError(
+        'INVALID_INPUT',
+        `card index ${ref} out of range (0..${cardLineIndexes.length - 1})`
+      )
+    }
+    target = cardLineIndexes[ref]!
+  }
+
+  lines.splice(target, 1)
   writeFileSync(path, lines.join('\n'), 'utf8')
 }
