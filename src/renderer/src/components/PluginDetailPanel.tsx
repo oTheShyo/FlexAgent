@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { PluginComponentKind, PluginDetail } from '../types'
 import { ComponentKindIcon, PluginIcon } from './pluginIcons'
 import { Button, IconButton } from './ui'
@@ -82,6 +82,11 @@ function PluginDetailPanel({
   onUninstall
 }: PluginDetailPanelProps) {
   const [configOpen, setConfigOpen] = useState(false)
+  const panelRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    if (open) panelRef.current?.focus()
+  }, [open])
 
   if (!open) return null
 
@@ -106,10 +111,13 @@ function PluginDetailPanel({
         className="absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
       />
       <aside
+        ref={panelRef}
         role="dialog"
+        aria-modal="true"
         aria-label="Plugin details"
+        tabIndex={-1}
         data-testid="plugin-detail"
-        className="absolute inset-y-0 right-0 flex w-[520px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[-12px_0_32px_rgba(0,0,0,0.08)]"
+        className="absolute inset-y-0 right-0 flex w-[520px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[-12px_0_32px_rgba(0,0,0,0.08)] focus:outline-none"
       >
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
           <div className="flex min-w-0 items-baseline gap-2">
@@ -264,6 +272,7 @@ function PluginDetailPanel({
                     type="button"
                     onClick={() => setConfigOpen((value) => !value)}
                     aria-expanded={configOpen}
+                    aria-controls="plugin-config-panel"
                     className="flex w-full items-center gap-1.5 rounded-md text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)] transition-colors hover:text-[var(--text-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                     data-testid="plugin-config-toggle"
                   >
@@ -282,7 +291,7 @@ function PluginDetailPanel({
                     </svg>
                   </button>
                   {configOpen && (
-                    <ul className="mt-1.5 space-y-1.5">
+                    <ul id="plugin-config-panel" className="mt-1.5 space-y-1.5">
                       {detail.userConfig.map((spec) => (
                         <li
                           key={spec.key}

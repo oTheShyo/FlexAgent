@@ -139,20 +139,24 @@ function PluginRow({
   return (
     <div
       data-testid={`plugin-row-${plugin.id}`}
-      role="button"
-      tabIndex={0}
       onClick={() => onOpenDetail(plugin.id)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onOpenDetail(plugin.id)
-      }}
-      className="flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--hover)]"
     >
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-sunken)] text-[var(--text-secondary)]">
         <PluginIcon />
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-[var(--text)]">{plugin.name}</span>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onOpenDetail(plugin.id)
+            }}
+            className="truncate rounded-sm text-left text-sm font-medium text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            {plugin.name}
+          </button>
           <span className="shrink-0 text-[11px] text-[var(--text-muted)]">v{plugin.version}</span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
