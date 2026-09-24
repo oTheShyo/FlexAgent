@@ -8,6 +8,8 @@ import { SHORTCUTS } from '../lib/shortcuts'
 import { readTheme, writeTheme } from '../lib/theme'
 import type { ThemePreference } from '../lib/theme'
 import { PluginIcon } from './pluginIcons'
+import ModelsSettings from './ModelsSettings'
+import { useCustomModels } from '../hooks/useCustomModels'
 import {
   ChatDotIcon,
   NewChatIcon,
@@ -26,6 +28,8 @@ export interface CommandPaletteProps {
   onOpenPlugins: () => void
   onClose: () => void
   openSettings?: boolean
+  /** After a models.json write, so the composer re-reads the model list. */
+  onModelsChanged?: () => void
 }
 
 interface PaletteCommand {
@@ -85,13 +89,15 @@ function CommandPalette({
   onToggleTerminal,
   onOpenPlugins,
   onClose,
-  openSettings = false
+  openSettings = false,
+  onModelsChanged
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [showSettingsNotice, setShowSettingsNotice] = useState(openSettings)
   const [themePref, setThemePref] = useState<ThemePreference>(() => readTheme())
   const sessionMeta = useSessionMeta()
+  const customModels = useCustomModels(onModelsChanged)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
 
@@ -310,6 +316,7 @@ function CommandPalette({
               </div>
             </div>
 
+            <ModelsSettings controller={customModels} />
             <div className="mt-5">
               <p className="text-xs font-medium text-[var(--text-secondary)]">Shortcuts</p>
               <ul className="mt-2 space-y-1" data-testid="settings-shortcuts">

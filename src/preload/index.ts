@@ -9,6 +9,10 @@ import {
   type CodexApi,
   type ContractErrorCode,
   type CreateSessionInput,
+  type CustomModelEntry,
+  type CustomModelRef,
+  type CustomModelSaveInput,
+  type CustomModelWriteResult,
   type InstallFromMarketplaceInput,
   type InstallPluginInput,
   type KernelEvent,
@@ -175,6 +179,16 @@ const codex: CodexApi = {
     invoke<ModelConfig>(IPC.setThinkingLevel, input),
 
   pickDirectory: () => invoke<string | null>(IPC.pickDirectory),
+
+  listCustomModels: () => invoke<CustomModelEntry[]>(IPC.listCustomModels),
+
+  customModelsPath: () => invoke<string>(IPC.customModelsPath),
+
+  saveCustomModel: (input: CustomModelSaveInput) =>
+    invoke<CustomModelWriteResult>(IPC.saveCustomModel, input),
+
+  removeCustomModel: (input: CustomModelRef) =>
+    invoke<CustomModelWriteResult>(IPC.removeCustomModel, input),
 
   listPlugins: () => invoke<PluginSummary[]>(IPC.listPlugins),
 

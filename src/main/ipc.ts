@@ -6,6 +6,8 @@ import {
   IPC,
   type ApplyFileChangesInput,
   type ContractErrorCode,
+  type CustomModelRef,
+  type CustomModelSaveInput,
   type InstallPluginInput,
   type PromptInput,
   type RespondPermissionInput,
@@ -20,6 +22,7 @@ import type { KernelHost } from './kernel'
 import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
+import type { UserModelsService } from './userModels'
 import { scratchCwd, workspaceKey } from './workspace'
 import { perfStart } from './perf'
 import {
@@ -105,7 +108,8 @@ export function registerIpcHandlers(
   kernel: KernelHost,
   registry: SessionRegistry,
   terminals: TerminalManager,
-  plugins: PluginService
+  plugins: PluginService,
+  customModels: UserModelsService
 ): void {
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
@@ -386,6 +390,32 @@ export function registerIpcHandlers(
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
       if (result.canceled || result.filePaths.length === 0) return null
       return result.filePaths[0] ?? null
+    })
+  )
+
+  // ── Custom models (v1.9) ──
+  // The file is the kernel's own models.json, so its path comes from the worker
+  // (which knows PI's agent dir) rather than being recomputed here. Every write
+  // is followed by a kernel-side reload *and* a check that the entry actually
+  // resolves — otherwise the UI could report success while `listModels` stayed
+  // empty, which is exactly what a wrong path does.
+  ipcMain.handle(IPC.listCustomModels, () => guard(async () => customModels.list(await kernel.modelsPath())))
+
+  ipcMain.handle(IPC.customModelsPath, () => guard(() => kernel.modelsPath()))
+
+  ipcMain.handle(IPC.saveCustomModel, (_e, input: CustomModelSaveInput) =>
+    guard(async () => {
+      const write = await customModels.save(await kernel.modelsPath(), input)
+      const error = await kernel.reloadModels(write.providers, { ...write.ref, present: true })
+      return error === undefined ? write.result : { ...write.result, error }
+    })
+  )
+
+  ipcMain.handle(IPC.removeCustomModel, (_e, input: CustomModelRef) =>
+    guard(async () => {
+      const write = await customModels.remove(await kernel.modelsPath(), input)
+      const error = await kernel.reloadModels(write.providers, { ...write.ref, present: false })
+      return error === undefined ? write.result : { ...write.result, error }
     })
   )
 

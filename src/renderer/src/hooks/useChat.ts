@@ -80,6 +80,8 @@ export interface UseChatResult {
   slashCommands: SlashCommandSummary[]
   setModel: (provider: string, id: string) => Promise<ModelConfig | null>
   setThinkingLevel: (level: ThinkingLevel) => Promise<ModelConfig | null>
+  /** Re-read listModels after a models.json write (Settings › Models). */
+  refreshModels: () => void
   connectionState?: ConnectionState
   connectionMessage?: string
   /** True once the initial listSessions has settled (success or failure). */
@@ -624,6 +626,18 @@ export function useChat(): UseChatResult {
     }
   }, [])
 
+  /**
+   * Re-read the model list after the kernel's `models.json` changed (Settings ›
+   * Models). A failure leaves the previous list in place — an empty picker would
+   * be a worse lie than a stale one.
+   */
+  const refreshModels = useCallback((): void => {
+    void codexApi
+      .listModels()
+      .then((options) => setModelOptions(options))
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     let disposed = false
     void codexApi
@@ -763,6 +777,7 @@ export function useChat(): UseChatResult {
     slashCommands,
     setModel,
     setThinkingLevel,
+    refreshModels,
     connectionState,
     connectionMessage,
     sessionsLoaded,

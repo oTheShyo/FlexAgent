@@ -226,6 +226,25 @@ export function EmptyCloudIcon({ className }: IconProps) {
   )
 }
 
+/** Filled diamond — a model entry in Settings › Models. */
+export function ModelIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M12 3.5 20.5 12 12 20.5 3.5 12z" />
+      <path d="M12 8.2 15.8 12 12 15.8 8.2 12z" />
+    </svg>
+  )
+}
+
+export function PencilIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z" />
+      <path d="m14.5 5.5 4 4" />
+    </svg>
+  )
+}
+
 export function CopyIcon({ className }: IconProps) {
   return (
     <svg

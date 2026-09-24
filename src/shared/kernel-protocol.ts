@@ -108,6 +108,24 @@ export type WorkerRequest =
   | { requestId: string; type: 'reloadPlugins'; resourceSpec: PluginResourceSpec }
   /** Drop cached resource loaders so re-attach picks up new user-level skills (v1.7). */
   | { requestId: string; type: 'reloadResources' }
+  /**
+   * The models file changed on disk (Settings › Models). `providers` limits the
+   * recompose to what actually changed; `verify` asserts the write landed in the
+   * kernel's model list instead of assuming it did.
+   */
+  | {
+      requestId: string
+      type: 'reloadModels'
+      providers: string[]
+      verify: { provider: string; id: string; present: boolean }
+    }
+  /**
+   * Where the kernel reads custom models from. The path is PI's own
+   * (`getAgentDir()/models.json`, i.e. `~/.pi/agent/models.json` by default and
+   * `$PI_CODING_AGENT_DIR/models.json` when that is set) — never re-derived in
+   * main, which is how a settings panel ends up editing a file nobody reads.
+   */
+  | { requestId: string; type: 'modelsPath' }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>

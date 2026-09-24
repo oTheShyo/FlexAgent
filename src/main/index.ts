@@ -7,6 +7,7 @@ import { SessionRegistry } from './registry'
 import { TerminalManager } from './pty'
 import { PluginRegistry, pluginsStorageRoot } from './pluginRegistry'
 import { PluginService } from './plugins'
+import { UserModelsService } from './userModels'
 import { scratchCwd } from './workspace'
 import { MarketplaceService } from './pluginMarketplace'
 import { registerMarketplaceIpc } from './marketplaceIpc'
@@ -81,7 +82,7 @@ app.whenReady().then(() => {
   const pluginService = new PluginService(pluginRegistry, kernel, () =>
     broadcastPluginsChanged(pluginService.list())
   )
-  registerIpcHandlers(kernel, registry, terminals, pluginService)
+  registerIpcHandlers(kernel, registry, terminals, pluginService, new UserModelsService())
   const marketplaceService = new MarketplaceService({
     registry: pluginRegistry,
     storageRoot: pluginsStorageRoot(),

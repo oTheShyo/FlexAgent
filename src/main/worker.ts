@@ -1,6 +1,6 @@
 import { parentPort } from 'worker_threads'
 import { existsSync, readFileSync } from 'fs'
-import { isAbsolute, relative, resolve, sep } from 'path'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { enableCompileCache } from 'node:module'
 import {
   ContractError,
@@ -1174,6 +1174,39 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       // skill_manage write). Loaders bake skills in at construction, so the
       // next attach rebuilds and picks them up.
       resourceLoaders.clear()
+      return undefined
+    }
+    case 'modelsPath': {
+      // Answer with PI's own path instead of letting main re-derive it: the
+      // agent dir is configurable (PI_CODING_AGENT_DIR) and its default is
+      // ~/.pi/agent, not anything FlexAgent owns.
+      const { getAgentDir } = await loadPi()
+      return { path: join(getAgentDir(), 'models.json') }
+    }
+    case 'reloadModels': {
+      // models.json changed on disk. refresh() re-reads the file and recomposes
+      // *in place*, which is the whole point: every attached session holds this
+      // same ModelRuntime instance, so a fresh instance would leave them
+      // resolving against the old model list until they were re-attached.
+      // allowNetwork: false — a local edit must not wait on pi.dev.
+      const runtime = await getModelRuntime()
+      await runtime.refresh({
+        // An empty list would compose nothing while config is re-read, so fall
+        // back to a full rebuild instead of a half-applied refresh.
+        ...(req.providers.length > 0 ? { providers: req.providers } : {}),
+        allowNetwork: false
+      })
+      const { provider, id, present } = req.verify
+      const resolved = runtime.getModel(provider, id) !== undefined
+      if (resolved !== present) {
+        return {
+          error:
+            runtime.getError() ??
+            (present
+              ? `The kernel did not register ${provider}/${id}.`
+              : `The kernel still resolves ${provider}/${id} after removal.`)
+        }
+      }
       return undefined
     }
     case 'shutdown': {

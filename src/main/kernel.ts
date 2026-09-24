@@ -134,6 +134,36 @@ export class KernelHost {
     )
   }
 
+  /**
+   * The file the kernel reads custom models from. Asked of the worker rather
+   * than recomputed in main: PI's agent dir is configurable, and writing a
+   * models.json nobody reads is a silent failure.
+   */
+  async modelsPath(): Promise<string> {
+    const result = (await this.request({ type: 'modelsPath' })) as { path?: string } | undefined
+    if (result?.path === undefined) throw { ...KERNEL_INTERNAL }
+    return result.path
+  }
+
+  /**
+   * The models file was edited. The worker re-reads it and recomposes the
+   * affected providers in place, so sessions that are already attached — all of
+   * which share one ModelRuntime — gain the model without a re-attach.
+   *
+   * `verify` is not decoration: the write is on disk either way, so the only
+   * honest way to report success is to ask the kernel whether it now resolves
+   * `provider/id`. Returns the reason when it does not.
+   */
+  async reloadModels(
+    providers: string[],
+    verify: { provider: string; id: string; present: boolean }
+  ): Promise<string | undefined> {
+    const result = (await this.request({ type: 'reloadModels', providers, verify })) as
+      | { error?: string }
+      | undefined
+    return result?.error
+  }
+
   async shutdown(): Promise<void> {
     const w = this.worker
     if (!w) return

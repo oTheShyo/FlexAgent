@@ -5,6 +5,10 @@ import {
   type ChatMessage,
   type CodexApi,
   type CreateSessionInput,
+  type CustomModelEntry,
+  type CustomModelRef,
+  type CustomModelSaveInput,
+  type CustomModelWriteResult,
   type EventMeta,
   type FileChange,
   type InstallPluginInput,
@@ -624,7 +628,7 @@ export class MockCodexApi implements CodexApi {
   }
 
   async listModels(): Promise<ModelOption[]> {
-    return MOCK_MODEL_OPTIONS.map((option) => ({ ...option }))
+    return [...MOCK_MODEL_OPTIONS, ...this.customModelOptions()].map((option) => ({ ...option }))
   }
 
   async getModelConfig(sessionId: SessionId): Promise<ModelConfig> {
@@ -639,7 +643,7 @@ export class MockCodexApi implements CodexApi {
       throw new ContractError('INVALID_INPUT', 'provider and id are required')
     }
     const session = this.requireSession(input.sessionId)
-    const model = MOCK_MODEL_OPTIONS.find(
+    const model = [...MOCK_MODEL_OPTIONS, ...this.customModelOptions()].find(
       (option) => option.provider === input.provider && option.id === input.id
     )
     if (!model) {
@@ -667,6 +671,74 @@ export class MockCodexApi implements CodexApi {
 
   async pickDirectory(): Promise<string | null> {
     return DEMO_CWD
+  }
+
+  // ── Custom models (v1.9) ──
+  // Same observable behaviour as the real service: validated writes, and a
+  // saved model is immediately resolvable by listModels/setModel.
+  private readonly customModels = new Map<string, CustomModelEntry>()
+
+  private static readonly PROVIDER_RE = /^[a-zA-Z0-9_-]{1,64}$/
+
+  private customModelOptions(): ModelOption[] {
+    return [...this.customModels.values()].map((entry) => ({
+      provider: entry.provider,
+      id: entry.id,
+      ...(entry.label !== undefined ? { label: entry.label } : {})
+    }))
+  }
+
+  private requireCustomModel(input: CustomModelRef | null): CustomModelRef {
+    if (input === null || typeof input !== 'object') {
+      throw new ContractError('INVALID_INPUT', 'expected { provider, id }')
+    }
+    if (!MockCodexApi.PROVIDER_RE.test(input.provider)) {
+      throw new ContractError('INVALID_INPUT', 'provider must match [a-zA-Z0-9_-]{1,64}')
+    }
+    if (typeof input.id !== 'string' || input.id.trim().length === 0) {
+      throw new ContractError('INVALID_INPUT', 'id is required')
+    }
+    return { provider: input.provider, id: input.id.trim() }
+  }
+
+  async listCustomModels(): Promise<CustomModelEntry[]> {
+    return [...this.customModels.values()].map((entry) => ({ ...entry }))
+  }
+
+  async customModelsPath(): Promise<string> {
+    return '~/.pi/agent/models.json'
+  }
+
+  async saveCustomModel(input: CustomModelSaveInput): Promise<CustomModelWriteResult> {
+    const ref = this.requireCustomModel(input)
+    if (typeof input.baseUrl !== 'string' || !/^https?:\/\//.test(input.baseUrl)) {
+      throw new ContractError('INVALID_INPUT', 'Base URL must start with http:// or https://')
+    }
+    if (typeof input.apiKey !== 'string' || input.apiKey.trim().length === 0) {
+      throw new ContractError('INVALID_INPUT', 'API key is required')
+    }
+    if (input.original !== undefined) this.customModels.delete(this.customKey(input.original))
+    this.customModels.set(this.customKey(ref), {
+      provider: ref.provider,
+      id: ref.id,
+      ...(input.label !== undefined && input.label.length > 0 ? { label: input.label } : {}),
+      baseUrl: input.baseUrl,
+      api: input.api ?? 'openai-completions',
+      apiKeySet: true
+    })
+    return { models: await this.listCustomModels() }
+  }
+
+  async removeCustomModel(input: CustomModelRef): Promise<CustomModelWriteResult> {
+    const ref = this.requireCustomModel(input)
+    if (!this.customModels.delete(this.customKey(ref))) {
+      throw new ContractError('CUSTOM_MODEL_NOT_FOUND', `Unknown custom model: ${ref.provider}/${ref.id}`)
+    }
+    return { models: await this.listCustomModels() }
+  }
+
+  private customKey(ref: CustomModelRef): string {
+    return `${ref.provider}\u0000${ref.id}`
   }
 
   async listPlugins(): Promise<PluginSummary[]> {

@@ -83,6 +83,8 @@ export type ContractErrorCode =
   | 'PLUGIN_DOWNLOAD_FAILED'
   /** No user-level MCP server with the given name (~/.flexagent/mcp.json). */
   | 'USER_MCP_NOT_FOUND'
+  /** No custom model with the given provider/id (~/.pi/agent/models.json). */
+  | 'CUSTOM_MODEL_NOT_FOUND'
   /** No user-level skill with the given name (~/.flexagent/skills). */
   | 'SKILL_NOT_FOUND'
   /** A user-level skill with the same name already exists and overwrite was not set. */
@@ -115,6 +117,7 @@ export const CONTRACT_ERROR_CODES = [
   'PLUGIN_SOURCE_INVALID',
   'PLUGIN_DOWNLOAD_FAILED',
   'USER_MCP_NOT_FOUND',
+  'CUSTOM_MODEL_NOT_FOUND',
   'SKILL_NOT_FOUND',
   'SKILL_ALREADY_INSTALLED',
   'SKILL_SOURCE_INVALID',
@@ -266,6 +269,72 @@ export interface SetModelInput {
 export interface SetThinkingLevelInput {
   sessionId: SessionId
   level: ThinkingLevel
+}
+
+// ─── Custom models (v1.9) ────────────────────────────────────────────────────
+
+/**
+ * API dialect the add-model form offers. PI's `api` field accepts more
+ * (`google-generative-ai`, `azure-openai-responses`, …); {@link CustomModelEntry.api}
+ * therefore echoes whatever the file holds instead of narrowing to this list.
+ */
+export type CustomModelApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+
+export const CUSTOM_MODEL_APIS: readonly CustomModelApi[] = [
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages'
+]
+
+/**
+ * One user-defined model as stored in `providers[].models[]` of
+ * `~/.pi/agent/models.json` — the file the kernel itself reads, path supplied by
+ * the kernel.
+ * Credentials never leave the main process — only `apiKeySet` is exposed.
+ */
+export interface CustomModelEntry {
+  /** Provider id; matches `ModelOption.provider` in `listModels()`. */
+  provider: string
+  /** Model id sent to the API. */
+  id: string
+  /** Display name (`name` in the file); the UI falls back to `id`. */
+  label?: string
+  /** Provider-level base URL shared by every model of that provider. */
+  baseUrl?: string
+  /** Echoed provider/model `api`; absent when PI infers it from a built-in provider. */
+  api?: string
+  /** True when the provider entry carries an API key (literal or `$ENV_VAR`). */
+  apiKeySet: boolean
+}
+
+/** Identity of a stored custom model. */
+export interface CustomModelRef {
+  provider: string
+  id: string
+}
+
+/** Validated write input — one model entry, provider-level fields included. */
+export interface CustomModelSaveInput {
+  provider: string
+  id: string
+  label?: string
+  baseUrl?: string
+  api?: CustomModelApi
+  /** Omit to keep the stored key. `$ENV_VAR` references are stored verbatim. */
+  apiKey?: string
+  /** Present when editing: the entry is moved, not duplicated. */
+  original?: CustomModelRef
+}
+
+export interface CustomModelWriteResult {
+  /** Full list after the write (same shape as `listCustomModels`). */
+  models: CustomModelEntry[]
+  /**
+   * Set when models.json was written but the kernel did not end up resolving the
+   * entry (composition error, unreadable file). The file change stands — the UI
+   * shows this instead of pretending the model works.
+   */
+  error?: string
 }
 
 // ─── Plugins (v1.4) ──────────────────────────────────────────────────────────
@@ -766,6 +835,16 @@ export interface CodexApi {
   /** Native directory picker for Choose project. Resolves `null` when cancelled. */
   pickDirectory(): Promise<string | null>
 
+  // ── Custom models (v1.9) ──
+  /** `providers[].models[]` of the kernel's `models.json`. Never returns keys. */
+  listCustomModels(): Promise<CustomModelEntry[]>
+  /** Absolute path of models.json, for the Settings copy. */
+  customModelsPath(): Promise<string>
+  /** Create/update one entry (validated, atomic write, in-place kernel reload). */
+  saveCustomModel(input: CustomModelSaveInput): Promise<CustomModelWriteResult>
+  /** Remove one entry (and its provider when that was its last model). */
+  removeCustomModel(input: CustomModelRef): Promise<CustomModelWriteResult>
+
   /** Installed plugins (local + bundled). Not session-scoped. */
   listPlugins(): Promise<PluginSummary[]>
   /** Plugin detail: components + userConfig spec + diagnostics. */
@@ -857,6 +936,10 @@ export const IPC = {
   setModel: 'codex:setModel',
   setThinkingLevel: 'codex:setThinkingLevel',
   pickDirectory: 'codex:pickDirectory',
+  listCustomModels: 'codex:listCustomModels',
+  customModelsPath: 'codex:customModelsPath',
+  saveCustomModel: 'codex:saveCustomModel',
+  removeCustomModel: 'codex:removeCustomModel',
   listSkillHubs: 'codex:listSkillHubs',
   addSkillHub: 'codex:addSkillHub',
   removeSkillHub: 'codex:removeSkillHub',

@@ -77,6 +77,7 @@ export default function App({ children }: AppProps) {
     slashCommands,
     setModel,
     setThinkingLevel,
+    refreshModels,
     connectionState,
     connectionMessage,
     sessionsLoaded,
@@ -501,6 +502,7 @@ export default function App({ children }: AppProps) {
             onOpenPlugins={handleOpenPlugins}
             onClose={handleClosePalette}
             openSettings={paletteOpenSettings}
+            onModelsChanged={refreshModels}
           />
         )}
       </div>
