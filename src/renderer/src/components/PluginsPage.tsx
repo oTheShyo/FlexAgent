@@ -2,6 +2,8 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import type { PluginComponentKind, PluginSummary, PluginSourceKind } from '../types'
 import { PluginIcon } from './pluginIcons'
 import { Button, Chip } from './ui'
+import { useMarketplace } from '../hooks/useMarketplace'
+import MarketplacePanel from './MarketplacePanel'
 
 export interface PluginsPageProps {
   plugins: PluginSummary[]
@@ -32,6 +34,8 @@ const SOURCE_SECTION_LABEL: Record<PluginSourceKind, string> = {
 }
 
 type StatusFilter = 'all' | 'enabled' | 'disabled'
+
+type PluginsView = 'installed' | 'marketplace'
 
 const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -198,6 +202,17 @@ function PluginsPage({
   const [dismissedError, setDismissedError] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [view, setView] = useState<PluginsView>('installed')
+  const [showUrlForm, setShowUrlForm] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const marketplace = useMarketplace()
+
+  const submitUrl = async (): Promise<void> => {
+    const trimmed = urlInput.trim()
+    if (trimmed.length === 0 || marketplace.busy) return
+    const installed = await marketplace.install({ kind: 'url', url: trimmed })
+    if (installed) setUrlInput('')
+  }
 
   useEffect(() => {
     setDismissedError(false)
@@ -232,16 +247,84 @@ function PluginsPage({
     <div className="mx-auto w-full max-w-3xl px-4 py-6" data-testid="plugins-page">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text)]">Plugins</h1>
-        <Button
-          variant="primary"
-          onClick={installFromDirectory}
-          data-testid="plugins-install"
-          className="shrink-0"
-        >
-          Install from folder
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setShowUrlForm((open) => !open)}
+            aria-expanded={showUrlForm}
+            data-testid="plugins-install-url"
+          >
+            Install from URL
+          </Button>
+          <Button
+            variant="primary"
+            onClick={installFromDirectory}
+            data-testid="plugins-install"
+          >
+            Install from folder
+          </Button>
+        </div>
       </div>
 
+      {showUrlForm && (
+        <form
+          className="mt-3 flex items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void submitUrl()
+          }}
+        >
+          <input
+            type="text"
+            value={urlInput}
+            onChange={(event) => setUrlInput(event.target.value)}
+            placeholder="https://example.com/plugin.zip"
+            aria-label="Plugin URL"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={marketplace.busy}
+            className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-60"
+            data-testid="plugins-url-input"
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            disabled={marketplace.busy || urlInput.trim().length === 0}
+            data-testid="plugins-url-submit"
+            className="shrink-0"
+          >
+            Install
+          </Button>
+        </form>
+      )}
+
+      <div className="mt-3 flex items-center gap-1.5" role="group" aria-label="Plugins view">
+        <Chip
+          active={view === 'installed'}
+          onClick={() => setView('installed')}
+          aria-pressed={view === 'installed'}
+          data-testid="marketplace-view-installed"
+          className="h-7 px-2.5 text-[11px]"
+        >
+          Installed
+        </Chip>
+        <Chip
+          active={view === 'marketplace'}
+          onClick={() => setView('marketplace')}
+          aria-pressed={view === 'marketplace'}
+          data-testid="marketplace-view-marketplace"
+          className="h-7 px-2.5 text-[11px]"
+        >
+          Marketplace
+        </Chip>
+      </div>
+
+      {view === 'marketplace' ? (
+        <div className="mt-4">
+          <MarketplacePanel marketplace={marketplace} />
+        </div>
+      ) : (
+        <>
       {!loading && plugins.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="relative min-w-48 flex-1">
@@ -355,6 +438,8 @@ function PluginsPage({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   )
 }
