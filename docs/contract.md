@@ -48,6 +48,12 @@ Renderer (React)          Main (orchestration)         Worker (kernel)
 | `setModel({ sessionId, provider, id, thinkingLevel? })` | **仅本会话**切换模型（`persist: false`）；可选同切 thinking | 生效后的 `ModelConfig` | `SESSION_NOT_FOUND`、`INVALID_INPUT`（未知 model） |
 | `setThinkingLevel({ sessionId, level })` | **仅本会话**设思考强度（PI 按模型能力 clamp） | 生效后的 `ModelConfig` | `SESSION_NOT_FOUND`、`INVALID_INPUT` |
 | `pickDirectory()` | 原生目录选择器（Choose project）；取消 → `null` | `string \| null` | `KERNEL_INTERNAL` |
+| `listPlugins()` | 已安装插件摘要列表（local + bundled）；**非** session-scoped | `PluginSummary[]` | `KERNEL_INTERNAL` |
+| `getPlugin(id)` | 插件详情（枚举组件 + `userConfig` 规格 + 诊断） | `PluginDetail` | `PLUGIN_NOT_FOUND`、`INVALID_INPUT` |
+| `setPluginEnabled(id, enabled)` | 启用/停用；**幂等**（状态未变也算成功）；源头 = 持久化注册表 | `PluginSummary` | `PLUGIN_NOT_FOUND`、`INVALID_INPUT` |
+| `installPlugin({ source })` | 从**本地目录**安装（P1）；已存在同 id → 拒绝 | `PluginSummary` | `PLUGIN_ALREADY_INSTALLED`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_PATH_INVALID`、`INVALID_INPUT` |
+| `uninstallPlugin(id)` | 卸载（内存 + 删目录；bundled → suppressed 标记） | `void` | `PLUGIN_NOT_FOUND`、`INVALID_INPUT` |
+| `subscribePlugins(listener)` | 订阅插件变更（全局、**非** session-scoped）；返回退订；事件 `PluginChangeEvent` | `() => void` | — |
 
 **PTY 安全边界（有意为之）：** 真 PTY **不经过** agent 权限门——用户手动输入即以应用进程的 OS 权限执行完整 shell。Agent 的 `bash` 工具调用仍是另一条路径（`tool_*` + `permission_request`）。`cwd` 默认取所属 session 的工作目录。
 
@@ -84,6 +90,44 @@ PI：`session.prompt()` 在流式进行中**必须**声明 steer 或 followUp，
 - `allowOnce` — 仅放行该 `toolCallId`
 - `allowSession` — 本会话内同 `name` 的后续调用直接放行（内核缓存，不进入 transcript）
 - `deny` — 该工具调用失败（`tool_end.isError: true`），run 可继续
+
+### 2.3 插件（v1.4）
+
+```ts
+type PluginId = string                       // `${name}@${source}`
+type PluginSourceKind = 'bundled' | 'local' | 'marketplace'
+type PluginComponentKind = 'extension' | 'skill' | 'command' | 'hook' | 'mcp'
+
+interface PluginSummary {
+  id: PluginId; name: string; version: string; description?: string
+  enabled: boolean
+  source: { kind: PluginSourceKind; label: string }
+  componentCounts: Partial<Record<PluginComponentKind, number>>
+}
+interface PluginComponentInfo { kind: PluginComponentKind; name: string; description?: string; path?: string }
+interface PluginUserConfigSpec {
+  key: string; title: string; description?: string
+  type: 'string' | 'number' | 'boolean' | 'directory' | 'file'
+  default?: string | number | boolean; required?: boolean; sensitive?: boolean
+}
+interface PluginDiagnostic { code: string; severity: 'error' | 'warning'; message: string; pluginId?: PluginId }
+interface PluginDetail extends PluginSummary {
+  author?: string | { name: string; email?: string; url?: string }
+  homepage?: string; keywords?: string[]; rootPath: string
+  components: PluginComponentInfo[]
+  userConfig?: PluginUserConfigSpec[]
+  configuredOptions?: Record<string, string | number | boolean>
+  diagnostics?: PluginDiagnostic[]
+}
+interface InstallPluginInput { source: { kind: 'directory'; path: string } }
+interface PluginChangeEvent { plugins: PluginSummary[] }
+```
+
+- **P1 范围：** extensions + skills 的本地插件管理（安装/启停/卸载）。commands/hooks/MCP/市场/配置表单单落 P2/P3。
+- **错误码：** `PLUGIN_NOT_FOUND`、`PLUGIN_ALREADY_INSTALLED`、`PLUGIN_MANIFEST_INVALID`、`PLUGIN_COMPONENT_INVALID`、`PLUGIN_PATH_INVALID`。
+- **`pluginsChanged` 不走 `KernelEvent`：** 用**独立全局 IPC 通道** `codex:pluginsChanged`（`subscribePlugins`），避免污染 session `seq` 语义。
+- **启停语义：** 变更后内核**受控重启**（非 §7.2.2 非预期崩溃），受影响会话经 `openSession` 对账恢复。
+- **权威设计：** [`docs/plugin-design.md`](./plugin-design.md)。
 
 ---
 
@@ -248,3 +292,4 @@ terminalKill → pty_exit
 | v1.1 | 2026-09-23 | Terminal 改为**真 PTY（node-pty @ main）**：+4 命令、+2 事件（`pty_output`/`pty_exit`）、+2 错误码、+4 IPC 通道；废除「工具时间线」方案；Mock 增 M6 |
 | v1.2 | 2026-09-23 | +1 命令 `applyFileChanges`、+1 IPC 通道；Diff Accept 实装（幂等写盘、`SESSION_BUSY` while running）；Reject = UI-only 不回滚 |
 | v1.3 | 2026-09-24 | +4 命令 `listModels`/`getModelConfig`/`setModel`/`setThinkingLevel`、+1 UI 工具 `pickDirectory`、+5 IPC 通道、+类型 `ThinkingLevel`/`ModelOption`/`ModelConfig`；模型 chip 与 Choose project 原生目录选择器（见 backend-handoff §7.5C）；Plan/Ask·技能·连接器 **不在本版** |
+| v1.4 | 2026-09-24 | 插件系统 P1（extensions + skills）：+5 命令 `listPlugins`/`getPlugin`/`setPluginEnabled`/`installPlugin`/`uninstallPlugin`、+1 全局订阅 `subscribePlugins`、+6 IPC 通道、+5 错误码（`PLUGIN_*`）、+类型 `PluginSummary`/`PluginDetail`/`PluginComponentInfo`/`PluginUserConfigSpec`/`PluginDiagnostic`/`InstallPluginInput`/`PluginChangeEvent`；**注：`pluginsChanged` 走独立全局通道，不塞 `KernelEvent`/`seq`**。详见 [`docs/plugin-design.md`](./plugin-design.md) / [`plugin-backend.md`](./plugin-backend.md) / [`plugin-frontend.md`](./plugin-frontend.md)。**更正 §7.5C**：PI skill API 已就绪（`DefaultResourceLoader` + `04-skills.ts`），技能纳入 P1 |

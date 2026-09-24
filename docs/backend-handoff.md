@@ -23,6 +23,7 @@
 | §7.3 断连走查 | ✅ **迁移后双 PASS；v1.3 后串行复跑** | 内核 `ACCEPT_DISCONNECT_PASS`（8/8）· UI `ACCEPT_DISCONNECT_UI_PASS`（6/6） |
 | `applyFileChanges` | ✅ 契约 v1.2 已只增 | main 独占 `src/main/applyChanges.ts`；preload/ipc 已接 |
 | **模型/思考 + pickDirectory** | ✅ **契约 v1.3 已只增 + CDP 冒烟 PASS**（2026-09-24） | worker `ModelRuntime` + `session.setModel/setThinkingLevel`；ipc/preload 已接；`scripts/accept-model.mjs` → `ACCEPT_MODEL_PASS` **11/11**；见 §7.5C |
+| **插件系统** | 🟡 **契约 v1.4 设计就绪（待实现）** | 见 §7.6；后端 [`plugin-backend.md`](./plugin-backend.md)、前端 [`plugin-frontend.md`](./plugin-frontend.md)、设计 [`plugin-design.md`](./plugin-design.md) |
 | `listFiles` / `rename` / `archive` | ⏸️ 按 §7.1 现不做 | 前端 localStorage 覆盖层 / fixture |
 
 ### 0.0.1 仓库迁移（2026-09-24）
@@ -324,3 +325,15 @@ pickDirectory(): Promise<string | null>                 // 取消 → null
 - **Mock：** `MockCodexApi` 同步实现上述方法（fixture 模型列表 + 会话内内存配置），保证 `typecheck` 双绿；真数据以 `window.electron.codex` 为准。
 
 **给前端的一句话（§7.5C）：** 契约升 **v1.3** 后，Choose project 接 `pickDirectory`→`createSession`；模型 chip 接 `listModels`/`setModel`/`setThinkingLevel`（label 用返回的 `ModelConfig`）；+ 菜单可先做壳（附件可文本内联，Plan/Ask/技能/连接器 disabled）。详见 `docs/contract.md` §2 / §8。
+
+### 7.6 插件系统（v1.4 · 2026-09-24）
+
+侧栏 `Plugins` 死按钮接入插件管理（P1：extensions + skills 本地插件管理闭环）。
+
+- **权威设计：** [`docs/plugin-design.md`](./plugin-design.md)
+- **后端实现计划（内核轨）：** [`docs/plugin-backend.md`](./plugin-backend.md)
+- **前端实现计划（前端轨）：** [`docs/plugin-frontend.md`](./plugin-frontend.md)
+- **契约：** v1.3 → **v1.4**（+5 命令 `listPlugins`/`getPlugin`/`setPluginEnabled`/`installPlugin`/`uninstallPlugin`、+全局订阅 `subscribePlugins`、+6 IPC 通道、+5 `PLUGIN_*` 错误码、+插件类型；见 contract.md §2.3/§8）。
+- **架构要点：** zcode 风格声明式 manifest（`plugin.json` + 目录布局）＋ **PI 稳定扩展机制**为唯一执行运行时（`worker.ts` 构造 `DefaultResourceLoader` → `createAgentSession({ resourceLoader })`，当前 worker 未传 resourceLoader）；启停走 **受控内核重启**（非 §7.2.2 非预期崩溃）。
+- **⚠ 更正 §7.5C：** 原写"技能/连接器 → 等 PI skill API 接入"。**PI skill API 已就绪**（`DefaultResourceLoader` + `examples/sdk/04-skills.ts` + 导出 `loadSkills`/`loadSkillsFromDir`/`Skill`），故 **skills 纳入 P1**；连接器（MCP）仍留 P2。
+- **`pluginsChanged` 不走 `KernelEvent`**（独立全局 IPC 通道 `codex:pluginsChanged`）——勿塞进 session `seq` 流。
