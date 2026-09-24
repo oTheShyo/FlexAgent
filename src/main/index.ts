@@ -4,10 +4,21 @@ import { registerIpcHandlers } from './ipc'
 import { KernelHost } from './kernel'
 import { SessionRegistry } from './registry'
 import { TerminalManager } from './pty'
+import { PluginRegistry } from './pluginRegistry'
+import { PluginService } from './plugins'
+import { IPC, type PluginChangeEvent, type PluginSummary } from '../shared/contract'
 
 const registry = new SessionRegistry()
+const pluginRegistry = new PluginRegistry()
 const kernel = new KernelHost()
 let terminals: TerminalManager
+
+function broadcastPluginsChanged(plugins: PluginSummary[]): void {
+  const payload: PluginChangeEvent = { plugins }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.pluginsChanged, payload)
+  }
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -30,10 +41,15 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   registry.load()
+  pluginRegistry.load()
   kernel.start()
   kernel.setRunStateListener((sessionId, runState) => registry.setRunState(sessionId, runState))
   terminals = new TerminalManager(kernel, registry)
-  registerIpcHandlers(kernel, registry, terminals)
+  const pluginService = new PluginService(pluginRegistry, kernel, () =>
+    broadcastPluginsChanged(pluginService.list())
+  )
+  registerIpcHandlers(kernel, registry, terminals, pluginService)
+  void pluginService.pushResourceSpec()
   createWindow()
 
   app.on('activate', () => {

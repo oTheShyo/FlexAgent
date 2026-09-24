@@ -14,7 +14,7 @@ import {
   type ThinkingLevel,
   type ToolCallId
 } from '../shared/contract'
-import type { WorkerKernelEvent, WorkerRequest, WorkerResponse } from '../shared/kernel-protocol'
+import type { WorkerKernelEvent, WorkerRequest, WorkerResponse, PluginResourceSpec } from '../shared/kernel-protocol'
 import type { AgentSession, SessionManager as SessionManagerType } from '@earendil-works/pi-coding-agent'
 
 /**
@@ -28,6 +28,12 @@ let piPromise: Promise<PiModule> | null = null
 function loadPi(): Promise<PiModule> {
   piPromise ??= import('@earendil-works/pi-coding-agent')
   return piPromise
+}
+
+let pluginResourceSpec: PluginResourceSpec = {
+  extensionPaths: [],
+  skillRoots: [],
+  pluginStorageRoot: ''
 }
 
 const port = parentPort
@@ -419,8 +425,15 @@ async function attachSession(
   cwd: string,
   sessionManager: SessionManagerType
 ): Promise<HostSession> {
-  const { createAgentSession } = await loadPi()
-  const { session } = await createAgentSession({ cwd, sessionManager })
+  const { createAgentSession, DefaultResourceLoader, getAgentDir } = await loadPi()
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getAgentDir(),
+    additionalExtensionPaths: pluginResourceSpec.extensionPaths,
+    additionalSkillPaths: pluginResourceSpec.skillRoots
+  })
+  await resourceLoader.reload()
+  const { session } = await createAgentSession({ cwd, sessionManager, resourceLoader })
   const host: HostSession = {
     session,
     sessionId,
@@ -588,6 +601,10 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       const host = requireSession(req.sessionId)
       host.session.setThinkingLevel(assertThinkingLevel(req.level), { persist: false })
       return readModelConfig(host.session)
+    }
+    case 'reloadPlugins': {
+      pluginResourceSpec = req.resourceSpec
+      return undefined
     }
     case 'shutdown': {
       for (const [id, host] of [...sessions]) {

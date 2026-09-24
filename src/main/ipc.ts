@@ -5,6 +5,7 @@ import {
   IPC,
   type ApplyFileChangesInput,
   type ContractErrorCode,
+  type InstallPluginInput,
   type PromptInput,
   type RespondPermissionInput,
   type SetModelInput,
@@ -17,6 +18,7 @@ import { applyFileChanges } from './applyChanges'
 import type { KernelHost } from './kernel'
 import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
+import type { PluginService } from './plugins'
 
 interface IpcFailure {
   code?: unknown
@@ -31,6 +33,11 @@ const CONTRACT_ERROR_CODES = new Set<string>([
   'PERMISSION_EXPIRED',
   'TERMINAL_NOT_FOUND',
   'TERMINAL_LIMIT',
+  'PLUGIN_NOT_FOUND',
+  'PLUGIN_ALREADY_INSTALLED',
+  'PLUGIN_MANIFEST_INVALID',
+  'PLUGIN_COMPONENT_INVALID',
+  'PLUGIN_PATH_INVALID',
   'KERNEL_INTERNAL'
 ])
 
@@ -90,7 +97,8 @@ function assertText(text: unknown): string {
 export function registerIpcHandlers(
   kernel: KernelHost,
   registry: SessionRegistry,
-  terminals: TerminalManager
+  terminals: TerminalManager,
+  plugins: PluginService
 ): void {
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
@@ -319,6 +327,50 @@ export function registerIpcHandlers(
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
       if (result.canceled || result.filePaths.length === 0) return null
       return result.filePaths[0] ?? null
+    })
+  )
+
+  ipcMain.handle(IPC.listPlugins, () => guard(() => plugins.list()))
+
+  ipcMain.handle(IPC.getPlugin, (_e, id: unknown) =>
+    guard(() => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      return plugins.get(id)
+    })
+  )
+
+  ipcMain.handle(IPC.setPluginEnabled, (_e, input: { id?: unknown; enabled?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.id !== 'string' || typeof input.enabled !== 'boolean') {
+        throw new ContractError('INVALID_INPUT', 'id and enabled are required')
+      }
+      return plugins.setEnabled(input.id, input.enabled)
+    })
+  )
+
+  ipcMain.handle(IPC.installPlugin, (_e, input: InstallPluginInput) =>
+    guard(async () => {
+      if (
+        !input ||
+        !input.source ||
+        input.source.kind !== 'directory' ||
+        typeof input.source.path !== 'string' ||
+        !input.source.path
+      ) {
+        throw new ContractError('INVALID_INPUT', 'source.path is required')
+      }
+      return plugins.install(input)
+    })
+  )
+
+  ipcMain.handle(IPC.uninstallPlugin, (_e, id: unknown) =>
+    guard(async () => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      await plugins.uninstall(id)
     })
   )
 

@@ -142,6 +142,30 @@ export class KernelHost {
     this.runStates.clear()
   }
 
+  async restartForPlugins(): Promise<void> {
+    const w = this.worker
+    if (!w) {
+      this.start()
+      return
+    }
+    this.worker = null
+    await w.terminate()
+    this.failAll(new Error('Kernel restarting for plugin change'))
+    for (const sessionId of [...this.runStates.keys()]) {
+      if (this.runStates.get(sessionId) === 'running') {
+        this.fanOut(sessionId, {
+          type: 'run_state',
+          runState: 'idle',
+          sessionId,
+          ts: Date.now()
+        })
+      }
+    }
+    this.seq.clear()
+    this.runStates.clear()
+    this.start()
+  }
+
   /**
    * §7.3 test-only: terminate without nulling `this.worker` first so the
    * `exit` handler still owns recovery (error+idle fanOut, seq clear, restart).

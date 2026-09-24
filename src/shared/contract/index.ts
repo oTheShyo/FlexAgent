@@ -67,6 +67,16 @@ export type ContractErrorCode =
   | 'TERMINAL_NOT_FOUND'
   /** Too many live PTYs for this session (kernel-enforced cap). */
   | 'TERMINAL_LIMIT'
+  /** No installed plugin with the given id. */
+  | 'PLUGIN_NOT_FOUND'
+  /** installPlugin for a plugin id that is already installed. */
+  | 'PLUGIN_ALREADY_INSTALLED'
+  /** Plugin manifest missing or fails validation. */
+  | 'PLUGIN_MANIFEST_INVALID'
+  /** A declared plugin component path is invalid/unreadable. */
+  | 'PLUGIN_COMPONENT_INVALID'
+  /** Plugin source path does not exist / is not a directory. */
+  | 'PLUGIN_PATH_INVALID'
   /** Kernel/PI internal failure not attributable to a single event. */
   | 'KERNEL_INTERNAL'
 
@@ -196,6 +206,84 @@ export interface SetModelInput {
 export interface SetThinkingLevelInput {
   sessionId: SessionId
   level: ThinkingLevel
+}
+
+// ─── Plugins (v1.4) ──────────────────────────────────────────────────────────
+
+/** Stable plugin identity: `${name}@${source}`. */
+export type PluginId = string
+
+/** Where an installed plugin came from. */
+export type PluginSourceKind = 'bundled' | 'local' | 'marketplace'
+
+/** Component kinds a plugin may bundle. Only `extension`/`skill` run in P1. */
+export type PluginComponentKind = 'extension' | 'skill' | 'command' | 'hook' | 'mcp'
+
+export interface PluginSource {
+  kind: PluginSourceKind
+  /** Display label: 'Bundled', 'Local', or a marketplace name. */
+  label: string
+}
+
+export interface PluginSummary {
+  id: PluginId
+  name: string
+  version: string
+  description?: string
+  enabled: boolean
+  source: PluginSource
+  componentCounts: Partial<Record<PluginComponentKind, number>>
+}
+
+export interface PluginComponentInfo {
+  kind: PluginComponentKind
+  name: string
+  description?: string
+  /** Path relative to the plugin root, POSIX separators. */
+  path?: string
+}
+
+export interface PluginUserConfigSpec {
+  key: string
+  title: string
+  description?: string
+  type: 'string' | 'number' | 'boolean' | 'directory' | 'file'
+  default?: string | number | boolean
+  required?: boolean
+  /** Sensitive values are masked and not writable from the UI in P1. */
+  sensitive?: boolean
+}
+
+export interface PluginDiagnostic {
+  code: string
+  severity: 'error' | 'warning'
+  message: string
+  pluginId?: PluginId
+}
+
+export interface PluginDetail extends PluginSummary {
+  author?: string | { name: string; email?: string; url?: string }
+  homepage?: string
+  keywords?: string[]
+  /** Absolute path of the installed plugin root. */
+  rootPath: string
+  components: PluginComponentInfo[]
+  userConfig?: PluginUserConfigSpec[]
+  configuredOptions?: Record<string, string | number | boolean>
+  diagnostics?: PluginDiagnostic[]
+}
+
+export interface InstallPluginInput {
+  /** P1 supports a local directory only. */
+  source: { kind: 'directory'; path: string }
+}
+
+/**
+ * Plugin change notification. Delivered on a dedicated global channel
+ * (`IPC.pluginsChanged`), NOT through `KernelEvent`/session `seq`.
+ */
+export interface PluginChangeEvent {
+  plugins: PluginSummary[]
 }
 
 // ─── Events (kernel → renderer), one discriminated union ─────────────────────
@@ -361,6 +449,22 @@ export interface CodexApi {
   setThinkingLevel(input: SetThinkingLevelInput): Promise<ModelConfig>
   /** Native directory picker for Choose project. Resolves `null` when cancelled. */
   pickDirectory(): Promise<string | null>
+
+  /** Installed plugins (local + bundled). Not session-scoped. */
+  listPlugins(): Promise<PluginSummary[]>
+  /** Plugin detail: components + userConfig spec + diagnostics. */
+  getPlugin(id: PluginId): Promise<PluginDetail>
+  /** Enable/disable a plugin. Idempotent; triggers controlled kernel restart on change. */
+  setPluginEnabled(id: PluginId, enabled: boolean): Promise<PluginSummary>
+  /** Install from a local directory. Rejects PLUGIN_ALREADY_INSTALLED on id conflict. */
+  installPlugin(input: InstallPluginInput): Promise<PluginSummary>
+  /** Uninstall (delete dir; bundled plugins get a suppressed marker). */
+  uninstallPlugin(id: PluginId): Promise<void>
+  /**
+   * Subscribe to plugin changes (global, not session-scoped). Delivered on a
+   * dedicated channel outside `KernelEvent`/`seq`. Returns unsubscribe.
+   */
+  subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -384,6 +488,13 @@ export const IPC = {
   setModel: 'codex:setModel',
   setThinkingLevel: 'codex:setThinkingLevel',
   pickDirectory: 'codex:pickDirectory',
+  listPlugins: 'codex:listPlugins',
+  getPlugin: 'codex:getPlugin',
+  setPluginEnabled: 'codex:setPluginEnabled',
+  installPlugin: 'codex:installPlugin',
+  uninstallPlugin: 'codex:uninstallPlugin',
+  /** main → renderer push for PluginChangeEvent (global, per webContents). */
+  pluginsChanged: 'codex:pluginsChanged',
   /** main → renderer push for KernelEvent (per webContents). */
   kernelEvent: 'codex:kernelEvent'
 } as const

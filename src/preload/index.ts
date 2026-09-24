@@ -8,9 +8,14 @@ import {
   type CodexApi,
   type ContractErrorCode,
   type CreateSessionInput,
+  type InstallPluginInput,
   type KernelEvent,
   type ModelConfig,
   type ModelOption,
+  type PluginChangeEvent,
+  type PluginDetail,
+  type PluginId,
+  type PluginSummary,
   type PromptInput,
   type RespondPermissionInput,
   type SessionDetail,
@@ -36,6 +41,11 @@ const CONTRACT_ERROR_CODES = new Set<string>([
   'PERMISSION_EXPIRED',
   'TERMINAL_NOT_FOUND',
   'TERMINAL_LIMIT',
+  'PLUGIN_NOT_FOUND',
+  'PLUGIN_ALREADY_INSTALLED',
+  'PLUGIN_MANIFEST_INVALID',
+  'PLUGIN_COMPONENT_INVALID',
+  'PLUGIN_PATH_INVALID',
   'KERNEL_INTERNAL'
 ])
 
@@ -153,7 +163,28 @@ const codex: CodexApi = {
   setThinkingLevel: (input: SetThinkingLevelInput) =>
     invoke<ModelConfig>(IPC.setThinkingLevel, input),
 
-  pickDirectory: () => invoke<string | null>(IPC.pickDirectory)
+  pickDirectory: () => invoke<string | null>(IPC.pickDirectory),
+
+  listPlugins: () => invoke<PluginSummary[]>(IPC.listPlugins),
+
+  getPlugin: (id: PluginId) => invoke<PluginDetail>(IPC.getPlugin, id),
+
+  setPluginEnabled: (id: PluginId, enabled: boolean) =>
+    invoke<PluginSummary>(IPC.setPluginEnabled, { id, enabled }),
+
+  installPlugin: (input: InstallPluginInput) => invoke<PluginSummary>(IPC.installPlugin, input),
+
+  uninstallPlugin: (id: PluginId) => invoke<void>(IPC.uninstallPlugin, id),
+
+  subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void {
+    const handler = (_event: IpcRendererEvent, payload: PluginChangeEvent): void => {
+      listener(payload)
+    }
+    ipcRenderer.on(IPC.pluginsChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.pluginsChanged, handler)
+    }
+  }
 }
 
 // Not CodexApi — §7.3 accept-disconnect only; frontend must not depend on it.

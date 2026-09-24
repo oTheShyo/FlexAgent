@@ -19,6 +19,16 @@ export type WorkerKernelEvent = StripSeq<KernelEvent>
 /** Distributive strip of `requestId` — plain Omit collapses the request union. */
 export type StripRequestId<R> = R extends { requestId: string } ? Omit<R, 'requestId'> : R
 
+/** Resource spec for enabled plugins — consumed when the worker builds its resource loader. */
+export interface PluginResourceSpec {
+  /** Absolute paths to extension files/dirs (PI additionalExtensionPaths). */
+  extensionPaths: string[]
+  /** Absolute skill root dirs of enabled plugins (PI skills discovery). */
+  skillRoots: string[]
+  /** Plugin storage root (worker cwd varies per session). */
+  pluginStorageRoot: string
+}
+
 export type WorkerRequest =
   | { requestId: string; type: 'listSessions' }
   | { requestId: string; type: 'createSession'; sessionId: SessionId; cwd: string; title?: string }
@@ -31,6 +41,7 @@ export type WorkerRequest =
   | { requestId: string; type: 'getModelConfig'; sessionId: SessionId }
   | { requestId: string; type: 'setModel'; sessionId: SessionId; provider: string; id: string; thinkingLevel?: ThinkingLevel }
   | { requestId: string; type: 'setThinkingLevel'; sessionId: SessionId; level: ThinkingLevel }
+  | { requestId: string; type: 'reloadPlugins'; resourceSpec: PluginResourceSpec }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>
