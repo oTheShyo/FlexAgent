@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import {
   ContractError,
+  CONTRACT_ERROR_CODES,
   IPC,
   type ApplyFileChangesInput,
   type ContractErrorCode,
@@ -26,24 +27,11 @@ interface IpcFailure {
   details?: unknown
 }
 
-const CONTRACT_ERROR_CODES = new Set<string>([
-  'SESSION_NOT_FOUND',
-  'SESSION_BUSY',
-  'INVALID_INPUT',
-  'PERMISSION_EXPIRED',
-  'TERMINAL_NOT_FOUND',
-  'TERMINAL_LIMIT',
-  'PLUGIN_NOT_FOUND',
-  'PLUGIN_ALREADY_INSTALLED',
-  'PLUGIN_MANIFEST_INVALID',
-  'PLUGIN_COMPONENT_INVALID',
-  'PLUGIN_PATH_INVALID',
-  'KERNEL_INTERNAL'
-])
+const CONTRACT_ERROR_CODE_SET = new Set<string>(CONTRACT_ERROR_CODES)
 
 /** §5.4: only contract enum codes cross IPC; anything else → KERNEL_INTERNAL. */
 function toContractErrorCode(code: string): ContractErrorCode {
-  return CONTRACT_ERROR_CODES.has(code) ? (code as ContractErrorCode) : 'KERNEL_INTERNAL'
+  return CONTRACT_ERROR_CODE_SET.has(code) ? (code as ContractErrorCode) : 'KERNEL_INTERNAL'
 }
 
 function toIpcFailure(err: unknown): IpcFailure {
@@ -171,6 +159,7 @@ export function registerIpcHandlers(
       } catch {
         /* best-effort dispose */
       }
+      terminals.disposeSession(sessionId)
       registry.remove(sessionId)
     })
   )
@@ -331,6 +320,8 @@ export function registerIpcHandlers(
   )
 
   ipcMain.handle(IPC.listPlugins, () => guard(() => plugins.list()))
+
+  ipcMain.handle(IPC.listSlashCommands, () => guard(() => plugins.slashCommands()))
 
   ipcMain.handle(IPC.getPlugin, (_e, id: unknown) =>
     guard(() => {

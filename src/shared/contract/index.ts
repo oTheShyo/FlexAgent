@@ -319,6 +319,17 @@ export interface PluginChangeEvent {
   plugins: PluginSummary[]
 }
 
+/**
+ * One slash command contributed by an enabled plugin (`commands/*.md`).
+ * Completion source for the composer @/slash popup — static registry data,
+ * no worker round-trip.
+ */
+export interface SlashCommandSummary {
+  name: string
+  description?: string
+  pluginId: PluginId
+}
+
 // ─── Marketplace (v1.5 / P3) ─────────────────────────────────────────────────
 
 /** A marketplace registered in `known_marketplaces.json`. */
@@ -587,6 +598,12 @@ export interface CodexApi {
    * dedicated channel outside `KernelEvent`/`seq`. Returns unsubscribe.
    */
   subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void
+  /**
+   * Slash commands from enabled plugins (composer completion source).
+   * Optional so renderer mocks that predate it keep typechecking;
+   * the real preload bridge always provides it.
+   */
+  listSlashCommands?(): Promise<SlashCommandSummary[]>
 }
 
 // ─── Electron IPC channel names (real transport only) ────────────────────────
@@ -615,6 +632,7 @@ export const IPC = {
   setPluginEnabled: 'codex:setPluginEnabled',
   installPlugin: 'codex:installPlugin',
   uninstallPlugin: 'codex:uninstallPlugin',
+  listSlashCommands: 'codex:listSlashCommands',
   /** main → renderer push for PluginChangeEvent (global, per webContents). */
   pluginsChanged: 'codex:pluginsChanged',
   /** main → renderer push for KernelEvent (per webContents). */

@@ -5,7 +5,8 @@ import type {
   InstallPluginInput,
   PluginDetail,
   PluginId,
-  PluginSummary
+  PluginSummary,
+  SlashCommandSummary
 } from '../shared/contract'
 import type { KernelHost } from './kernel'
 import {
@@ -48,6 +49,31 @@ export class PluginService {
       const enumeration = enumerateComponents(rec.rootPath, manifest)
       return summarize(rec, manifest.description, countComponents(enumeration.components))
     })
+  }
+
+  slashCommands(): SlashCommandSummary[] {
+    const seen = new Set<string>()
+    const out: SlashCommandSummary[] = []
+    for (const rec of this.registry.list()) {
+      if (!rec.enabled) continue
+      try {
+        const manifestPath = findManifestPath(rec.rootPath)
+        if (!manifestPath) continue
+        const enumeration = enumerateComponents(rec.rootPath, parseManifest(manifestPath))
+        for (const comp of enumeration.components) {
+          if (comp.kind !== 'command' || seen.has(comp.name)) continue
+          seen.add(comp.name)
+          out.push({
+            name: comp.name,
+            ...(comp.description !== undefined ? { description: comp.description } : {}),
+            pluginId: rec.id
+          })
+        }
+      } catch {
+        continue
+      }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name))
   }
 
   get(id: PluginId): PluginDetail {

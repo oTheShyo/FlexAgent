@@ -31,6 +31,7 @@ import {
   type SessionSummary,
   type SetModelInput,
   type SetThinkingLevelInput,
+  type SlashCommandSummary,
   type TerminalCreateInput,
   type TerminalInputInput,
   type TerminalResizeInput
@@ -161,6 +162,8 @@ const codex: CodexApi = {
   pickDirectory: () => invoke<string | null>(IPC.pickDirectory),
 
   listPlugins: () => invoke<PluginSummary[]>(IPC.listPlugins),
+
+  listSlashCommands: () => invoke<SlashCommandSummary[]>(IPC.listSlashCommands),
 
   getPlugin: (id: PluginId) => invoke<PluginDetail>(IPC.getPlugin, id),
 
