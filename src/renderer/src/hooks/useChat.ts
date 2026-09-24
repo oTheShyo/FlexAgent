@@ -398,18 +398,24 @@ export function useChat(): UseChatResult {
 
   const openSession = useCallback(
     async (sessionId: string): Promise<void> => {
+      // Switch the view the moment the click lands. Attaching a cold session to
+      // the kernel takes seconds, and until this changed the sidebar highlight
+      // and the main pane both stayed on the old chat, which reads as "the
+      // click did nothing". The subscription is only installed once the detail
+      // arrives, so nothing can be missed in between.
+      unsubRef.current?.()
+      unsubRef.current = null
+      activeIdRef.current = sessionId
+      lastSeqRef.current = null
+      setActiveSessionId(sessionId)
+      setItems([])
+      setFiles([])
+      setPendingPermission(null)
       setHistoryLoading(true)
       try {
         const detail = await codexApi.openSession(sessionId)
-        unsubRef.current?.()
-        unsubRef.current = null
-        activeIdRef.current = sessionId
         lastSeqRef.current = null
-        setActiveSessionId(sessionId)
-        const loaded: ChatItem[] = detail.messages.map((message) => ({ kind: 'message', message }))
-        setItems(loaded)
-        setFiles([])
-        setPendingPermission(null)
+        setItems(detail.messages.map((message) => ({ kind: 'message', message })))
         setRunState(detail.summary.runState)
         setSessions((prev) => prev.map((s) => (s.id === sessionId ? detail.summary : s)))
         unsubRef.current = codexApi.subscribe(sessionId, handleEvent)
@@ -452,6 +458,19 @@ export function useChat(): UseChatResult {
 
   const createSession = useCallback(
     async (cwd?: string): Promise<SessionSummary | null> => {
+      // An empty new chat has nothing to load, so show it right away and let
+      // the kernel attach in the background. Without this, the first New chat
+      // after a launch sits on the old conversation for seconds.
+      unsubRef.current?.()
+      unsubRef.current = null
+      activeIdRef.current = null
+      lastSeqRef.current = null
+      setActiveSessionId(null)
+      setItems([])
+      setFiles([])
+      setPendingPermission(null)
+      setRunState('idle')
+      setHistoryLoading(true)
       try {
         const target = cwd?.trim() ?? ''
         // No cwd → the kernel opens the chat in its scratch workspace. Asking
@@ -465,6 +484,8 @@ export function useChat(): UseChatResult {
       } catch (err) {
         setItems((prev) => [...prev, errorItemFrom(err)])
         return null
+      } finally {
+        setHistoryLoading(false)
       }
     },
     [openSession]
