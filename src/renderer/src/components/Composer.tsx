@@ -38,6 +38,8 @@ export interface ComposerProps {
   running?: boolean
   cwd?: string
   onChooseProject?: () => void
+  /** True while the kernel rebuilds the session against a new workspace. */
+  projectBusy?: boolean
   modelConfig?: ModelConfig | null
   modelOptions?: ModelOption[]
   slashCommands?: SlashCommandSummary[]
@@ -192,6 +194,7 @@ function Composer({
   running = false,
   cwd,
   onChooseProject,
+  projectBusy = false,
   modelConfig = null,
   modelOptions = [],
   slashCommands = [],
@@ -554,8 +557,8 @@ function Composer({
     [disabled, stageFiles]
   )
 
-  const projectLabel =
-    cwd !== undefined && cwd.length > 0 ? pathBasename(cwd) : 'Choose project'
+  const hasProject = cwd !== undefined && cwd.length > 0
+  const projectLabel = projectBusy ? 'Binding…' : hasProject ? pathBasename(cwd) : 'No project'
 
   const modelLabel = modelConfig?.model?.label ?? modelConfig?.model?.id ?? 'Model'
   const thinkingSuffix = modelConfig === null ? '' : ` · ${modelConfig.thinkingLevel}`
@@ -617,9 +620,16 @@ function Composer({
         >
           <button
             type="button"
-            disabled={disabled || onChooseProject === undefined}
+            disabled={disabled || projectBusy || onChooseProject === undefined}
             onClick={() => onChooseProject?.()}
-            title={cwd !== undefined && cwd.length > 0 ? cwd : undefined}
+            data-testid="composer-project"
+            title={
+              projectBusy
+                ? 'Rebuilding this chat against the new folder…'
+                : hasProject
+                  ? cwd
+                  : 'No project — this chat runs in the scratch workspace. Pick a folder to give it one.'
+            }
             className="flex w-full items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <FolderIcon className="h-3.5 w-3.5" />

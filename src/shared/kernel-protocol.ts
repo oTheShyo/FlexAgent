@@ -55,6 +55,7 @@ export type WorkerRequest =
   | { requestId: string; type: 'listSessions' }
   | { requestId: string; type: 'createSession'; sessionId: SessionId; cwd: string; title?: string }
   | { requestId: string; type: 'openSession'; sessionId: SessionId; cwd: string; piSessionFile?: string }
+  | { requestId: string; type: 'setSessionCwd'; sessionId: SessionId; cwd: string }
   | { requestId: string; type: 'prompt'; sessionId: SessionId; text: string; disposition: PromptDisposition }
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }

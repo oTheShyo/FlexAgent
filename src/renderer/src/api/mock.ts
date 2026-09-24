@@ -23,6 +23,7 @@ import {
   type SessionId,
   type SessionSummary,
   type SetModelInput,
+  type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SlashCommandSummary,
   type TerminalCreateAck,
@@ -70,6 +71,15 @@ interface SessionState {
 const TOKEN_DELAYS_MS = [60, 85, 70, 95] as const
 
 const DEMO_CWD = '/demo/workspace'
+/** Mirrors the main process: chats with no project live in the scratch workspace. */
+const DEMO_SCRATCH_CWD = '/demo/scratch'
+
+/** Mirrors registry.defaultTitle — scratch sessions stay "New chat". */
+function mockDefaultTitle(cwd: string): string {
+  if (cwd === DEMO_SCRATCH_CWD) return 'New chat'
+  const parts = cwd.split(/[\\/]+/).filter((part) => part.length > 0)
+  return parts[parts.length - 1] ?? 'Session'
+}
 const MAX_TERMINALS_PER_SESSION = 4
 const MOCK_MODEL_OPTIONS: ModelOption[] = [
   { provider: 'mimo', id: 'mimo-v2.6-flash', label: 'mimo-v2.6 Flash' },
@@ -165,15 +175,13 @@ export class MockCodexApi implements CodexApi {
   }
 
   async createSession(input: CreateSessionInput): Promise<SessionSummary> {
-    const cwd = typeof input?.cwd === 'string' ? input.cwd.trim() : ''
-    if (cwd.length === 0) {
-      throw new ContractError('INVALID_INPUT', 'createSession requires a non-empty cwd')
-    }
+    const requested = typeof input?.cwd === 'string' ? input.cwd.trim() : ''
+    const cwd = requested.length > 0 ? requested : DEMO_SCRATCH_CWD
     this.sessionCounter += 1
     const now = Date.now()
     const summary: SessionSummary = {
       id: `sess_${this.sessionCounter}`,
-      title: input.title?.trim() || 'New chat',
+      title: input?.title?.trim() || mockDefaultTitle(cwd),
       cwd,
       createdAt: now,
       updatedAt: now,
@@ -181,6 +189,35 @@ export class MockCodexApi implements CodexApi {
     }
     this.sessions.set(summary.id, this.newSessionState(summary))
     return { ...summary }
+  }
+
+  async scratchCwd(): Promise<string> {
+    return DEMO_SCRATCH_CWD
+  }
+
+  async setSessionCwd(input: SetSessionCwdInput): Promise<SessionSummary> {
+    const session = this.sessions.get(input?.sessionId)
+    if (!session) {
+      throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${input?.sessionId}`)
+    }
+    const cwd = typeof input.cwd === 'string' ? input.cwd.trim() : ''
+    if (cwd.length === 0) {
+      throw new ContractError('INVALID_INPUT', 'cwd is required')
+    }
+    if (session.summary.runState !== 'idle') {
+      throw new ContractError(
+        'SESSION_BUSY',
+        'cannot change the workspace while a run is in flight'
+      )
+    }
+    // Mirrors registry.setCwd: a scratch session still called "New chat" gets
+    // renamed after its project; a user-set title is left alone.
+    if (session.summary.title === mockDefaultTitle(session.summary.cwd)) {
+      session.summary.title = mockDefaultTitle(cwd)
+    }
+    session.summary.cwd = cwd
+    session.summary.updatedAt = Date.now()
+    return { ...session.summary }
   }
 
   async openSession(sessionId: SessionId): Promise<SessionDetail> {

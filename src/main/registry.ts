@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from '
 import { join } from 'path'
 import type { RunState, SessionId, SessionSummary } from '../shared/contract'
 import { ContractError } from '../shared/contract'
+import { isScratchCwd } from './workspace'
 
 export interface RegistryRecord {
   id: SessionId
@@ -25,9 +26,13 @@ function registryPath(): string {
   return join(app.getPath('userData'), 'sessions.json')
 }
 
+/** A scratch session has no project to name it after. */
+const SCRATCH_TITLE = 'New chat'
+
 function defaultTitle(cwd: string, title?: string): string {
   const trimmed = title?.trim()
   if (trimmed) return trimmed.slice(0, MAX_TITLE)
+  if (isScratchCwd(cwd)) return SCRATCH_TITLE
   const parts = cwd.replace(/[\\/]+$/, '').split(/[\\/]/)
   const base = parts[parts.length - 1] || cwd
   return base.slice(0, MAX_TITLE) || 'Session'
@@ -129,6 +134,10 @@ export class SessionRegistry {
     return rec
   }
 
+  summary(id: SessionId): SessionSummary {
+    return toSummary(this.require(id))
+  }
+
   create(id: SessionId, cwd: string, title?: string): RegistryRecord {
     if (!cwd || !cwd.trim()) {
       throw new ContractError('INVALID_INPUT', 'cwd must be a non-empty absolute path')
@@ -143,6 +152,23 @@ export class SessionRegistry {
       runState: 'idle'
     }
     this.records.set(id, rec)
+    this.persist()
+    return rec
+  }
+
+  /** Re-point a session at another workspace; the transcript is untouched. */
+  setCwd(id: SessionId, cwd: string): RegistryRecord {
+    if (!cwd || !cwd.trim()) {
+      throw new ContractError('INVALID_INPUT', 'cwd must be a non-empty absolute path')
+    }
+    const rec = this.require(id)
+    if (rec.cwd === cwd) return rec
+    // A scratch session is still called "New chat"; once it has a project the
+    // old default no longer describes it. A user-set title is left alone.
+    const stillDefault = rec.title === defaultTitle(rec.cwd)
+    rec.cwd = cwd
+    if (stillDefault) rec.title = defaultTitle(cwd)
+    rec.updatedAt = Date.now()
     this.persist()
     return rec
   }

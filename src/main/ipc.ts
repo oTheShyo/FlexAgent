@@ -20,6 +20,7 @@ import type { KernelHost } from './kernel'
 import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
+import { scratchCwd, workspaceKey } from './workspace'
 
 interface IpcFailure {
   code?: unknown
@@ -92,12 +93,16 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.createSession, (_e, input: { cwd?: unknown; title?: unknown }) =>
     guard(async () => {
-      if (!input || typeof input.cwd !== 'string' || !input.cwd.trim()) {
-        throw new ContractError('INVALID_INPUT', 'cwd is required')
+      if (input !== undefined && input !== null && typeof input !== 'object') {
+        throw new ContractError('INVALID_INPUT', 'expected { cwd?, title? }')
       }
-      const title = typeof input.title === 'string' ? input.title : undefined
+      // cwd is optional — a chat with no project yet lands in the scratch
+      // workspace so New chat never has to interrupt with a folder picker.
+      const requested = typeof input?.cwd === 'string' ? input.cwd.trim() : ''
+      const cwd = requested.length > 0 ? requested : scratchCwd()
+      const title = typeof input?.title === 'string' ? input.title : undefined
       const id = randomUUID()
-      const rec = registry.create(id, input.cwd, title)
+      const rec = registry.create(id, cwd, title)
       try {
         const result = (await kernel.request({
           type: 'createSession',
@@ -161,6 +166,40 @@ export function registerIpcHandlers(
       }
       terminals.disposeSession(sessionId)
       registry.remove(sessionId)
+    })
+  )
+
+  ipcMain.handle(IPC.scratchCwd, () => guard(() => scratchCwd()))
+
+  ipcMain.handle(IPC.setSessionCwd, (_e, input: { sessionId?: unknown; cwd?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (typeof input.cwd !== 'string' || !input.cwd.trim()) {
+        throw new ContractError('INVALID_INPUT', 'cwd is required')
+      }
+      const cwd = input.cwd.trim()
+      const rec = registry.require(input.sessionId)
+      // Tools resolve relative paths against the workspace, so the run has to
+      // finish (or be aborted) before the folder may move under it.
+      if (rec.runState !== 'idle') {
+        throw new ContractError(
+          'SESSION_BUSY',
+          'cannot change the workspace while a run is in flight'
+        )
+      }
+      if (workspaceKey(rec.cwd) !== workspaceKey(cwd)) {
+        const result = (await kernel.request({
+          type: 'setSessionCwd',
+          sessionId: input.sessionId,
+          cwd
+        })) as { piSessionFile?: string } | undefined
+        // open() may rewrite the session file; keep the registry pointing at it.
+        if (result?.piSessionFile) registry.attachPiSession(input.sessionId, result.piSessionFile)
+        registry.setCwd(input.sessionId, cwd)
+      }
+      return registry.summary(input.sessionId)
     })
   )
 

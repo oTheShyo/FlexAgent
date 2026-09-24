@@ -128,9 +128,21 @@ export class ContractError extends Error {
 // ─── Commands (renderer → kernel) ────────────────────────────────────────────
 
 export interface CreateSessionInput {
-  /** Absolute path of the project folder to work in. */
-  cwd: string
+  /**
+   * Absolute path of the project folder to work in. Omit it to start in the
+   * scratch workspace — a dedicated empty directory for chats that are just a
+   * conversation. `scratchCwd()` returns that path, and `setSessionCwd()` binds
+   * a real folder later without losing the transcript.
+   */
+  cwd?: string
   title?: string
+}
+
+/** Re-bind a session to a different project folder. */
+export interface SetSessionCwdInput {
+  sessionId: SessionId
+  /** Absolute path of the project folder to work in from now on. */
+  cwd: string
 }
 
 /**
@@ -535,6 +547,18 @@ export interface CodexApi {
   openSession(sessionId: SessionId): Promise<SessionDetail>
   /** Remove the session from the registry (persisted). Throws SESSION_NOT_FOUND if missing. */
   deleteSession(sessionId: SessionId): Promise<void>
+  /**
+   * Absolute path of the scratch workspace used when `createSession` omits cwd.
+   * The renderer compares it against `SessionSummary.cwd` to decide whether a
+   * chat has a project yet, so it must stay stable for the install.
+   */
+  scratchCwd(): Promise<string>
+  /**
+   * Point a session at a project folder (idle sessions only — throws
+   * SESSION_BUSY while a run is in flight, because tools resolve relative paths
+   * against the workspace). The transcript is preserved.
+   */
+  setSessionCwd(input: SetSessionCwdInput): Promise<SessionSummary>
 
   /**
    * Submit user text. Resolves when accepted (not when the run finishes).
@@ -614,6 +638,8 @@ export const IPC = {
   createSession: 'codex:createSession',
   openSession: 'codex:openSession',
   deleteSession: 'codex:deleteSession',
+  scratchCwd: 'codex:scratchCwd',
+  setSessionCwd: 'codex:setSessionCwd',
   prompt: 'codex:prompt',
   abort: 'codex:abort',
   respondPermission: 'codex:respondPermission',

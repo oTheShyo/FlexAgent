@@ -30,6 +30,7 @@ import {
   type SessionId,
   type SessionSummary,
   type SetModelInput,
+  type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SlashCommandSummary,
   type TerminalCreateInput,
@@ -121,6 +122,11 @@ const codex: CodexApi = {
   openSession: (sessionId: SessionId) => invoke<SessionDetail>(IPC.openSession, sessionId),
 
   deleteSession: (sessionId: SessionId) => invoke<void>(IPC.deleteSession, sessionId),
+
+  scratchCwd: () => invoke<string>(IPC.scratchCwd),
+
+  setSessionCwd: (input: SetSessionCwdInput) =>
+    invoke<SessionSummary>(IPC.setSessionCwd, input),
 
   prompt: (input: PromptInput) => invoke(IPC.prompt, input),
 

@@ -26,11 +26,16 @@ import {
 export interface SidebarProps {
   sessions: SessionSummary[]
   activeSessionId: string | null
-  /** `cwd` opens a chat in that directory; omitted falls back to the picker. */
+  /** `cwd` opens a chat in that directory; omitted starts a scratch chat. */
   onNewChat: (cwd?: string) => void
   onSelect: (sessionId: string) => void
   /** Picks a directory and opens a chat in it (Projects "+" affordance). */
   onAddProject?: () => void
+  /**
+   * Scratch workspace path. Chats sitting there have no project yet, so they
+   * are excluded from the Projects grouping.
+   */
+  scratchCwd?: string | null
   onDelete?: (sessionId: string) => void
   loading?: boolean
   onOpenPlugins?: () => void
@@ -104,6 +109,7 @@ function Sidebar({
   onNewChat,
   onSelect,
   onAddProject,
+  scratchCwd = null,
   onDelete,
   loading = false,
   onOpenPlugins,
@@ -240,10 +246,13 @@ function Sidebar({
   const normalizedQuery = query.trim().toLowerCase()
 
   const projects = useMemo<ProjectRowData[]>(() => {
+    const scratchKey = scratchCwd === null ? null : pathKey(scratchCwd)
     const byKey = new Map<string, ProjectRowData>()
     for (const session of sessions) {
       if (session.cwd.length === 0) continue
       const key = pathKey(session.cwd)
+      // Scratch chats belong to no project, so they are not a project row.
+      if (key === scratchKey) continue
       const existing = byKey.get(key)
       if (existing === undefined) {
         byKey.set(key, {
@@ -259,7 +268,7 @@ function Sidebar({
     return [...byKey.values()].sort(
       (a, b) => b.chats - a.chats || a.label.localeCompare(b.label)
     )
-  }, [sessions])
+  }, [sessions, scratchCwd])
 
   const archivedCount = useMemo(() => countArchivedSessions(sessions, meta), [sessions, meta])
 

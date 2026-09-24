@@ -523,6 +523,33 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       const host = await attachSession(req.sessionId, req.cwd, sessionManager)
       return { messages: buildMessages(host.session) }
     }
+    case 'setSessionCwd': {
+      if (!req.cwd || !isAbsolute(req.cwd)) {
+        throw new ContractError('INVALID_INPUT', 'cwd must be an absolute path')
+      }
+      const previous = requireSession(req.sessionId)
+      if (previous.runState !== 'idle') {
+        throw new ContractError(
+          'SESSION_BUSY',
+          'cannot change the workspace while a run is in flight'
+        )
+      }
+      // PI keeps the transcript in a file and SessionManager.open accepts a cwd
+      // override, so the session moves workspace with its history intact.
+      // Rebuild the host against the new cwd: the resource loader reads
+      // AGENTS.md/skills from it and tools resolve relative paths against it.
+      const sessionFile = previous.session.sessionFile
+      previous.unsubscribe()
+      previous.session.dispose()
+      sessions.delete(req.sessionId)
+      const { SessionManager } = await loadPi()
+      const sessionManager =
+        sessionFile === undefined
+          ? SessionManager.create(req.cwd)
+          : SessionManager.open(sessionFile, undefined, req.cwd)
+      const host = await attachSession(req.sessionId, req.cwd, sessionManager)
+      return { piSessionFile: host.session.sessionFile }
+    }
     case 'prompt': {
       const host = requireSession(req.sessionId)
       const text = req.text

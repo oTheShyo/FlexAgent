@@ -57,8 +57,23 @@ export interface UseChatResult {
    * remaining session is opened instead. Resolves false when the call failed.
    */
   deleteSession: (sessionId: string) => Promise<boolean>
-  /** Native directory picker → createSession(picked cwd). No-op when cancelled. */
-  pickDirectoryOrNewSession: () => Promise<void>
+  /**
+   * Start a chat that has no project yet — it runs in the scratch workspace, so
+   * New chat never interrupts with a folder picker. Pass a cwd to skip that and
+   * begin in a known project.
+   */
+  newChat: (cwd?: string) => Promise<SessionSummary | null>
+  /**
+   * Native directory picker → bind the picked folder to the open session, or
+   * create a session in it when nothing is open. No-op when cancelled.
+   */
+  chooseProject: () => Promise<void>
+  /** True while the kernel rebuilds the session against a new workspace. */
+  bindingProject: boolean
+  /** Native directory picker → a new chat in the picked folder (Projects "+"). */
+  newChatInFolder: () => Promise<void>
+  /** Scratch workspace path; null until the bridge answers. */
+  scratchCwd: string | null
   modelConfig: ModelConfig | null
   modelOptions: ModelOption[]
   /** Slash commands from enabled plugins; empty when the bridge lacks the channel. */
@@ -158,6 +173,8 @@ export function useChat(): UseChatResult {
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [slashCommands, setSlashCommands] = useState<SlashCommandSummary[]>([])
+  const [scratchCwd, setScratchCwd] = useState<string | null>(null)
+  const [bindingProject, setBindingProject] = useState(false)
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -436,9 +453,12 @@ export function useChat(): UseChatResult {
   const createSession = useCallback(
     async (cwd?: string): Promise<SessionSummary | null> => {
       try {
-        const target = cwd ?? (await codexApi.pickDirectory())
-        if (target === null) return null
-        const summary = await codexApi.createSession({ cwd: target })
+        const target = cwd?.trim() ?? ''
+        // No cwd → the kernel opens the chat in its scratch workspace. Asking
+        // for a folder here is what made New chat feel like opening a project.
+        const summary = await codexApi.createSession(
+          target.length > 0 ? { cwd: target } : {}
+        )
         setSessions((prev) => [summary, ...prev])
         await openSession(summary.id)
         return summary
@@ -483,7 +503,35 @@ export function useChat(): UseChatResult {
     [openSession, refreshSessions]
   )
 
-  const pickDirectoryOrNewSession = useCallback(async (): Promise<void> => {
+  const newChat = useCallback(
+    (cwd?: string): Promise<SessionSummary | null> => createSession(cwd),
+    [createSession]
+  )
+
+  const chooseProject = useCallback(async (): Promise<void> => {
+    try {
+      const dir = await codexApi.pickDirectory()
+      if (dir === null) return
+      const sessionId = activeIdRef.current
+      if (sessionId === null) {
+        await createSession(dir)
+        return
+      }
+      // The kernel rebuilds the resource loader against the new folder, which
+      // takes seconds — surface it, or the chip looks like it did nothing.
+      setBindingProject(true)
+      try {
+        const summary = await codexApi.setSessionCwd({ sessionId, cwd: dir })
+        setSessions((prev) => prev.map((s) => (s.id === sessionId ? summary : s)))
+      } finally {
+        setBindingProject(false)
+      }
+    } catch (err) {
+      setItems((prev) => [...prev, errorItemFrom(err)])
+    }
+  }, [createSession])
+
+  const newChatInFolder = useCallback(async (): Promise<void> => {
     try {
       const dir = await codexApi.pickDirectory()
       if (dir === null) return
@@ -548,6 +596,19 @@ export function useChat(): UseChatResult {
       .listModels()
       .then((options) => {
         if (!disposed) setModelOptions(options)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    void codexApi
+      .scratchCwd()
+      .then((path) => {
+        if (!disposed) setScratchCwd(path)
       })
       .catch(() => {})
     return () => {
@@ -671,7 +732,11 @@ export function useChat(): UseChatResult {
     openSession,
     refreshSessions,
     deleteSession,
-    pickDirectoryOrNewSession,
+    newChat,
+    chooseProject,
+    bindingProject,
+    newChatInFolder,
+    scratchCwd,
     modelConfig,
     modelOptions,
     slashCommands,

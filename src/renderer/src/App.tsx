@@ -24,6 +24,7 @@ import {
   useSessionMeta
 } from './lib/sessionMeta'
 import { useShortcuts } from './lib/shortcuts'
+import { pathKey } from './lib/paths'
 
 export interface AppProps {
   children?: ReactNode
@@ -61,11 +62,14 @@ export default function App({ children }: AppProps) {
     stop,
     respond,
     applyFiles,
-    createSession,
     openSession,
     refreshSessions,
     deleteSession,
-    pickDirectoryOrNewSession,
+    newChat,
+    chooseProject,
+    bindingProject,
+    newChatInFolder,
+    scratchCwd,
     modelConfig,
     modelOptions,
     slashCommands,
@@ -123,9 +127,9 @@ export default function App({ children }: AppProps) {
     (cwd?: string): void => {
       setShowPlugins(false)
       closeDetail()
-      void createSession(cwd)
+      void newChat(cwd)
     },
-    [createSession, closeDetail]
+    [newChat, closeDetail]
   )
 
   const handleDeleteSession = useCallback(
@@ -137,11 +141,19 @@ export default function App({ children }: AppProps) {
     [deleteSession]
   )
 
+  // Composer chip: give the open chat a workspace (or replace the current one).
   const handleChooseProject = useCallback((): void => {
     setShowPlugins(false)
     closeDetail()
-    void pickDirectoryOrNewSession()
-  }, [pickDirectoryOrNewSession, closeDetail])
+    void chooseProject()
+  }, [chooseProject, closeDetail])
+
+  // Sidebar Projects "+": pick a folder and open a chat in it.
+  const handleAddProject = useCallback((): void => {
+    setShowPlugins(false)
+    closeDetail()
+    void newChatInFolder()
+  }, [newChatInFolder, closeDetail])
 
   const handleSetModel = useCallback(
     (provider: string, id: string): void => {
@@ -343,6 +355,14 @@ export default function App({ children }: AppProps) {
 
   const activeSession = sessions.find((session) => session.id === activeSessionId)
 
+  // The scratch workspace is the absence of a project, not a project named
+  // "scratch" — so it never reaches the composer chip or the sidebar grouping.
+  const activeProjectCwd =
+    activeSession === undefined ||
+    (scratchCwd !== null && pathKey(activeSession.cwd) === pathKey(scratchCwd))
+      ? undefined
+      : activeSession.cwd
+
   const content =
     children ??
     (items.length > 0 ? (
@@ -361,7 +381,8 @@ export default function App({ children }: AppProps) {
           activeSessionId={activeSessionId}
           onNewChat={handleNewChat}
           onSelect={handleSelectSession}
-          onAddProject={handleChooseProject}
+          onAddProject={handleAddProject}
+          scratchCwd={scratchCwd}
           onDelete={handleDeleteSession}
           loading={sessionsLoaded !== true}
           onOpenPlugins={handleOpenPlugins}
@@ -407,7 +428,8 @@ export default function App({ children }: AppProps) {
           onSend={handleSend}
           disabled={!activeSessionId}
           running={isStreaming}
-          cwd={activeSession?.cwd}
+          cwd={activeProjectCwd}
+          projectBusy={bindingProject}
           onChooseProject={handleChooseProject}
           modelConfig={modelConfig}
           modelOptions={modelOptions}
