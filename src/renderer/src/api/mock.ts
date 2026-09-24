@@ -68,7 +68,7 @@ interface SessionState {
 /** Deterministic per-token delays (ms), cycled to keep streaming inside 50–100ms. */
 const TOKEN_DELAYS_MS = [60, 85, 70, 95] as const
 
-const WORKSPACE_CWD = 'D:/2026/FlexAgent'
+const DEMO_CWD = '/demo/workspace'
 const MAX_TERMINALS_PER_SESSION = 4
 const MOCK_MODEL_OPTIONS: ModelOption[] = [
   { provider: 'mimo', id: 'mimo-v2.6-flash', label: 'mimo-v2.6 Flash' },
@@ -110,6 +110,8 @@ function dirBasename(path: string): string {
   const parts = path.split(/[\\/]+/).filter((part) => part.length > 0)
   return parts.length > 0 ? (parts[parts.length - 1] ?? path) : path
 }
+
+export { dirBasename }
 
 function buildAppFileChange(): FileChange {
   const patch = [
@@ -612,7 +614,7 @@ export class MockCodexApi implements CodexApi {
   }
 
   async pickDirectory(): Promise<string | null> {
-    return WORKSPACE_CWD
+    return DEMO_CWD
   }
 
   async listPlugins(): Promise<PluginSummary[]> {
@@ -692,6 +694,18 @@ export class MockCodexApi implements CodexApi {
     return () => {
       this.pluginListeners.delete(listener)
     }
+  }
+
+  adoptPlugin(detail: PluginDetail): void {
+    this.pluginDetails.set(detail.id, detail)
+    this.pushPluginsChanged()
+  }
+
+  installedVersionOf(name: string): string | null {
+    for (const detail of this.pluginDetails.values()) {
+      if (detail.name === name) return detail.version
+    }
+    return null
   }
 
   private pluginSummaryOf(detail: PluginDetail): PluginSummary {
@@ -805,7 +819,7 @@ export class MockCodexApi implements CodexApi {
     const rootPath =
       name === 'document-skills'
         ? '<bundled>/document-skills'
-        : 'D:/2026/FlexAgent/fixtures/local-demo'
+        : `${DEMO_CWD}/fixtures/local-demo`
     this.pluginDetails.set(id, { ...base, id, source, rootPath })
   }
 
@@ -824,7 +838,7 @@ export class MockCodexApi implements CodexApi {
     const summary: SessionSummary = {
       id: `sess_${this.sessionCounter}`,
       title,
-      cwd: WORKSPACE_CWD,
+      cwd: DEMO_CWD,
       createdAt: updatedAt,
       updatedAt,
       runState: 'idle'
