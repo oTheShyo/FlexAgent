@@ -7,8 +7,9 @@
 
 > **后续状态（同日）：**
 > - 第一批 A1 / A2 / A4 / C1 已处理并提交（`22d42a2`），条目内标 ✅。
-> - 第二批把渲染层能修的全部修完：A3 / A5 / A6 / B2 / B4 / C2 / C3，逐条见下方标 ✅。
-> - 仍开放的是**必须后端配合**的条目（B3 / B5 / B6 / B7–B10）——前端轨**不伪造**这类控件，理由见文末「后端门控项」。
+> - 第二批把渲染层能修的全部修完：A3 / A5 / A6 / B2 / B4 / C2 / C3（`33f9d5c`），逐条见下方标 ✅。
+> - 第三批 A7（New chat 不再强制选目录）**按用户授权跨到后端轨**：contract v1.6 + `src/main/**` + preload + renderer（`8a48798`）。
+> - 仍有 `B3 / B5 / B6 / B7–B10` 需要后端先提供能力——前端轨**不伪造**这类控件，理由见文末「后端门控项」。
 
 ---
 
@@ -65,6 +66,23 @@
   - 归档数量显示在开关上（`Archived · N`），归档状态不再是"点了没反馈"；
   - Settings 面板明示"主题 / 重命名 / 归档仅存本机"。
 - 仍未解决的本质：跨设备不共享。等后端提供 rename/archive 后，覆盖层可被 `listSessions` 结果直接覆盖掉。
+
+### A7. New chat 强制经过系统文件夹对话框 ✅ 已实现（contract v1.6）
+
+- 旧路径：`Sidebar`/`CommandPalette` 的 New chat → `useChat.createSession()`，而它在没有 cwd 时先
+  `await codexApi.pickDirectory()`，取消就直接返回 —— 一个只想提问的对话被迫先选一个项目目录。
+- 根因不在前端：cwd 是内核的硬前提，三层都在拦
+  - `contract/index.ts` `CreateSessionInput.cwd: string`（必填）
+  - `src/main/ipc.ts:95` `cwd is required`，`src/main/registry.ts:133` 非空校验
+  - `src/main/worker.ts:605` `cwd must be an absolute path`
+  - 内核侧 `SessionManager.create(cwd)` 与 `DefaultResourceLoader({ cwd })` 都以它为根
+- 现状：`cwd` 改为可选，缺省落在 **scratch 工作区** `~/.flexagent/scratch`（`src/main/workspace.ts`）。
+  Composer 的 chip 显示 `No project`，选中某个目录时走 `setSessionCwd` 把会话迁过去。
+- 迁移不丢历史：`SessionManager.open(sessionFile, undefined, newCwd)` —— PI 文档写明第三个参数是
+  "cwd override instead of the session header cwd"，所以会话文件不搬运、transcript 完整保留。
+- 迁移期间有真实耗时（实测 **6.8s**，重建 resource loader + agent session），chip 在此期间显示
+  `Binding…` 并禁用，不再是"点了没反应"。
+- `SESSION_BUSY`：run 进行中拒绝迁移（工具的相对路径正在按旧 cwd 解析）。走查实测触发正确。
 
 ---
 

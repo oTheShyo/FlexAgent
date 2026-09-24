@@ -339,3 +339,33 @@ interface UsePluginsResult {
 1. `PromptInput.attachments` 一旦只增，前端把内联块换成真附件；在那之前附件内容会出现在 prompt 文本里，`user_message` 的 content 会因此变长（非 bug）。
 2. 侧栏 Projects 依赖 `SessionSummary.cwd` 稳定可读——目前是绝对路径，正常。
 
+**9.6.5 第三批：New chat 不再强制选目录（本批按用户授权跨越边界）**
+
+产品问题：点 New chat 直接弹系统文件夹对话框。只想问一句话的对话不该被迫先认领一个项目。
+
+**本批动了 `src/shared/contract`、`src/main/**`、`src/preload`、`src/renderer`**（用户明确授权"允许改后端"）。你们工作区的 MCP 在制品**未被触碰也未提交**——`worker.ts` / `kernel-protocol.ts` 里你们的改动仍在工作区，本批只精确暂存了自己的 hunk（`git apply --cached` 切分）。
+
+**契约 v1.6（只增不改语义）：**
+
+| 项 | 变更 |
+|---|---|
+| `CreateSessionInput.cwd` | `string` → `string?`。缺省 = scratch 工作区 |
+| `SetSessionCwdInput` | 新增 `{ sessionId, cwd }` |
+| `CodexApi.scratchCwd()` | 新增，返回 scratch 绝对路径（渲染层用它判断"这条会话有没有项目"） |
+| `CodexApi.setSessionCwd()` | 新增，绑定/更换工作区，返回更新后的 `SessionSummary` |
+| `IPC.scratchCwd` / `IPC.setSessionCwd` | 新增两个通道 |
+
+**实现要点：**
+
+1. `src/main/workspace.ts`（新）——`scratchCwd()` 落在 `~/.flexagent/scratch`（按需 `mkdirSync`），`workspaceKey()` 做大小写/分隔符归一，避免 `C:\a\b` 与 `C:/a/b` 被当成两个工作区。
+2. `ipc.ts` — `createSession` 的 cwd 缺省回落到 scratch；`setSessionCwd` 拒绝相对路径，并在 `runState !== 'idle'` 时抛 `SESSION_BUSY`（工具的相对路径正按旧 cwd 解析）。
+3. `registry.ts` — scratch 会话标题为 `New chat`；`setCwd` 只在标题**仍是默认值**时按新目录重算，用户改过的标题不会被覆盖。
+4. `worker.ts` — **不搬运会话文件**，用 `SessionManager.open(sessionFile, undefined, newCwd)` 的 cwd override 重建 host（PI 文档原文："Optional cwd override instead of the session header cwd"），所以 transcript 完整保留、sessionFile 路径不变。
+5. 渲染层 — New chat 走 `newChat()`（无 cwd）；Composer 的 chip 显示 `No project` 并作为绑定入口（`chooseProject()`）；Projects 的 `+` 仍是"选目录 + 在该目录开新会话"。**scratch 会话不进 Projects 分组**，因为它是"没有项目"而不是"一个叫 scratch 的项目"。
+6. 迁移实测耗时 **6.8s**（重建 resource loader + agent session），chip 期间显示 `Binding…` 并禁用。
+7. mock 同步实现同语义（`DEMO_SCRATCH_CWD`），无 Electron 路径行为一致。
+
+**QA：** `Temp\opencode\ws-walkthrough2.mjs` —— 25/25 PASS：New chat 不再弹窗且即刻落在 scratch、chip 文案与 tooltip、scratch 不进 Projects、绑定后标题/分组/chip 同步、相对路径被拒、`SESSION_BUSY` 在真实 prompt 进行中触发、迁移后会话 id 不变且可重新 open、走查会话清理后总数回到基线。
+
+**给后端的提示（不阻塞）：** 若你们更希望 scratch 会话的 session file 也归到目标项目下，PI 有 `SessionManager.forkSession`（"Fork a session from another project directory into the current project"）；当前实现选择了可逆性更高的 cwd override，没动文件。
+
