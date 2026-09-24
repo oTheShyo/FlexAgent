@@ -37,6 +37,8 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.16);
+  --app-bg: #ffffff;
+  --content-bg: transparent;
 }
 
 :root[data-theme='dark'] {
@@ -72,6 +74,8 @@
   --status-idle: #3f3f46;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --app-bg: #09090b;
+  --content-bg: #09090b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -109,7 +113,144 @@
     --status-idle: #3f3f46;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+    --app-bg: #09090b;
+    --content-bg: #09090b;
   }
+}
+
+:root[data-theme='eye-care'] {
+  color-scheme: light;
+  --surface: #e7f0e3;
+  --surface-raised: #f2f7ef;
+  --surface-sunken: #dce8d7;
+  --surface-sidebar: #dfead9;
+  --border: #c3d4bc;
+  --border-strong: #a8bfa0;
+  --text: #1a2b1c;
+  --text-secondary: #2f4432;
+  --text-muted: #5c7260;
+  --text-subtle: #7d9280;
+  --accent: #2d5a3d;
+  --accent-contrast: #ffffff;
+  --accent-hover: #3d6b4d;
+  --ring: #6a9a78;
+  --hover: #d5e4cf;
+  --active: #c5d8be;
+  --danger: #c2410c;
+  --danger-text: #9a3412;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --success: #15803d;
+  --warning: #a16207;
+  --warning-bg: #fefce8;
+  --warning-border: #fde68a;
+  --warning-text: #a16207;
+  --info: #0369a1;
+  --info-dot: #0ea5e9;
+  --overlay: rgba(26, 43, 28, 0.36);
+  --status-idle: #a8bfa0;
+  --shadow-sm: 0 1px 2px rgba(26, 43, 28, 0.08);
+  --shadow-lg: 0 12px 40px rgba(26, 43, 28, 0.18);
+  --app-bg: #e7f0e3;
+  --content-bg: #e7f0e3;
+}
+
+:root[data-theme='meadow'] {
+  color-scheme: light;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eef6f0;
+  --surface-sidebar: #e9f4ec;
+  --border: #d4e4d9;
+  --border-strong: #b5ccb9;
+  --text: #16241c;
+  --text-secondary: #2c4034;
+  --text-muted: #4e6557;
+  --text-subtle: #73897b;
+  --accent: #1f7a4d;
+  --accent-contrast: #ffffff;
+  --accent-hover: #2a8f5c;
+  --ring: #3da872;
+  --hover: #e3f1e8;
+  --active: #d2e8da;
+  --danger: #dc2626;
+  --danger-text: #991b1b;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --success: #047857;
+  --warning: #92400e;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #92400e;
+  --info: #0369a1;
+  --info-dot: #0ea5e9;
+  --overlay: rgba(22, 36, 28, 0.35);
+  --status-idle: #b0c5b7;
+  --shadow-sm: 0 1px 2px rgba(22, 36, 28, 0.06);
+  --shadow-lg: 0 12px 40px rgba(22, 36, 28, 0.14);
+  --app-bg: #f6fbf7;
+  --content-bg: transparent;
+}
+
+:root[data-theme='mist'] {
+  color-scheme: light;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eff4f9;
+  --surface-sidebar: #ecf3f9;
+  --border: #d7e2ec;
+  --border-strong: #bdcbd9;
+  --text: #121a24;
+  --text-secondary: #2b3a4c;
+  --text-muted: #4e6277;
+  --text-subtle: #73879a;
+  --accent: #2f6db3;
+  --accent-contrast: #ffffff;
+  --accent-hover: #3b7dc7;
+  --ring: #5b93d1;
+  --hover: #e6eef6;
+  --active: #d5e3f0;
+  --danger: #dc2626;
+  --danger-text: #991b1b;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --success: #047857;
+  --warning: #92400e;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #92400e;
+  --info: #0369a1;
+  --info-dot: #0ea5e9;
+  --overlay: rgba(18, 26, 36, 0.38);
+  --status-idle: #aebdcd;
+  --shadow-sm: 0 1px 2px rgba(18, 26, 36, 0.06);
+  --shadow-lg: 0 12px 40px rgba(18, 26, 36, 0.14);
+  --app-bg: #f7fafd;
+  --content-bg: transparent;
+}
+
+.theme-art {
+  display: none;
+}
+
+html[data-theme='meadow'] .theme-art {
+  display: block;
+  width: min(280px, 70vw);
+  aspect-ratio: 16 / 10;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: url('/themes/meadow.jpg') center / cover no-repeat;
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-theme='mist'] .theme-art {
+  display: block;
+  width: min(280px, 70vw);
+  aspect-ratio: 16 / 10;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: url('/themes/mist.jpg') center / cover no-repeat;
+  box-shadow: var(--shadow-lg);
 }
 
 body {

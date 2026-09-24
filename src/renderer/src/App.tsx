@@ -15,6 +15,7 @@ import DiffPanel from './components/DiffPanel'
 import PermissionDialog from './components/PermissionDialog'
 import TerminalDrawer from './components/TerminalDrawer'
 import CommandPalette from './components/CommandPalette'
+import SettingsPage from './components/SettingsPage'
 import ErrorBoundary from './components/ErrorBoundary'
 import ConnectionBanner from './components/ConnectionBanner'
 import { ChatSkeleton } from './components/Skeleton'
@@ -36,7 +37,7 @@ export default function App({ children }: AppProps) {
   const [showTerminal, setShowTerminal] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
-  const [paletteOpenSettings, setPaletteOpenSettings] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showSkills, setShowSkills] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
@@ -205,12 +206,17 @@ export default function App({ children }: AppProps) {
 
   const handleClosePalette = useCallback((): void => {
     setShowPalette(false)
-    setPaletteOpenSettings(false)
   }, [])
 
+  // Settings is a window of its own, not a mode of the palette: it owns the
+  // whole viewport and its own navigation.
   const handleOpenSettings = useCallback((): void => {
-    setPaletteOpenSettings(true)
-    setShowPalette(true)
+    setShowPalette(false)
+    setShowSettings(true)
+  }, [])
+
+  const handleCloseSettings = useCallback((): void => {
+    setShowSettings(false)
   }, [])
 
   const handleOpenPlugins = useCallback((): void => {
@@ -309,6 +315,11 @@ export default function App({ children }: AppProps) {
 
   const handleEscape = useCallback(
     (event: KeyboardEvent): void => {
+      if (showSettings) {
+        event.preventDefault()
+        handleCloseSettings()
+        return
+      }
       if (showPalette) {
         event.preventDefault()
         handleClosePalette()
@@ -344,7 +355,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showPlugins, showSkills, showMemory, detail, showTerminal, showReview, closeDetail, handleClosePalette, handleClosePlugins, handleCloseSkills, handleCloseMemory]
+    [showSettings, showPalette, showPlugins, showSkills, showMemory, detail, showTerminal, showReview, closeDetail, handleCloseSettings, handleClosePalette, handleClosePlugins, handleCloseSkills, handleCloseMemory]
   )
 
   useShortcuts([
@@ -355,7 +366,7 @@ export default function App({ children }: AppProps) {
       preventDefault: true,
       allowInEditable: true,
       handler: () => {
-        setPaletteOpenSettings(false)
+        setShowSettings(false)
         setShowPalette((value) => !value)
       }
     },
@@ -367,7 +378,7 @@ export default function App({ children }: AppProps) {
       preventDefault: true,
       allowInEditable: true,
       handler: () => {
-        setPaletteOpenSettings(false)
+        setShowSettings(false)
         setShowPalette((value) => !value)
       }
     },
@@ -419,7 +430,7 @@ export default function App({ children }: AppProps) {
     ))
 
   return (
-    <div className="flex h-[100dvh] w-full overflow-hidden bg-[var(--surface)] text-[var(--text)] antialiased">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-[var(--app-bg)] text-[var(--text)] antialiased">
       <ErrorBoundary fallbackClassName="h-full min-h-[240px] w-64 shrink-0">
         <Sidebar
           sessions={sessions}
@@ -455,7 +466,7 @@ export default function App({ children }: AppProps) {
           <ConnectionBanner message={connectionMessage} onRetry={handleRetryConnection} />
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--content-bg)]">
           <ErrorBoundary>
             {showPlugins ? (
               <PluginsPage
@@ -527,8 +538,15 @@ export default function App({ children }: AppProps) {
             onOpenSession={handleSelectSession}
             onToggleTerminal={handleToggleTerminal}
             onOpenPlugins={handleOpenPlugins}
+            onOpenSettings={handleOpenSettings}
             onClose={handleClosePalette}
-            openSettings={paletteOpenSettings}
+          />
+        )}
+        {showSettings && (
+          <SettingsPage
+            sessions={sessions}
+            activeCwd={activeProjectCwd ?? null}
+            onClose={handleCloseSettings}
             onModelsChanged={refreshModels}
           />
         )}

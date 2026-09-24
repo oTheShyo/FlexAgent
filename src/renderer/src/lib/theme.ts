@@ -1,11 +1,12 @@
 /**
- * User theme preference (light / dark / system) under `codex.theme.v1`.
+ * User theme preference under `codex.theme.v1`.
  * Storage guard pattern mirrors lib/sessionMeta.ts (hasStorage + try/catch).
- * The `data-theme` attribute on <html> drives index.css token selection;
- * `system` is resolved purely in CSS via prefers-color-scheme so OS changes
- * never require a React re-render.
+ * The `data-theme` attribute on <html> drives index.css token selection.
+ * Legacy values (`system`) migrate to `light` on read.
  */
-export type ThemePreference = 'light' | 'dark' | 'system'
+import { isThemeId, type ThemeId } from './themes'
+
+export type ThemePreference = ThemeId
 
 const STORAGE_KEY = 'codex.theme.v1'
 
@@ -14,7 +15,7 @@ function hasStorage(): boolean {
 }
 
 function isThemePreference(value: unknown): value is ThemePreference {
-  return value === 'light' || value === 'dark' || value === 'system'
+  return isThemeId(value)
 }
 
 export function applyTheme(pref: ThemePreference): void {
@@ -58,14 +59,16 @@ function notifyThemeChange(): void {
 }
 
 export function readTheme(): ThemePreference {
-  if (!hasStorage()) return 'system'
+  if (!hasStorage()) return 'light'
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw === null) return 'system'
+    if (raw === null) return 'light'
     const parsed: unknown = JSON.parse(raw)
-    return isThemePreference(parsed) ? parsed : 'system'
+    // Legacy `system` preference from the three-option picker.
+    if (parsed === 'system') return 'light'
+    return isThemePreference(parsed) ? parsed : 'light'
   } catch {
-    return 'system'
+    return 'light'
   }
 }
 
@@ -74,6 +77,7 @@ export function writeTheme(next: ThemePreference): void {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {
+      // Quota / private mode — keep in-memory apply only.
     }
   }
   applyTheme(next)

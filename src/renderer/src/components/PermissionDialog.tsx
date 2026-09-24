@@ -13,7 +13,9 @@ function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
   const argsJson = JSON.stringify(request.args, null, 2)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="presentation">
+    // Topmost layer on purpose: a run can ask for permission while Settings
+    // (z-70) or the palette (z-60) is open, and the request has to win.
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" role="presentation">
       <div className="absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
       <div
         role="alertdialog"

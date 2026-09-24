@@ -199,6 +199,9 @@ async function main() {
     })()`
   )
   check('sidebar Settings opens the panel', opened)
+  await waitFor(cdp, `document.querySelector('[data-testid="settings-nav"]') !== null`, 'settings rail')
+  // Settings opens on General now; the model list lives under the Models group.
+  await evaluate(cdp, `document.querySelector('[data-testid="settings-nav-models"]').click()`)
   await waitFor(cdp, `document.querySelector('[data-testid="settings-models"]') !== null`, 'models section')
 
   const heading = await evaluate(cdp, `document.querySelector('[data-testid="settings-models"]').innerText`)

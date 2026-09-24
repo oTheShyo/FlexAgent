@@ -269,6 +269,48 @@ export function PencilIcon({ className }: IconProps) {
   )
 }
 
+/** Appearance / theme — a painter's palette. */
+export function PaletteIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 2-.9 2-2 0-.6-.2-1.1-.6-1.5-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h1.7a4 4 0 0 0 4-4c0-3.4-3.8-6.2-8.6-6.2z" />
+      <path d="M7.7 10.4h.01" />
+      <path d="M11.3 7.7h.01" />
+      <path d="M15.7 9.7h.01" />
+    </svg>
+  )
+}
+
+/** Keyboard shortcuts — a key row. */
+export function KeyboardIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <path d="M6 10h.01M9.4 10h.01M12.8 10h.01M16.2 10h.01M18.5 12.6h.01M6 13.4h.01M9.4 13.4h.01M12.8 13.4h.01" />
+    </svg>
+  )
+}
+
+/** About / storage — an information badge. */
+export function InfoIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11.2v5.3" />
+      <path d="M12 7.9h.01" />
+    </svg>
+  )
+}
+
+export function CloseIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="m6.5 6.5 11 11" />
+      <path d="m17.5 6.5-11 11" />
+    </svg>
+  )
+}
+
 export function CopyIcon({ className }: IconProps) {
   return (
     <svg

@@ -306,7 +306,7 @@ function ModelsSettings({ controller }: { controller: UseCustomModelsResult }) {
   const formOpen = adding || editing !== null
 
   return (
-    <div className="mt-5" data-testid="settings-models">
+    <div data-testid="settings-models">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium text-[var(--text-secondary)]">Models</p>
         {!formOpen && (
