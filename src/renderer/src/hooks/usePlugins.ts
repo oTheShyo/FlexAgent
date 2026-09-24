@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   CodexApi,
   InstallPluginInput,
@@ -9,14 +9,18 @@ import type {
 } from '../types'
 import { codexApi } from '../api'
 
-type PluginApiView = CodexApi & Partial<{
+type PluginApi = CodexApi & {
   listPlugins(): Promise<PluginSummary[]>
   getPlugin(id: PluginId): Promise<PluginDetail>
   setPluginEnabled(id: PluginId, enabled: boolean): Promise<PluginSummary>
   installPlugin(input: InstallPluginInput): Promise<PluginSummary>
   uninstallPlugin(id: PluginId): Promise<void>
   subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void
-}>
+}
+
+const pluginApi = codexApi as PluginApi
+
+const BUSY_FALLBACK_MS = 5000
 
 export interface UsePluginsResult {
   plugins: PluginSummary[]
@@ -32,16 +36,12 @@ export interface UsePluginsResult {
   uninstall: (id: PluginId) => Promise<void>
 }
 
-const PLUGIN_UNAVAILABLE = 'Plugin management is not available in this build yet.'
-
 function errorMessageOf(err: unknown): string {
-  if (err instanceof Error) return err.message
   const message = (err as { message?: string }).message
   return typeof message === 'string' ? message : String(err)
 }
 
 export function usePlugins(): UsePluginsResult {
-  const pluginApi = codexApi as PluginApiView
   const [plugins, setPlugins] = useState<PluginSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
@@ -49,22 +49,27 @@ export function usePlugins(): UsePluginsResult {
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  useEffect(() => {
-    const { listPlugins, subscribePlugins } = pluginApi
-    if (listPlugins === undefined || subscribePlugins === undefined) {
-      setError(PLUGIN_UNAVAILABLE)
-      setLoading(false)
-      return
+  const unsubRef = useRef<(() => void) | null>(null)
+  const busyTimerRef = useRef<number | null>(null)
+
+  const clearBusy = useCallback((): void => {
+    setBusyId(null)
+    if (busyTimerRef.current !== null) {
+      window.clearTimeout(busyTimerRef.current)
+      busyTimerRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
     let disposed = false
-    const unsubscribe = subscribePlugins.call(pluginApi, (event) => {
+    unsubRef.current = pluginApi.subscribePlugins((event: PluginChangeEvent) => {
       if (disposed) return
       setPlugins(event.plugins)
-      setBusyId(null)
+      clearBusy()
     })
     void (async () => {
       try {
-        const list = await listPlugins.call(pluginApi)
+        const list = await pluginApi.listPlugins()
         if (disposed) return
         setPlugins(list)
       } catch (err) {
@@ -76,15 +81,16 @@ export function usePlugins(): UsePluginsResult {
     })()
     return () => {
       disposed = true
-      unsubscribe()
+      unsubRef.current?.()
+      unsubRef.current = null
+      if (busyTimerRef.current !== null) {
+        window.clearTimeout(busyTimerRef.current)
+        busyTimerRef.current = null
+      }
     }
-  }, [pluginApi])
+  }, [clearBusy])
 
   const installFromDirectory = useCallback(async (): Promise<void> => {
-    if (typeof pluginApi.installPlugin !== 'function') {
-      setError(PLUGIN_UNAVAILABLE)
-      return
-    }
     try {
       const dir = await pluginApi.pickDirectory()
       if (dir === null) return
@@ -93,69 +99,53 @@ export function usePlugins(): UsePluginsResult {
     } catch (err) {
       setError(errorMessageOf(err))
     }
-  }, [pluginApi])
+  }, [])
 
   const toggleEnabled = useCallback(
     async (id: PluginId, enabled: boolean): Promise<void> => {
-      if (typeof pluginApi.setPluginEnabled !== 'function') {
-        setError(PLUGIN_UNAVAILABLE)
-        return
-      }
       setBusyId(id)
       setError(null)
+      if (busyTimerRef.current !== null) window.clearTimeout(busyTimerRef.current)
+      busyTimerRef.current = window.setTimeout(() => {
+        busyTimerRef.current = null
+        setBusyId((current) => (current === id ? null : current))
+      }, BUSY_FALLBACK_MS)
       try {
         await pluginApi.setPluginEnabled(id, enabled)
       } catch (err) {
         setError(errorMessageOf(err))
-        setBusyId(null)
+        clearBusy()
       }
     },
-    [pluginApi]
+    [clearBusy]
   )
 
-  const openDetail = useCallback(
-    async (id: PluginId): Promise<void> => {
-      if (typeof pluginApi.getPlugin !== 'function') {
-        setError(PLUGIN_UNAVAILABLE)
-        return
-      }
-      setLoadingDetail(true)
-      setError(null)
-      try {
-        const next = await pluginApi.getPlugin(id)
-        setDetail(next)
-      } catch (err) {
-        setError(errorMessageOf(err))
-      } finally {
-        setLoadingDetail(false)
-      }
-    },
-    [pluginApi]
-  )
+  const openDetail = useCallback(async (id: PluginId): Promise<void> => {
+    setLoadingDetail(true)
+    setError(null)
+    try {
+      const next = await pluginApi.getPlugin(id)
+      setDetail(next)
+    } catch (err) {
+      setError(errorMessageOf(err))
+    } finally {
+      setLoadingDetail(false)
+    }
+  }, [])
 
   const closeDetail = useCallback((): void => {
     setDetail(null)
   }, [])
 
-  const uninstall = useCallback(
-    async (id: PluginId): Promise<void> => {
-      if (typeof pluginApi.uninstallPlugin !== 'function') {
-        setError(PLUGIN_UNAVAILABLE)
-        return
-      }
-      setBusyId(id)
-      setError(null)
-      try {
-        await pluginApi.uninstallPlugin(id)
-        setDetail((current) => (current?.id === id ? null : current))
-      } catch (err) {
-        setError(errorMessageOf(err))
-      } finally {
-        setBusyId(null)
-      }
-    },
-    [pluginApi]
-  )
+  const uninstall = useCallback(async (id: PluginId): Promise<void> => {
+    setError(null)
+    try {
+      await pluginApi.uninstallPlugin(id)
+      setDetail((current) => (current !== null && current.id === id ? null : current))
+    } catch (err) {
+      setError(errorMessageOf(err))
+    }
+  }, [])
 
   return {
     plugins,

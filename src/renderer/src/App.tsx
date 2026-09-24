@@ -152,6 +152,10 @@ export default function App({ children }: AppProps) {
     setShowPlugins(true)
   }, [])
 
+  const handleClosePlugins = useCallback((): void => {
+    setShowPlugins(false)
+  }, [])
+
   const handleUninstallPlugin = useCallback(
     (id: string): void => {
       void uninstall(id)
@@ -230,7 +234,7 @@ export default function App({ children }: AppProps) {
       }
       if (showPlugins) {
         event.preventDefault()
-        setShowPlugins(false)
+        handleClosePlugins()
         return
       }
       if (showTerminal) {
@@ -243,7 +247,7 @@ export default function App({ children }: AppProps) {
         setShowReview(false)
       }
     },
-    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail]
+    [showPalette, showPlugins, detail, showTerminal, showReview, closeDetail, handleClosePlugins]
   )
 
   useShortcuts([

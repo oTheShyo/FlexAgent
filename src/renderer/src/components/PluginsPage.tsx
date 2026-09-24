@@ -142,14 +142,11 @@ function PluginRow({
           <span className="rounded-full border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
             {plugin.source.label}
           </span>
-          {badges.map((badge) => (
-            <span
-              key={badge}
-              className="rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]"
-            >
-              {badge}
+          {badges.length > 0 && (
+            <span className="rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
+              {badges.join(' · ')}
             </span>
-          ))}
+          )}
         </div>
       </div>
       {busy && (
