@@ -1,9 +1,11 @@
 import { parentPort } from 'worker_threads'
+import { randomUUID } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { enableCompileCache } from 'node:module'
 import {
   ContractError,
+  effortForLevel,
   type ChatMessage,
   type FileChange,
   type ModelConfig,
@@ -12,6 +14,7 @@ import {
   type PermissionMode,
   type PermissionVerdict,
   type PromptDisposition,
+  type ReasoningEffort,
   type RoutingState,
   type RunState,
   type SessionId,
@@ -45,15 +48,20 @@ import {
   SKILLS_HOME
 } from './skills/selfEvolution'
 import { createMultiAgentExtension } from './agents/multiAgent'
+import { resolveByAnySessionId } from './agents/parentLookup'
 import { createSecurityExtension } from './security/securityExtension'
 import { hashArgs, recordAudit } from './security/auditLog'
 import { buildJudgePrompt, parseJudgeReply } from './skills/memoryDedupe'
+import { runMemoryExtraction, shouldExtract } from './skills/memoryExtract'
+import { addMemoryCard } from './skills/memoryStore'
 import { buildUsageReport, resolveRoleModel, resolveRoles } from './modelRoles'
 import { createCompactionRoutingExtension } from './compactionRouting'
 import { loadKernelHttp } from './kernelHttp'
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from './kernelSettings'
 import { readJsonDocument } from './jsonFile'
 import { personaSystemPrompt } from './persona'
+import { readMemoryAutoExtract, readQuestionSettings } from './settings'
+import { createAskUserExtension, type AskUserAnswer, type AskUserRequest } from './askUser'
 import { observeEvent, observeLlmCall } from './observability'
 import { PermissionGate, PermissionMemory, describeDenials } from './permissionGate'
 import { effectiveRuleSet } from './permissionRules'
@@ -396,7 +404,7 @@ function serverSource(key: string): 'user' | 'plugin' {
 }
 
 function reportMcpStatus(): void {
-  const byKey = new Map<string, { type: 'stdio' | 'http'; count: number }>()
+  const byKey = new Map<string, { type: 'stdio' | 'http' | 'sse'; count: number }>()
   for (const entry of mcpToolRegistry) {
     const current = byKey.get(entry.serverKey)
     if (current) current.count += 1
@@ -761,9 +769,94 @@ interface HostSession {
   toolStarts: Map<ToolCallId, number>
   /** Permission wait per toolCallId, for waitMs on tool_end (observability §3.2). */
   permissionWaits: Map<ToolCallId, number>
+  /**
+   * Whether this session runs the automatic memory pass. Captured at creation
+   * (issue 15): the setting only applies to sessions started after it changed,
+   * so a run already in flight never changes behaviour halfway through.
+   */
+  autoExtractMemory: boolean
+  /** Last user turn and last assistant answer, for the extraction prompt. */
+  lastUserText: string
+  lastAssistantText: string
+  /** True while a background extraction is running, so turns never overlap. */
+  extractingMemory: boolean
 }
 
 const sessions = new Map<SessionId, HostSession>()
+
+/**
+ * Which session the worker is currently running. The `ask_user` tool is
+ * registered on a resource loader that is cached per cwd and can outlive the
+ * session that created it, so the tool cannot capture a session id — it asks
+ * whoever is running right now. One worker thread, one active run.
+ */
+let activeRunSessionId: SessionId | null = null
+
+interface PendingQuestion {
+  sessionId: SessionId
+  settle: (outcome: { answer: string | null; timedOut: boolean }) => void
+  timer: NodeJS.Timeout | null
+}
+
+/** Questions awaiting an answer, keyed by question id. */
+const pendingQuestions = new Map<string, PendingQuestion>()
+
+/**
+ * Ask the user and wait (issue 10).
+ *
+ * The countdown is read *now*, per question: flipping the setting later must not
+ * retime a question that is already on screen. `timeoutMs = 0` means wait
+ * forever, which is what "auto-continue off" has to produce.
+ */
+async function askUser(request: AskUserRequest): Promise<AskUserAnswer> {
+  const sessionId = activeRunSessionId
+  const host = sessionId === null ? undefined : sessions.get(sessionId)
+  // No session in scope (or it went away): there is nobody to ask, so behave
+  // exactly like a timeout — the agent continues on its own judgement.
+  if (sessionId === null || host === undefined) return { answer: null, timedOut: true }
+
+  const settings = readQuestionSettings()
+  const timeoutMs = settings.autoContinue ? settings.timeoutMs : 0
+  const questionId = randomUUID()
+  const startedAt = Date.now()
+
+  emit(sessionId, {
+    type: 'question_request',
+    sessionId,
+    ts: startedAt,
+    questionId,
+    prompt: request.prompt,
+    options: request.options.map((label, index) => ({ id: `opt${index + 1}`, label })),
+    timeoutMs,
+    autoContinue: settings.autoContinue
+  })
+
+  return new Promise<AskUserAnswer>((resolve) => {
+    const finish = (outcome: { answer: string | null; timedOut: boolean }, resolved: 'answered' | 'timeout' | 'cancelled'): void => {
+      const entry = pendingQuestions.get(questionId)
+      if (entry?.timer != null) clearTimeout(entry.timer)
+      pendingQuestions.delete(questionId)
+      emit(sessionId, {
+        type: 'question_resolved',
+        sessionId,
+        ts: Date.now(),
+        questionId,
+        outcome: resolved,
+        ...(outcome.answer !== null ? { answer: outcome.answer } : {})
+      })
+      resolve(outcome)
+    }
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => finish({ answer: null, timedOut: true }, 'timeout'), timeoutMs)
+        : null
+    pendingQuestions.set(questionId, {
+      sessionId,
+      settle: (outcome) => finish(outcome, outcome.timedOut ? 'timeout' : 'answered'),
+      timer
+    })
+  })
+}
 
 function emit(sessionId: SessionId, event: WorkerKernelEvent): void {
   // Observability sink (docs/observability.md): persist at the single outlet.
@@ -1078,9 +1171,15 @@ async function judgeMemoryDuplicate(
  * can't see because it happens inside the kernel. Model and tokens come
  * straight off the message; duration is message timestamp → event ts, which
  * ends at the last token (§3.2). If PI doesn't stamp a timestamp the duration
- * is reported as unknown rather than invented.
+ * is reported as unknown rather than invented. The session's thinking level and
+ * its reasoning tier ride along as llm-calls.jsonl evidence (issue 08).
  */
-function observeChatMessage(sessionId: SessionId, message: unknown, endedAt: number): void {
+function observeChatMessage(
+  sessionId: SessionId,
+  message: unknown,
+  endedAt: number,
+  session: AgentSession
+): void {
   const m = message as Record<string, unknown> | null | undefined
   if (m === null || typeof m !== 'object' || m.role !== 'assistant') return
   const usage = m.usage as Record<string, unknown> | null | undefined
@@ -1095,6 +1194,7 @@ function observeChatMessage(sessionId: SessionId, message: unknown, endedAt: num
         : 'unknown'
   const startedAt = num(m.timestamp)
   const costTotal = num((usage.cost as Record<string, unknown> | undefined)?.total)
+  const cfg = readModelConfig(session)
   observeLlmCall({
     sessionId,
     callSource: 'chat',
@@ -1108,7 +1208,9 @@ function observeChatMessage(sessionId: SessionId, message: unknown, endedAt: num
       cacheRead: num(usage.cacheRead),
       cacheWrite: num(usage.cacheWrite)
     },
-    ...(costTotal === undefined ? {} : { cost: costTotal })
+    ...(costTotal === undefined ? {} : { cost: costTotal }),
+    thinkingLevel: cfg.thinkingLevel,
+    effort: cfg.effort
   })
 }
 
@@ -1165,14 +1267,21 @@ function toModelOption(model: {
 
 function readModelConfig(session: AgentSession): ModelConfig {
   const model = session.model
-  const base = {
+  const thinkingLevel = session.thinkingLevel
+  const base: Pick<ModelConfig, 'model' | 'thinkingLevel' | 'effort'> = {
     model: model ? toModelOption(model) : null,
-    thinkingLevel: session.thinkingLevel
+    thinkingLevel,
+    effort: null
   }
   if (!model) return base
   try {
     const levels = session.getAvailableThinkingLevels()
-    return levels.length > 0 ? { ...base, availableThinkingLevels: levels } : base
+    if (levels.length === 0) return base
+    return {
+      ...base,
+      effort: effortForLevel(thinkingLevel, levels),
+      availableThinkingLevels: levels
+    }
   } catch {
     return base
   }
@@ -1380,6 +1489,16 @@ function auditTarget(args: Record<string, unknown>): string | undefined {
 }
 
 /**
+ * Resolve a parent session however the multi-agent extension can address it —
+ * see `resolveByAnySessionId` for the kernel/PI id-space split it papers over.
+ * Unknown ids (parent disposed) resolve to nothing and the caller falls back
+ * to its existing deny.
+ */
+function resolveParentHost(id: string): HostSession | undefined {
+  return resolveByAnySessionId(sessions, id, (host) => host.session.sessionManager.getSessionId())
+}
+
+/**
  * Permission inheritance for multi-agent children (multi-agent §权限的向下传递).
  *
  * A child never owns a permission decision: its tool calls are evaluated
@@ -1395,7 +1514,7 @@ async function forwardChildPermission(
   rawArgs: unknown,
   childLabel: string
 ): Promise<{ outcome: 'allow' } | { outcome: 'deny'; reason: string }> {
-  const host = sessions.get(parentSessionId)
+  const host = resolveParentHost(parentSessionId)
   if (!host) {
     return { outcome: 'deny', reason: 'the parent session ended while the child was running' }
   }
@@ -1462,12 +1581,71 @@ async function forwardChildPermission(
   return { outcome: 'allow' }
 }
 
+/**
+ * Post-turn memory pass (issue 15).
+ *
+ * One model call, then dedupe, then at most a few card writes — all after the
+ * answer has reached the user. `extractingMemory` is a latch rather than a
+ * queue: two overlapping passes would both read the same card list and could
+ * land near-duplicates, and a stalled pass must not accumulate work.
+ */
+function scheduleMemoryExtraction(host: HostSession): void {
+  const transcript = { userText: host.lastUserText, assistantText: host.lastAssistantText }
+  if (!shouldExtract(transcript)) return
+  host.extractingMemory = true
+  void (async () => {
+    try {
+      await runMemoryExtraction(transcript, {
+        scope: host.cwd,
+        complete: async (systemPrompt, userContent, maxTokens) => {
+          const runtime = await getModelRuntime()
+          const model = pickJudgeModel(runtime.getAvailableSnapshot())
+          if (!model) return null
+          const reply = await runtime.completeSimple(
+            model,
+            {
+              systemPrompt,
+              messages: [{ role: 'user' as const, content: userContent, timestamp: Date.now() }]
+            },
+            { maxTokens, temperature: 0 }
+          )
+          const blocks = Array.isArray(reply?.content) ? reply.content : []
+          const text = String(
+            blocks.map((block) => (block as { text?: unknown })?.text ?? '')
+          ).trim()
+          return text.length > 0 ? text : null
+        },
+        judgeDuplicate: judgeMemoryDuplicate,
+        addCard: (text, scope) => addMemoryCard('MEMORY', text, scope),
+        observe: (info) =>
+          observeLlmCall({
+            callSource: 'memory_extract',
+            sessionId: host.sessionId,
+            ok: info.ok,
+            durationMs: info.durationMs,
+            note: info.note
+          }),
+        log: (message) => console.warn(`[memory-extract] ${message}`)
+      })
+    } catch (err) {
+      // A background pass that throws is a bug, but it still must not surface
+      // as a session error — the user's turn already succeeded.
+      console.warn(
+        `[memory-extract] pass failed: ${err instanceof Error ? err.message : String(err)}`
+      )
+    } finally {
+      host.extractingMemory = false
+    }
+  })()
+}
+
 async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: string]: unknown }): Promise<void> {
   const sessionId = host.sessionId
   const meta = { sessionId, ts: Date.now() } as const
 
   switch (raw.type) {
     case 'agent_start': {
+      activeRunSessionId = sessionId
       // New run: file_changes is a per-run full snapshot (contract §3.2.5).
       // Denials are per-run too — last turn's refusals do not apply to this one.
       host.fileChanges.clear()
@@ -1478,6 +1656,13 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
       break
     }
     case 'agent_settled': {
+      if (activeRunSessionId === sessionId) activeRunSessionId = null
+      // A question still open at settle has nobody left to answer it, and the
+      // run is over — leaving it pending would wedge the tool call forever.
+      for (const [questionId, entry] of pendingQuestions) {
+        if (entry.sessionId === sessionId) entry.settle({ answer: null, timedOut: false })
+        pendingQuestions.delete(questionId)
+      }
       setRunState(host, 'idle')
       break
     }
@@ -1511,7 +1696,10 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
       const message = raw.message as { role?: string } | undefined
       if (message?.role === 'user') {
         const chat = toChatMessage(message as never)
-        if (chat) emit(sessionId, { type: 'user_message', ...meta, message: chat })
+        if (chat) {
+          host.lastUserText = chat.content
+          emit(sessionId, { type: 'user_message', ...meta, message: chat })
+        }
       }
       break
     }
@@ -1551,12 +1739,21 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
           const chat = toChatMessage(raw.message as never)
           if (chat) emit(sessionId, { type: 'message_end', ...meta, message: chat })
         }
-        observeChatMessage(sessionId, raw.message, meta.ts)
+        observeChatMessage(sessionId, raw.message, meta.ts, host.session)
         break
       }
       const chat = toChatMessage(raw.message as never)
-      if (chat) emit(sessionId, { type: 'message_end', ...meta, message: chat })
-      observeChatMessage(sessionId, raw.message, meta.ts)
+      if (chat) {
+        emit(sessionId, { type: 'message_end', ...meta, message: chat })
+        if (chat.role === 'assistant') host.lastAssistantText = chat.content
+      }
+      observeChatMessage(sessionId, raw.message, meta.ts, host.session)
+      // Background memory pass (issue 15). Deliberately not awaited: the user's
+      // answer is already on screen and a slow extraction must not delay the
+      // next turn. Runs only on a turn that actually produced an answer.
+      if (host.autoExtractMemory && !host.extractingMemory) {
+        scheduleMemoryExtraction(host)
+      }
       break
     }
     case 'tool_execution_start': {
@@ -1760,7 +1957,8 @@ async function acquireResourceLoader(
           observeChildRun: (ledger) =>
             observeLlmCall({
               callSource: 'role_task',
-              sessionId: ledger.parentSessionId as SessionId,
+              sessionId:
+                resolveParentHost(ledger.parentSessionId)?.sessionId ?? ledger.parentSessionId,
               role: ledger.role,
               durationMs: ledger.durationMs,
               ok: ledger.ok,
@@ -1790,7 +1988,12 @@ async function acquireResourceLoader(
           getRuntime: () => getModelRuntime(),
           observe: (info) => observeLlmCall({ callSource: 'compaction', ...info })
         }),
-        createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps, { tools: mcpTools })
+        createPluginBridgeFactory(pluginResourceSpec, undefined, hookDeps, { tools: mcpTools }),
+        // ask_user (issue 10). The extension is built per cwd like the others,
+        // but the question itself has to reach the session that is running, so
+        // it routes through the active-run pointer rather than capturing an id
+        // here — a cached loader outlives the session that built it.
+        createAskUserExtension({ ask: (request) => askUser(request) })
       ]
     })
     await resourceLoader.reload()
@@ -1912,7 +2115,11 @@ async function attachSession(
     fileChanges: new Map(),
     writeSnapshots: new Map(),
     toolStarts: new Map(),
-    permissionWaits: new Map()
+    permissionWaits: new Map(),
+    autoExtractMemory: readMemoryAutoExtract(),
+    lastUserText: '',
+    lastAssistantText: '',
+    extractingMemory: false
   }
   host.unsubscribe = session.subscribe((event) => {
     void handleAgentEvent(host, event as unknown as { type?: string })
@@ -2092,6 +2299,27 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       }
       host.pending.delete(req.toolCallId)
       pending.resolve(req.decision)
+      return undefined
+    }
+    case 'respondQuestion': {
+      const entry = pendingQuestions.get(req.questionId)
+      if (entry === undefined || entry.sessionId !== req.sessionId) {
+        throw new ContractError('PERMISSION_EXPIRED', `No pending question ${req.questionId}`)
+      }
+      // Answering also stops the clock — the question is settled either way.
+      entry.settle({ answer: req.answer, timedOut: false })
+      return undefined
+    }
+    case 'stopQuestionTimer': {
+      const entry = pendingQuestions.get(req.questionId)
+      if (entry === undefined || entry.sessionId !== req.sessionId) {
+        // Already answered, timed out, or never existed: nothing to stop.
+        return undefined
+      }
+      // Permanent: clear the timeout and drop the handle so nothing can arm it
+      // again. The question stays open until the user answers.
+      if (entry.timer != null) clearTimeout(entry.timer)
+      pendingQuestions.set(req.questionId, { ...entry, timer: null })
       return undefined
     }
     case 'getPermissionMode': {
