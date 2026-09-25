@@ -1,30 +1,39 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain } from 'electron'
+import type { MessageBoxOptions, WebContents } from 'electron'
 import { randomUUID } from 'crypto'
 import {
   ContractError,
   CONTRACT_ERROR_CODES,
   IPC,
+  PERMISSION_MODES,
+  WEB_EDIT_CHANNELS,
   type ApplyFileChangesInput,
   type ContractErrorCode,
   type CustomModelRef,
   type CustomModelSaveInput,
   type InstallPluginInput,
+  type PermissionMode,
+  type PermissionRuleSet,
   type PromptInput,
   type RespondPermissionInput,
   type NetworkSettings,
   type SetModelInput,
   type SetModelRoleInput,
   type SetNetworkInput,
+  type SetPermissionModeInput,
   type SetThinkingLevelInput,
   type TerminalCreateInput,
   type TerminalInputInput,
-  type TerminalResizeInput
+  type TerminalResizeInput,
+  type UserMcpSaveInput,
+  type WebEditKind
 } from '../shared/contract'
 import { applyFileChanges } from './applyChanges'
 import type { KernelHost } from './kernel'
 import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
+import type { UserMcpService } from './userMcp'
 import type { UserModelsService } from './userModels'
 import type { KernelSettingsService, NetworkConfig } from './kernelSettings'
 import { writeRoleBinding } from './modelRouting'
@@ -116,6 +125,43 @@ function assertText(text: unknown): string {
 }
 
 /**
+ * Window the titlebar strip drives. The focused window wins; a dialog that has
+ * taken focus away from every window must not turn a control click into a no-op.
+ */
+function chromeWindow(): BrowserWindow | null {
+  return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
+}
+
+const ZOOM_STEP = 0.5
+
+const EDIT_ACTIONS: Record<WebEditKind, (contents: WebContents) => void> = {
+  undo: (contents) => contents.undo(),
+  cut: (contents) => contents.cut(),
+  copy: (contents) => contents.copy(),
+  paste: (contents) => contents.paste(),
+  selectAll: (contents) => contents.selectAll()
+}
+
+function runEdit(kind: WebEditKind): void {
+  const contents = chromeWindow()?.webContents
+  if (contents !== undefined) EDIT_ACTIONS[kind](contents)
+}
+
+function showAbout(): Promise<void> {
+  const options: MessageBoxOptions = {
+    type: 'info',
+    title: `About ${app.getName()}`,
+    message: app.getName(),
+    detail: `Version ${app.getVersion()}`,
+    buttons: ['OK']
+  }
+  const win = chromeWindow()
+  return win === null
+    ? dialog.showMessageBox(options).then(() => undefined)
+    : dialog.showMessageBox(win, options).then(() => undefined)
+}
+
+/**
  * Merge what is stored with what the worker can actually do about it. The two
  * are deliberately separate answers: the settings can be on disk and still not
  * be in force, and saying so is the whole point of the Network panel.
@@ -139,37 +185,10 @@ export function registerIpcHandlers(
   registry: SessionRegistry,
   terminals: TerminalManager,
   plugins: PluginService,
+  userMcp: UserMcpService,
   customModels: UserModelsService,
   network: KernelSettingsService
 ): void {
-  /**
-   * Short-term memory for a turn: which earlier sessions already covered this.
-   *
-   * Lives here rather than in the worker because the session registry does — the
-   * worker holds transcripts, not the index. Every prompt pays this, so it runs
-   * under the recall budget and never throws: a turn that starts slightly less
-   * informed beats one that does not start.
-   */
-  const RECALL_MIN_PROMPT = 6
-  const RECALL_MAX_HITS = 5
-  const recallForPrompt = (text: string, currentSessionId: string): SessionSearchHit[] => {
-    const prompt = text.trim()
-    if (prompt.length < RECALL_MIN_PROMPT) return []
-    try {
-      const records = registry.list().filter((record) => record.id !== currentSessionId)
-      const merged = new Map<string, SessionSearchHit>()
-      for (const query of extractRecallQueries(prompt)) {
-        for (const hit of searchSessionRecords(records, query, 3, RECALL_BUDGET)) {
-          if (!merged.has(hit.sessionId)) merged.set(hit.sessionId, hit)
-        }
-        if (merged.size >= RECALL_MAX_HITS) break
-      }
-      return [...merged.values()].slice(0, RECALL_MAX_HITS)
-    } catch {
-      return []
-    }
-  }
-
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
   ipcMain.handle(IPC.createSession, (_e, input: { cwd?: unknown; title?: unknown }) =>
@@ -297,6 +316,35 @@ export function registerIpcHandlers(
     })
   )
 
+/**
+ * Short-term memory for a turn: which earlier sessions already covered this.
+ *
+ * Lives here rather than in the worker because the session registry does — the
+ * worker holds transcripts, not the index. Every prompt pays this, so it runs
+ * under the recall budget and never throws: a turn that starts slightly less
+ * informed beats one that does not start.
+ */
+const RECALL_MIN_PROMPT = 6
+const RECALL_MAX_HITS = 5
+
+function recallForPrompt(text: string, currentSessionId: string): SessionSearchHit[] {
+  const prompt = text.trim()
+  if (prompt.length < RECALL_MIN_PROMPT) return []
+  try {
+    const records = registry.list().filter((record) => record.id !== currentSessionId)
+    const merged = new Map<string, SessionSearchHit>()
+    for (const query of extractRecallQueries(prompt)) {
+      for (const hit of searchSessionRecords(records, query, 3, RECALL_BUDGET)) {
+        if (!merged.has(hit.sessionId)) merged.set(hit.sessionId, hit)
+      }
+      if (merged.size >= RECALL_MAX_HITS) break
+    }
+    return [...merged.values()].slice(0, RECALL_MAX_HITS)
+  } catch {
+    return []
+  }
+}
+
   ipcMain.handle(IPC.prompt, (_e, input: PromptInput) =>
     guard(async () => {
       if (!input || typeof input.sessionId !== 'string') {
@@ -359,6 +407,33 @@ export function registerIpcHandlers(
         decision: input.decision
       })
     })
+  )
+
+  ipcMain.handle(IPC.getPermissionMode, (_e, sessionId: unknown) =>
+    guard(async () => {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      registry.require(sessionId)
+      return kernel.request({ type: 'getPermissionMode', sessionId })
+    })
+  )
+
+  ipcMain.handle(IPC.setPermissionMode, (_e, input: SetPermissionModeInput) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (!PERMISSION_MODES.includes(input.mode)) {
+        throw new ContractError('INVALID_INPUT', `unknown permission mode: ${String(input.mode)}`)
+      }
+      registry.require(input.sessionId)
+      return kernel.request({ type: 'setPermissionMode', sessionId: input.sessionId, mode: input.mode })
+    })
+  )
+
+  ipcMain.handle(IPC.listPermissionRules, () =>
+    guard(async () => kernel.request({ type: 'listPermissionRules' }))
   )
 
   ipcMain.handle(IPC.terminalCreate, (_e, input: TerminalCreateInput) =>
@@ -538,7 +613,6 @@ export function registerIpcHandlers(
   )
 
   ipcMain.handle(IPC.listPlugins, () => guard(() => plugins.list()))
-
   ipcMain.handle(IPC.listSlashCommands, () => guard(() => plugins.slashCommands()))
 
   ipcMain.handle(IPC.getPlugin, (_e, id: unknown) =>
@@ -583,6 +657,42 @@ export function registerIpcHandlers(
     })
   )
 
+  // ── User-level MCP servers (v1.8) ──
+
+  ipcMain.handle(IPC.listUserMcpServers, () => guard(() => userMcp.list()))
+
+  ipcMain.handle(IPC.saveUserMcpServer, (_e, input: UserMcpSaveInput) =>
+    guard(async () => {
+      const list = await userMcp.save(input)
+      await plugins.reloadKernel()
+      return list
+    })
+  )
+
+  ipcMain.handle(IPC.removeUserMcpServer, (_e, name: unknown) =>
+    guard(async () => {
+      if (typeof name !== 'string' || !name) {
+        throw new ContractError('INVALID_INPUT', 'name is required')
+      }
+      const list = await userMcp.remove(name)
+      await plugins.reloadKernel()
+      return list
+    })
+  )
+
+  ipcMain.handle(IPC.toggleUserMcpServer, (_e, input: { name?: unknown; enabled?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.name !== 'string' || typeof input.enabled !== 'boolean') {
+        throw new ContractError('INVALID_INPUT', 'name and enabled are required')
+      }
+      const list = await userMcp.toggle(input.name, input.enabled)
+      await plugins.reloadKernel()
+      return list
+    })
+  )
+
+  ipcMain.handle(IPC.listMcpServerStatus, () => guard(() => kernel.getMcpStatus()))
+
   // §7.3 walkthrough only — not part of CodexApi / shared/contract.
   ipcMain.handle('diag:killWorker', () =>
     guard(() => kernel.killWorkerForTest())
@@ -616,6 +726,27 @@ export function registerIpcHandlers(
         throw new ContractError('INVALID_INPUT', 'id is required')
       }
       rejectSkillWrite(id)
+    })
+  )
+
+  ipcMain.handle(IPC.listSkillUndo, () => guard(() => listSkillUndo()))
+
+  ipcMain.handle(IPC.revertSkillWrite, (_e, id: unknown) =>
+    guard(() => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      const result = revertSkillWrite(id)
+      if (result.reverted.length === 0) {
+        throw new ContractError('INVALID_INPUT', 'nothing to revert — the files were already in that state')
+      }
+      // The reverted skill is live again, so cached loaders carrying the old one
+      // have to go.
+      try {
+        void kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: an attach after the next start rebuilds loaders anyway.
+      }
     })
   )
 
@@ -711,27 +842,6 @@ export function registerIpcHandlers(
     })
   )
 
-  ipcMain.handle(IPC.listSkillUndo, () => guard(() => listSkillUndo()))
-
-  ipcMain.handle(IPC.revertSkillWrite, (_e, id: unknown) =>
-    guard(() => {
-      if (typeof id !== 'string' || !id) {
-        throw new ContractError('INVALID_INPUT', 'id is required')
-      }
-      const result = revertSkillWrite(id)
-      if (result.reverted.length === 0) {
-        throw new ContractError('INVALID_INPUT', 'nothing to revert — the files were already in that state')
-      }
-      // The reverted skill is live again, so cached loaders carrying the old one
-      // have to go.
-      try {
-        void kernel.request({ type: 'reloadResources' })
-      } catch {
-        // Worker down: an attach after the next start rebuilds loaders anyway.
-      }
-    })
-  )
-
   ipcMain.handle(IPC.listMemoryCards, () => guard(() => listMemoryCards()))
 
   ipcMain.handle(
@@ -785,4 +895,57 @@ export function registerIpcHandlers(
       return searchSessionRecords(records, query)
     })
   )
+
+  // ── Frameless window chrome (TitleBar strip) ──
+
+  ipcMain.handle(IPC.windowMinimize, () => guard(() => chromeWindow()?.minimize()))
+
+  ipcMain.handle(IPC.windowMaximizeToggle, () =>
+    guard(() => {
+      const win = chromeWindow()
+      if (win === null) return false
+      const wasMaximized = win.isMaximized()
+      if (wasMaximized) win.unmaximize()
+      else win.maximize()
+      return !wasMaximized
+    })
+  )
+
+  ipcMain.handle(IPC.windowClose, () => guard(() => chromeWindow()?.close()))
+
+  ipcMain.handle(IPC.windowQuit, () => guard(() => app.quit()))
+
+  ipcMain.handle(IPC.webReload, () =>
+    guard(() => {
+      chromeWindow()?.webContents.reload()
+    })
+  )
+
+  ipcMain.handle(IPC.webZoomIn, () =>
+    guard(() => {
+      const contents = chromeWindow()?.webContents
+      if (contents !== undefined) contents.setZoomLevel(contents.getZoomLevel() + ZOOM_STEP)
+    })
+  )
+
+  ipcMain.handle(IPC.webZoomOut, () =>
+    guard(() => {
+      const contents = chromeWindow()?.webContents
+      if (contents !== undefined) contents.setZoomLevel(contents.getZoomLevel() - ZOOM_STEP)
+    })
+  )
+
+  ipcMain.handle(IPC.webZoomReset, () =>
+    guard(() => {
+      chromeWindow()?.webContents.setZoomLevel(0)
+    })
+  )
+
+  ipcMain.handle(WEB_EDIT_CHANNELS.undo, () => guard(() => runEdit('undo')))
+  ipcMain.handle(WEB_EDIT_CHANNELS.cut, () => guard(() => runEdit('cut')))
+  ipcMain.handle(WEB_EDIT_CHANNELS.copy, () => guard(() => runEdit('copy')))
+  ipcMain.handle(WEB_EDIT_CHANNELS.paste, () => guard(() => runEdit('paste')))
+  ipcMain.handle(WEB_EDIT_CHANNELS.selectAll, () => guard(() => runEdit('selectAll')))
+
+  ipcMain.handle(IPC.appAbout, () => guard(showAbout))
 }

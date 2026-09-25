@@ -6,6 +6,54 @@ import type { PluginMcpServerConfig } from '../../shared/kernel-protocol'
 const DEFAULT_CONNECT_TIMEOUT_MS = 10000
 const DEFAULT_CALL_TIMEOUT_MS = 60000
 
+/**
+ * Env handed to a stdio MCP server by default.
+ *
+ * Passing the whole `process.env` — which is what this used to do — hands every
+ * provider API key on the machine to a third-party process that MCP gives us no
+ * way to audit. MCP has no sandbox and no capability model, so the only real
+ * control is what we choose to pass. Servers that genuinely need the full
+ * environment can opt in with `envInherit: true`.
+ */
+const ENV_ALLOWLIST = [
+  'PATH',
+  'PATHEXT',
+  'SystemRoot',
+  'SystemDrive',
+  'COMSPEC',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'USERPROFILE',
+  'HOME',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'SHELL',
+  'TERM',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'SSL_CERT_FILE',
+  'NODE_EXTRA_CA_CERTS'
+]
+
+function inheritEnv(config: PluginMcpServerConfig): Record<string, string> {
+  if (config.envInherit === true) return { ...process.env } as Record<string, string>
+  const out: Record<string, string> = {}
+  for (const key of ENV_ALLOWLIST) {
+    const value = process.env[key]
+    if (typeof value === 'string') out[key] = value
+  }
+  return out
+}
+
 function sanitizeNamePart(name: string): string {
   const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_')
   return sanitized.length > 0 ? sanitized : 'unknown'
@@ -47,7 +95,7 @@ function buildTransport(
     }
   }
   const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries({ ...process.env, ...config.env })) {
+  for (const [key, value] of Object.entries({ ...inheritEnv(config), ...config.env })) {
     if (typeof value === 'string') env[key] = value
   }
   return {

@@ -18,6 +18,7 @@ import {
   tryReadManifest
 } from './pluginManifest'
 import { pluginInstallDir, type PluginRecord, type PluginRegistry } from './pluginRegistry'
+import { mergeUserMcpIntoSpec } from './userMcp'
 
 const COPY_SKIP = new Set(['node_modules', '.git'])
 
@@ -214,9 +215,11 @@ export class PluginService {
   }
 
   async pushResourceSpec(): Promise<void> {
+    const spec = this.registry.collectResourceSpec()
+    mergeUserMcpIntoSpec(spec)
     await this.kernel.request({
       type: 'reloadPlugins',
-      resourceSpec: this.registry.collectResourceSpec()
+      resourceSpec: spec
     })
   }
 

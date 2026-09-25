@@ -5,6 +5,7 @@ import { Worker } from 'worker_threads'
 import {
   IPC,
   type KernelEvent,
+  type McpServerStatusEntry,
   type RoutingState,
   type RunState,
   type SessionId,
@@ -36,6 +37,12 @@ export class KernelHost {
   private onRunState: ((sessionId: SessionId, runState: RunState) => void) | null = null
   private lastStartAt = 0
   private rapidRestarts = 0
+  private mcpStatus: McpServerStatusEntry[] = []
+
+  /** Last worker-reported MCP bridge status (empty until first attach). */
+  getMcpStatus(): McpServerStatusEntry[] {
+    return this.mcpStatus
+  }
 
   setRunStateListener(fn: (sessionId: SessionId, runState: RunState) => void): void {
     this.onRunState = fn
@@ -95,6 +102,14 @@ export class KernelHost {
   }
 
   private onMessage(msg: WorkerResponse): void {
+    if (msg.type === 'mcpStatus') {
+      this.mcpStatus = msg.servers
+      const payload: McpServerStatusEntry[] = JSON.parse(JSON.stringify(msg.servers))
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.mcpStatusChanged, { servers: payload })
+      }
+      return
+    }
     if (msg.type === 'event') {
       this.fanOut(msg.sessionId, msg.event)
       return
