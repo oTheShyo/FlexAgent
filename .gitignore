@@ -6,6 +6,9 @@ dist/
 *.png
 !resources/logo.png
 !src/renderer/public/logo.png
+!src/renderer/public/logo-64.png
+!src/renderer/public/favicon-32.png
+!src/renderer/public/favicon-64.png
 *_probe.txt
 accept_perm.txt
 robot-gardener-story.md
@@ -16,3 +19,8 @@ robot_gardener_story.txt
 scripts/diag-model-*.mjs
 # Local agent workspace memory (project-local data, not source).
 .workbuddy/
+# Transient tool/electron-vite scratch that `git add -A` would sweep up:
+# electron-vite writes a numbered `.mjs` build of `electron.vite.config.ts`
+# next to the source, and `.impeccable/` is review-tool output.
+electron.vite.config.*.mjs
+.impeccable/
