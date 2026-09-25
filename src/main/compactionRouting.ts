@@ -48,6 +48,12 @@ export interface CompactionRoutingDeps {
   resolveCompactionModel: () => Promise<KernelModel | null>
   /** The shared runtime, for that model's credentials. */
   getRuntime: () => Promise<ModelRuntime>
+  /**
+   * Observability hook (docs/observability.md §4): every routing attempt, so
+   * compaction cost and fallbacks are answerable offline. Optional — the
+   * extension stays usable without the sink.
+   */
+  observe?: (info: { model: string; durationMs: number; ok: boolean; note?: string }) => void
 }
 
 /**
@@ -81,8 +87,17 @@ export function createCompactionRoutingExtension(deps: CompactionRoutingDeps): I
     name: 'flex-compaction-routing',
     factory: (pi): void => {
       pi.on('session_before_compact', async (event) => {
+        const started = Date.now()
         const model = await deps.resolveCompactionModel()
-        if (model === null) return undefined
+        if (model === null) {
+          deps.observe?.({
+            model: 'session-model',
+            durationMs: Date.now() - started,
+            ok: true,
+            note: 'no compaction model configured — PI compacts with the session model'
+          })
+          return undefined
+        }
         const runtime = await deps.getRuntime()
         let requestModel = model
         let apiKey: string | undefined
@@ -105,10 +120,20 @@ export function createCompactionRoutingExtension(deps: CompactionRoutingDeps): I
           console.warn(
             `[compaction-routing] no credentials for ${model.provider}/${model.id}; using the session model`
           )
+          deps.observe?.({
+            model: `${model.provider}/${model.id}`,
+            durationMs: Date.now() - started,
+            ok: false,
+            note: 'no credentials — fell back to the session model'
+          })
           return undefined
         }
         try {
           const { compact } = await import('@earendil-works/pi-coding-agent')
+          // An explicit instruction from whoever asked for the compaction wins
+          // on scope, but it is appended rather than replacing the focus: the
+          // summariser has to keep the output-format promise either way.
+          const focus = compactionFocus(event)
           const result = await compact(
             event.preparation as CompactPreparation,
             requestModel,
@@ -123,12 +148,23 @@ export function createCompactionRoutingExtension(deps: CompactionRoutingDeps): I
             undefined,
             undefined
           )
+          deps.observe?.({
+            model: `${model.provider}/${model.id}`,
+            durationMs: Date.now() - started,
+            ok: true
+          })
           return { compaction: result }
         } catch (err) {
           if (event.signal.aborted) throw err
           console.warn(
             `[compaction-routing] ${model.provider}/${model.id} failed (${err instanceof Error ? err.message : String(err)}); using the session model`
           )
+          deps.observe?.({
+            model: `${model.provider}/${model.id}`,
+            durationMs: Date.now() - started,
+            ok: false,
+            note: `compact() failed — fell back to the session model`
+          })
           return undefined
         }
       })

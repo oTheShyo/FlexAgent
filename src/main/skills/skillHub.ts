@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { cp, mkdir, readFile, readdir, rename, rm } from 'fs/promises'
 import { homedir } from 'os'
+import { observePipeline } from '../observability'
 import { basename, join, relative, resolve, sep } from 'path'
 import {
   ContractError,
@@ -474,14 +475,40 @@ async function retryTransient<T>(label: string, run: () => Promise<T>): Promise<
   const MAX_ATTEMPTS = 3
   let lastError: unknown = null
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const attemptStarted = Date.now()
     try {
       return await run()
     } catch (error) {
       lastError = error
       const status = error instanceof PluginZipDownloadError ? error.status : undefined
       const http = typeof status === 'number'
-      if (http) throw error
-      if (attempt === MAX_ATTEMPTS) break
+      if (http) {
+        observePipeline({
+          kind: 'skill_hub',
+          stage: label,
+          ok: false,
+          durationMs: Date.now() - attemptStarted,
+          note: `HTTP ${status} — not retried (status semantics held)`
+        })
+        throw error
+      }
+      if (attempt === MAX_ATTEMPTS) {
+        observePipeline({
+          kind: 'skill_hub',
+          stage: label,
+          ok: false,
+          durationMs: Date.now() - attemptStarted,
+          note: `transport failure — ${MAX_ATTEMPTS} attempts exhausted`
+        })
+        break
+      }
+      observePipeline({
+        kind: 'skill_hub',
+        stage: label,
+        ok: false,
+        durationMs: Date.now() - attemptStarted,
+        note: `attempt ${attempt} failed (transport) — retrying`
+      })
       await new Promise((r) => setTimeout(r, 400 * 2 ** (attempt - 1)))
       console.warn(`[skillHub] ${label}: attempt ${attempt} failed, retrying`)
     }
@@ -621,7 +648,7 @@ async function fetchText(url: string, headers?: Record<string, string>): Promise
 
 // ─── Install / uninstall ──────────────────────────────────────────────────────
 
-export async function installSkill(
+async function installSkillInner(
   source: InstallSkillSource,
   overwrite = false
 ): Promise<SkillSummary> {
@@ -775,6 +802,39 @@ export async function installSkill(
         throw cleanupError
       }
     }
+  }
+}
+
+/**
+ * Public install entry with an observability wrapper (docs/observability.md
+ * §5): every install — success or failure, with the failing error — lands in
+ * `~/.flexagent/observability/pipeline.jsonl`. This is the answer to "安装偶尔
+ * 失败，为什么" without rerunning anything.
+ */
+export async function installSkill(
+  source: InstallSkillSource,
+  overwrite = false
+): Promise<SkillSummary> {
+  const started = Date.now()
+  try {
+    const summary = await installSkillInner(source, overwrite)
+    observePipeline({
+      kind: 'skill_install',
+      stage: 'install',
+      ok: true,
+      durationMs: Date.now() - started,
+      note: summary.name
+    })
+    return summary
+  } catch (error) {
+    observePipeline({
+      kind: 'skill_install',
+      stage: 'install',
+      ok: false,
+      durationMs: Date.now() - started,
+      note: error instanceof Error ? error.message : String(error)
+    })
+    throw error
   }
 }
 
