@@ -1,0 +1,157 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // ─────────────────────────────────────────────────────────────────────────────
+  // FlexAgent lint gate (ticket 02). Run with: `npm run lint`
+  // which is `oxlint --deny-warnings` — any warning or error fails the gate,
+  // so nothing below can fail silently: every pre-existing violation is either
+  // covered by an explicit, commented exemption group or the gate is red.
+  //
+  // Scope decision (see ticket 02 report): correctness-focused rules only.
+  // The categories `style`, `pedantic`, `restriction` are deliberately NOT
+  // enabled — they produce thousands of hits across the existing codebase and
+  // fixing them would mean mass-editing files that sibling agents are
+  // concurrently working on (explicitly forbidden by ticket 02).
+  // ─────────────────────────────────────────────────────────────────────────────
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    // Hygiene rules promoted to `error` so the gate actually fails on them;
+    // every pre-existing hit is exempted (commented) below.
+    "eslint/no-unused-vars": "error",
+    "eslint/no-unsafe-finally": "error",
+    "eslint/no-useless-escape": "error",
+    "unicorn/no-new-array": "error",
+    "unicorn/no-useless-spread": "error",
+    "unicorn/no-useless-fallback-in-spread": "error"
+  },
+  "ignorePatterns": [
+    // ══ EXEMPTION GROUP A — scripts/ (11 pre-existing violations) ══════════════
+    // The 37 hand-run acceptance/diagnostic CDP harnesses under scripts/
+    // (accept-*.mjs, diag-*.mjs, probe-*.mjs, …) are e2e scaffolding, not
+    // product code. Ticket 02 explicitly says not to convert them, and ticket
+    // 05's lane owns scripts/ — linting them would force edits in a sibling
+    // lane. All of them are therefore exempt as a directory. Violations that
+    // motivated this group: 9x eslint/no-unused-vars (unused `delay`/import
+    // shims in throwaway probes) and 2x unicorn/prefer-string-starts-ends-with.
+    "scripts",
+    // ══ EXEMPTION GROUP B — generated / transient trees ═══════════════════════
+    // Not source code: build output (out/ is also ignored by oxlint defaults),
+    // dependency trees, agent scratch/working directories, and timestamped
+    // `electron.vite.config.<ms>.mjs` backups emitted by electron-vite dev.
+    "node_modules",
+    "out",
+    "dist",
+    "coverage",
+    "resources",
+    ".scratch",
+    ".workbuddy",
+    ".impeccable",
+    ".qa-shots",
+    ".tmp-apply-accept",
+    "electron.vite.config.*.mjs"
+  ],
+  "overrides": [
+    // ══ EXEMPTION GROUP C — pre-existing unused symbols in src (13 hits) ══════
+    // Dead imports/params/interfaces that predate this ticket. Ticket 02 forbids
+    // mass-fixing source files while sibling agents edit the same tree, so the
+    // debt is recorded here instead: `eslint/no-unused-vars` stays at `error`
+    // for every other file in the repo. Each file below is listed with the kind
+    // of hit it carries:
+    //   src/main/pluginBridge.ts        — unused `dirname` import
+    //   src/main/ipc.ts                 — unused type imports (PermissionMode, PermissionRuleSet)
+    //   src/main/pluginMarketplace.ts   — 3 unused type imports + 1 unused interface
+    //   src/main/pluginMcp.ts           — unused `diagnostics` parameter
+    //   src/main/worker.ts              — 2 unused type imports + unused `cwd` parameter
+    //   src/main/skills/memoryStore.ts  — unused `homedir` import
+    //   src/main/skills/skillUsage.ts   — unused function `ownerOf`
+    // Extended during ticket 02's final verification with three files that
+    // gained unused symbols while sibling agents were mid-edit (still not
+    // mine to fix): permissionRules.ts (`pathsForArgs` import), the newly
+    // added security/credentialVault.ts (`existsSync` import), and
+    // renderer/src/api/mock.ts (3 unused contract type imports).
+    {
+      "files": [
+        "src/main/pluginBridge.ts",
+        "src/main/ipc.ts",
+        "src/main/pluginMarketplace.ts",
+        "src/main/pluginMcp.ts",
+        "src/main/worker.ts",
+        "src/main/skills/memoryStore.ts",
+        "src/main/skills/skillUsage.ts",
+        "src/main/permissionRules.ts",
+        "src/main/security/credentialVault.ts",
+        "src/renderer/src/api/mock.ts"
+      ],
+      "rules": {
+        "eslint/no-unused-vars": "off"
+      }
+    },
+    // ══ EXEMPTION GROUP D — pre-existing spread/array-construction debt ═══════
+    // 10 hits that predate this ticket (6x no-useless-spread, 2x no-new-array,
+    // 2x no-useless-fallback-in-spread). All are micro-optimisation nits with
+    // no behaviour change; fixing them means editing files owned by concurrent
+    // sibling lanes. The rules remain `error` everywhere else in the repo.
+    //   src/main/kernel.ts, src/main/worker.ts, src/main/skills/selfEvolution.ts,
+    //   src/renderer/src/api/mock.ts — `for (const x of [...iterable])` style spreads
+    //   src/main/agents/multiAgent.ts, src/renderer/src/lib/shapes.ts — `new Array(x)`
+    //   src/main/pty.ts, src/main/userMcp.ts — `...(cond ? x : {})` fallbacks
+    {
+      "files": [
+        "src/main/kernel.ts",
+        "src/main/worker.ts",
+        "src/main/skills/selfEvolution.ts",
+        "src/renderer/src/api/mock.ts",
+        "src/main/agents/multiAgent.ts",
+        "src/renderer/src/lib/shapes.ts",
+        "src/main/pty.ts",
+        "src/main/userMcp.ts"
+      ],
+      "rules": {
+        "unicorn/no-useless-spread": "off",
+        "unicorn/no-new-array": "off",
+        "unicorn/no-useless-fallback-in-spread": "off"
+      }
+    },
+    // ══ EXEMPTION GROUP E — deliberate throw in `finally` (1 hit) ═════════════
+    // src/main/skills/skillHub.ts:802 re-throws a best-effort cleanup error
+    // from a `finally` block — but only on the `root === null` path where no
+    // primary result exists to return, i.e. it cannot mask a successful
+    // install. Flagged so the intent stays visible; rewriting the control flow
+    // is outside ticket 02's scope.
+    {
+      "files": ["src/main/skills/skillHub.ts"],
+      "rules": {
+        "eslint/no-unsafe-finally": "off"
+      }
+    },
+    // ══ EXEMPTION GROUP F — redundant char-class escape (1 hit) ═══════════════
+    // src/main/skills/memoryLint.ts:36 writes `[A-Za-z0-9_\-]` in a secret-
+    // detection regex. The `\-` is a redundant-but-harmless escape; the regex
+    // is safety-critical (credential linting), so it is deliberately left
+    // byte-for-byte untouched rather than risk a "harmless" rewrite in the
+    // security path while sibling agents are mid-edit.
+    {
+      "files": ["src/main/skills/memoryLint.ts"],
+      "rules": {
+        "eslint/no-useless-escape": "off"
+      }
+    },
+    // ══ NEW CODE — tests are held to the strict gate with no exemptions ══════
+    // tests/** is this ticket's own lane: everything above is `error` there and
+    // no rule is turned off. Keep it that way — a violation in tests/ fails
+    // `npm run lint`.
+    {
+      "files": ["tests/**/*.ts"],
+      "rules": {
+        "eslint/no-unused-vars": "error",
+        "eslint/no-unsafe-finally": "error",
+        "eslint/no-useless-escape": "error",
+        "unicorn/no-new-array": "error",
+        "unicorn/no-useless-spread": "error",
+        "unicorn/no-useless-fallback-in-spread": "error"
+      }
+    }
+  ]
+}
