@@ -108,7 +108,7 @@ function PluginDetailPanel({
         aria-label="Close plugin details"
         tabIndex={-1}
         onClick={onClose}
-        className="absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
+        className="fx-overlay absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
       />
       <aside
         ref={panelRef}
@@ -117,7 +117,7 @@ function PluginDetailPanel({
         aria-label="Plugin details"
         tabIndex={-1}
         data-testid="plugin-detail"
-        className="absolute inset-y-0 right-0 flex w-[520px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[-12px_0_32px_rgba(0,0,0,0.08)] focus:outline-none"
+        className="fx-slide-right absolute inset-y-0 right-0 flex w-[520px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)] focus:outline-none"
       >
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
           <div className="flex min-w-0 items-baseline gap-2">

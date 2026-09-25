@@ -436,9 +436,8 @@ function SettingsPage({
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-6"
       role="presentation"
-      onClick={onClose}
     >
-      <div className="absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
+      <div className="fx-overlay absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
       {/* A bounded window, not the whole viewport: settings is something you
           open next to your work and close again. */}
       <div
@@ -449,12 +448,12 @@ function SettingsPage({
         aria-label="Settings"
         data-testid="settings-panel"
         onClick={handlePanelClick}
-        className="relative flex h-[min(660px,86vh)] w-[min(960px,92vw)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow-[var(--shadow-lg)] outline-none"
+        className="fx-rise relative flex h-[min(660px,86vh)] w-[min(960px,92vw)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow-[var(--shadow-lg)] outline-none"
       >
         <nav
           aria-label="Settings sections"
           data-testid="settings-nav"
-          className="flex w-56 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-sidebar)]"
+          className="flex w-56 shrink-0 flex-col bg-[var(--surface-sidebar)]"
         >
           <div className="flex items-center gap-2.5 px-3.5 py-3.5">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">

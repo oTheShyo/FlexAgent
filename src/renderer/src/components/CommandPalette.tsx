@@ -7,6 +7,7 @@ import { SHORTCUTS } from '../lib/shortcuts'
 import { PluginIcon } from './pluginIcons'
 import {
   ChatDotIcon,
+  CloseIcon,
   NewChatIcon,
   SearchIcon,
   SettingsIcon,
@@ -185,10 +186,6 @@ function CommandPalette({
     [filtered, selectedIndex, runCommand]
   )
 
-  const handleBackdropClick = useCallback((): void => {
-    onClose()
-  }, [onClose])
-
   const handlePanelClick = useCallback((event: ReactMouseEvent<HTMLDivElement>): void => {
     event.stopPropagation()
   }, [])
@@ -202,16 +199,15 @@ function CommandPalette({
     <div
       className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh]"
       role="presentation"
-      onClick={handleBackdropClick}
     >
-      <div className="absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
+      <div className="fx-overlay absolute inset-0 bg-[var(--overlay)]" aria-hidden="true" />
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
         data-testid="command-palette"
         onClick={handlePanelClick}
-        className="relative w-full max-w-lg overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]"
+        className="fx-rise relative w-full max-w-lg overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]"
       >
         <div className="flex items-center gap-2 border-b border-[var(--border)] px-3">
           <SearchIcon className="h-4 w-4 shrink-0 text-[var(--text-subtle)]" />
@@ -223,19 +219,28 @@ function CommandPalette({
             onKeyDown={handleInputKeyDown}
             placeholder="Type a command or search chats…"
             aria-label="Type a command or search chats"
-            aria-controls="command-palette-list"
+            aria-controls={filtered.length > 0 ? 'command-palette-list' : undefined}
             aria-activedescendant={activeDescendantId}
             role="combobox"
-            aria-expanded="true"
+            aria-expanded={filtered.length > 0}
             aria-autocomplete="list"
             autoComplete="off"
             spellCheck={false}
-            className="h-11 w-full bg-transparent text-sm text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none"
+            className="h-11 w-full bg-transparent text-sm text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
             data-testid="command-palette-input"
           />
           <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
             Esc
           </kbd>
+          <button
+            type="button"
+            aria-label="Close"
+            data-testid="command-palette-close"
+            onClick={onClose}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+          >
+            <CloseIcon />
+          </button>
         </div>
 
         {filtered.length === 0 ? (

@@ -167,12 +167,12 @@ export function DiffPanel({
         aria-label="Close review"
         tabIndex={-1}
         onClick={onClose}
-        className="absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
+        className="fx-overlay absolute inset-0 h-full w-full cursor-default bg-[var(--overlay)]"
       />
       <aside
         role="dialog"
         aria-label="Review"
-        className="absolute inset-y-0 right-0 flex w-[640px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[-12px_0_32px_rgba(0,0,0,0.08)]"
+        className="fx-slide-right absolute inset-y-0 right-0 flex w-[640px] max-w-[92vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)]"
       >
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
           <div className="flex items-baseline gap-3">

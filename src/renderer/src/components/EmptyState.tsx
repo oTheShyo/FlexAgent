@@ -3,6 +3,7 @@ import { EmptyCloudIcon } from './icons'
 export default function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+      <div className="theme-art mb-4" aria-hidden="true" />
       <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] shadow-[var(--shadow-sm)]">
         <EmptyCloudIcon className="h-5 w-5" />
       </div>

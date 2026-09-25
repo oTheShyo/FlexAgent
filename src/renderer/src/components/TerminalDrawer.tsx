@@ -8,6 +8,7 @@ import type { KernelEvent, SessionId, TerminalId } from '../../../shared/contrac
 import { codexApi } from '../api'
 import { subscribeThemeChange } from '../lib/theme'
 import { IconButton } from './ui'
+import { CloseIcon } from './icons'
 
 export interface TerminalDrawerProps {
   open: boolean
@@ -247,7 +248,7 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
 
   return (
     <div
-      className="fixed inset-x-0 bottom-0 z-40 flex h-72 flex-col overflow-hidden rounded-t-xl border-t border-[var(--border)] bg-[var(--surface)] shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
+      className="fx-fade flex h-72 shrink-0 flex-col overflow-hidden rounded-t-xl border-t border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-overlay)]"
       data-testid="terminal-drawer"
     >
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--surface-sunken)] px-3">
@@ -255,7 +256,7 @@ function TerminalDrawer({ open, onClose, sessionId }: TerminalDrawerProps) {
           Terminal
         </span>
         <IconButton variant="ghost" label="Close terminal" onClick={onClose}>
-          ✕
+          <CloseIcon />
         </IconButton>
       </div>
 

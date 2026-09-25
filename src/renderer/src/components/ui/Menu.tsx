@@ -6,7 +6,7 @@ export interface MenuPanelProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const PANEL_CLASS =
-  'absolute z-30 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[var(--shadow-lg)]'
+  'fx-pop absolute z-30 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[var(--shadow-lg)]'
 
 function MenuPanel({ className, children, ...rest }: MenuPanelProps) {
   return (

@@ -106,7 +106,7 @@ export function LoadingIndicator({
       aria-label={label}
       aria-busy="true"
     >
-      {contained && <circle cx={c} cy={c} r={c} fill={containerColor ?? 'rgba(0,0,0,0.08)'} />}
+      {contained && <circle cx={c} cy={c} r={c} fill={containerColor ?? 'var(--border)'} />}
       <path ref={pathRef} d={staticD} transform={staticTransform} fill={color} />
     </svg>
   )

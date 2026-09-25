@@ -3,7 +3,9 @@ import type { PluginComponentKind, PluginSummary, PluginSourceKind } from '../ty
 import { PluginIcon } from './pluginIcons'
 import { Button, Chip } from './ui'
 import { useMarketplace } from '../hooks/useMarketplace'
+import { useUserMcp } from '../hooks/useUserMcp'
 import MarketplacePanel from './MarketplacePanel'
+import McpPanel from './McpPanel'
 
 export interface PluginsPageProps {
   plugins: PluginSummary[]
@@ -35,7 +37,7 @@ const SOURCE_SECTION_LABEL: Record<PluginSourceKind, string> = {
 
 type StatusFilter = 'all' | 'enabled' | 'disabled'
 
-type PluginsView = 'installed' | 'marketplace'
+type PluginsView = 'installed' | 'marketplace' | 'mcp'
 
 const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -190,6 +192,11 @@ function PluginRow({
   )
 }
 
+function McpView() {
+  const mcp = useUserMcp()
+  return <McpPanel mcp={mcp} />
+}
+
 function PluginsPage({
   plugins,
   loading,
@@ -317,9 +324,22 @@ function PluginsPage({
         >
           Marketplace
         </Chip>
+        <Chip
+          active={view === 'mcp'}
+          onClick={() => setView('mcp')}
+          aria-pressed={view === 'mcp'}
+          data-testid="marketplace-view-mcp"
+          className="h-7 px-2.5 text-[11px]"
+        >
+          MCP 服务
+        </Chip>
       </div>
 
-      {view === 'marketplace' ? (
+      {view === 'mcp' ? (
+        <div className="mt-4">
+          <McpView />
+        </div>
+      ) : view === 'marketplace' ? (
         <div className="mt-4">
           <MarketplacePanel marketplace={marketplace} />
         </div>

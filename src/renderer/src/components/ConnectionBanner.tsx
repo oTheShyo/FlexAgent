@@ -10,7 +10,7 @@ function ConnectionBanner({ message, onRetry }: ConnectionBannerProps) {
     <div
       role="status"
       data-testid="connection-banner"
-      className="flex shrink-0 items-center gap-2 border-b border-[var(--warning-border)] bg-[var(--warning-bg)] px-4 py-1.5 text-xs text-[var(--warning-text)]"
+      className="fx-fade flex shrink-0 items-center gap-2 border-b border-[var(--warning-border)] bg-[var(--warning-bg)] px-4 py-1.5 text-xs text-[var(--warning-text)]"
     >
       <span
         className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--warning)]"

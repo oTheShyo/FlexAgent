@@ -32,11 +32,11 @@ export interface SidebarProps {
   /** `cwd` opens a chat in that directory; omitted starts a scratch chat. */
   onNewChat: (cwd?: string) => void
   onSelect: (sessionId: string) => void
-  /** Picks a directory and opens a chat in it (Projects "+" affordance). */
+  /** Reserved folder-open affordance; no longer rendered in the sidebar. */
   onAddProject?: () => void
   /**
-   * Scratch workspace path. Chats sitting there have no project yet, so they
-   * are excluded from the Projects grouping.
+   * Scratch workspace path. Chats sitting there belong to no workspace yet, so
+   * they are grouped under the flat "Chats" subgroup instead of a folder.
    */
   scratchCwd?: string | null
   onDelete?: (sessionId: string) => void
@@ -96,18 +96,163 @@ interface SessionRowData {
   archived: boolean
 }
 
-interface ProjectRowData {
-  /** Normalised comparison key; the filter holds this, not the raw path. */
+interface WorkspaceGroupData {
+  /** Normalised comparison key; expansion state is keyed on this, not the raw path. */
   key: string
   /** Representative absolute path (first spelling seen for this directory). */
   cwd: string
   label: string
-  chats: number
+  rows: SessionRowData[]
 }
+
+/** `expandedGroups` sentinel key for the workspace-less "Chats" section. */
+const CHATS_GROUP_KEY = '__chats__'
 
 function matchesQuery(title: string, query: string): boolean {
   if (query.length === 0) return true
   return title.toLowerCase().includes(query)
+}
+
+interface SessionRowProps {
+  session: SessionSummary
+  title: string
+  archived: boolean
+  active: boolean
+  renaming: boolean
+  renameDraft: string
+  renameInputRef: React.RefObject<HTMLInputElement | null>
+  menuOpen: boolean
+  confirmingDelete: boolean
+  canDelete: boolean
+  onRenameDraftChange: (value: string) => void
+  onRenameKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => void
+  onRenameBlur: () => void
+  onSelect: (sessionId: string) => void
+  onOpenMenu: (sessionId: string) => void
+  onStartRename: (sessionId: string, title: string) => void
+  onToggleArchive: (sessionId: string, archived: boolean) => void
+  onRequestDelete: (sessionId: string) => void
+  onCancelDelete: () => void
+  onConfirmDelete: (sessionId: string) => void
+}
+
+function SessionRow({
+  session,
+  title,
+  archived,
+  active,
+  renaming,
+  renameDraft,
+  renameInputRef,
+  menuOpen,
+  confirmingDelete,
+  canDelete,
+  onRenameDraftChange,
+  onRenameKeyDown,
+  onRenameBlur,
+  onSelect,
+  onOpenMenu,
+  onStartRename,
+  onToggleArchive,
+  onRequestDelete,
+  onCancelDelete,
+  onConfirmDelete
+}: SessionRowProps) {
+  const running = session.runState === 'running'
+  return (
+    <li className="group relative" data-session-menu-root={session.id}>
+      {renaming ? (
+        <input
+          ref={renameInputRef}
+          type="text"
+          value={renameDraft}
+          onChange={(event) => onRenameDraftChange(event.target.value)}
+          onKeyDown={onRenameKeyDown}
+          onBlur={onRenameBlur}
+          aria-label="Rename session"
+          spellCheck={false}
+          className="h-9 w-full rounded-md border border-[var(--border-strong)] bg-[var(--surface)] px-2 text-sm text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          data-testid="session-rename-input"
+        />
+      ) : (
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => onSelect(session.id)}
+            aria-current={active ? 'true' : undefined}
+            className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
+              active
+                ? 'bg-[var(--active)] font-medium text-[var(--text)]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
+            }`}
+          >
+            <ChatDotIcon />
+            <span className="min-w-0 flex-1 truncate">{title}</span>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                running ? 'bg-[var(--warning)]' : 'bg-[var(--status-idle)]'
+              }`}
+              title={running ? 'Running' : 'Idle'}
+              aria-label={running ? 'Running' : 'Idle'}
+            />
+            <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+              {formatWhen(session.updatedAt)}
+            </span>
+          </button>
+          <IconButton
+            label={`Session actions: ${title}`}
+            variant="ghost"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => onOpenMenu(session.id)}
+            className={
+              menuOpen
+                ? 'opacity-100'
+                : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+            }
+            data-testid="session-row-menu"
+          >
+            <MoreIcon />
+          </IconButton>
+        </div>
+      )}
+
+      {menuOpen && (
+        <MenuPanel aria-label={`Actions for ${title}`} className="right-1 top-full mt-0.5 w-44">
+          {confirmingDelete ? (
+            <>
+              <p className="px-2.5 py-1.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                Delete this chat? The transcript is removed for good.
+              </p>
+              <MenuItem onClick={onCancelDelete} data-testid="session-delete-cancel">
+                Cancel
+              </MenuItem>
+              <MenuItem
+                onClick={() => onConfirmDelete(session.id)}
+                className="gap-1.5 !text-[var(--danger-text)] hover:!bg-[var(--danger-bg)]"
+                data-testid="session-delete-confirm"
+              >
+                <TrashIcon className="h-3.5 w-3.5" />
+                Delete
+              </MenuItem>
+            </>
+          ) : (
+            <>
+              <MenuItem onClick={() => onStartRename(session.id, title)}>Rename</MenuItem>
+              <MenuItem onClick={() => onToggleArchive(session.id, archived)}>
+                {archived ? 'Unarchive' : 'Archive'}
+              </MenuItem>
+              {canDelete && (
+                <MenuItem onClick={() => onRequestDelete(session.id)} data-testid="session-delete">
+                  Delete…
+                </MenuItem>
+              )}
+            </>
+          )}
+        </MenuPanel>
+      )}
+    </li>
+  )
 }
 
 function Sidebar({
@@ -115,7 +260,6 @@ function Sidebar({
   activeSessionId,
   onNewChat,
   onSelect,
-  onAddProject,
   scratchCwd = null,
   onDelete,
   loading = false,
@@ -134,8 +278,7 @@ function Sidebar({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [projectFilter, setProjectFilter] = useState<string | null>(null)
-  const [projectsOpen, setProjectsOpen] = useState(true)
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const renameCancelledRef = useRef(false)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -204,8 +347,8 @@ function Sidebar({
     setMenuId((current) => (current === sessionId ? null : sessionId))
   }, [])
 
-  const toggleProject = useCallback((key: string): void => {
-    setProjectFilter((current) => (current === key ? null : key))
+  const toggleGroup = useCallback((key: string): void => {
+    setExpandedGroups((current) => ({ ...current, [key]: !(current[key] ?? true) }))
   }, [])
 
   useEffect(() => {
@@ -282,43 +425,7 @@ function Sidebar({
     }
   }, [normalizedQuery, query])
 
-  const projects = useMemo<ProjectRowData[]>(() => {
-    const scratchKey = scratchCwd === null ? null : pathKey(scratchCwd)
-    const byKey = new Map<string, ProjectRowData>()
-    for (const session of sessions) {
-      if (session.cwd.length === 0) continue
-      const key = pathKey(session.cwd)
-      // Scratch chats belong to no project, so they are not a project row.
-      if (key === scratchKey) continue
-      const existing = byKey.get(key)
-      if (existing === undefined) {
-        byKey.set(key, {
-          key,
-          cwd: session.cwd,
-          label: pathBasename(session.cwd),
-          chats: 1
-        })
-      } else {
-        existing.chats += 1
-      }
-    }
-    return [...byKey.values()].sort(
-      (a, b) => b.chats - a.chats || a.label.localeCompare(b.label)
-    )
-  }, [sessions, scratchCwd])
-
   const archivedCount = useMemo(() => countArchivedSessions(sessions, meta), [sessions, meta])
-
-  const activeProject = useMemo<ProjectRowData | null>(
-    () => projects.find((project) => project.key === projectFilter) ?? null,
-    [projects, projectFilter]
-  )
-
-  // A project can disappear when its last chat is deleted; drop the stale filter.
-  useEffect(() => {
-    if (projectFilter === null) return
-    if (!projects.some((project) => project.key === projectFilter)) setProjectFilter(null)
-  }, [projects, projectFilter])
 
   const visibleSessions = useMemo<SessionRowData[]>(() => {
     const rows: SessionRowData[] = []
@@ -328,13 +435,66 @@ function Sidebar({
       // Pin the active row so archiving the open session never hides it (no createSession side effect).
       const inView = showArchived ? archived : !archived || session.id === activeSessionId
       if (!inView) continue
-      // The archived bucket is its own place, so a project filter only narrows the chats view.
-      if (!showArchived && projectFilter !== null && pathKey(session.cwd) !== projectFilter) continue
       if (!matchesQuery(title, normalizedQuery)) continue
       rows.push({ session, title, archived })
     }
     return rows
-  }, [sessions, meta, normalizedQuery, showArchived, projectFilter, activeSessionId])
+  }, [sessions, meta, normalizedQuery, showArchived, activeSessionId])
+
+  // sessionSearch.ts also matches titles, so a title-matched chat would render
+  // twice (row above + History match) without this filter; hidden rows such as
+  // archived ones are kept so search can still reach them.
+  const historyOnlyHits = useMemo<SessionSearchHit[] | null>(() => {
+    if (historyHits === null) return null
+    const shownIds = new Set(visibleSessions.map((row) => row.session.id))
+    return historyHits.filter((hit) => !shownIds.has(hit.sessionId))
+  }, [historyHits, visibleSessions])
+
+  const chatsRows = useMemo<SessionRowData[]>(
+    () =>
+      visibleSessions.filter(({ session }) => {
+        if (session.cwd.length === 0) return true
+        return scratchCwd !== null && pathKey(session.cwd) === pathKey(scratchCwd)
+      }),
+    [visibleSessions, scratchCwd]
+  )
+
+  const workspaceGroups = useMemo<WorkspaceGroupData[]>(() => {
+    const byKey = new Map<string, WorkspaceGroupData>()
+    for (const row of visibleSessions) {
+      if (row.session.cwd.length === 0) continue
+      const key = pathKey(row.session.cwd)
+      if (scratchCwd !== null && key === pathKey(scratchCwd)) continue
+      const existing = byKey.get(key)
+      if (existing === undefined) {
+        byKey.set(key, {
+          key,
+          cwd: row.session.cwd,
+          label: pathBasename(row.session.cwd),
+          rows: [row]
+        })
+      } else {
+        existing.rows.push(row)
+      }
+    }
+    return [...byKey.values()].sort(
+      (a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label)
+    )
+  }, [visibleSessions, scratchCwd])
+
+  // The open chat must never sit behind a collapsed folder.
+  useEffect(() => {
+    if (activeSessionId === null) return
+    const key = chatsRows.some((row) => row.session.id === activeSessionId)
+      ? CHATS_GROUP_KEY
+      : workspaceGroups.find((entry) =>
+          entry.rows.some((row) => row.session.id === activeSessionId)
+        )?.key
+    if (key === undefined) return
+    setExpandedGroups((current) =>
+      current[key] === false ? { ...current, [key]: true } : current
+    )
+  }, [workspaceGroups, chatsRows, activeSessionId])
 
   const emptyMessage =
     sessions.length === 0
@@ -345,30 +505,51 @@ function Sidebar({
           ? 'No archived chats'
           : normalizedQuery.length > 0
             ? 'No matching chats'
-            : activeProject !== null
-              ? `No chats in ${activeProject.label}`
-              : 'No matching chats'
+            : 'No chats yet'
 
   const archiveToggleLabel = showArchived ? 'Show chats' : 'Archived'
 
-  const listHeading = showArchived ? 'Archived' : (activeProject?.label ?? 'Chats')
+  const chatsExpanded = expandedGroups[CHATS_GROUP_KEY] ?? true
 
-  const newChatLabel =
-    activeProject === null ? 'New chat' : `New chat in ${activeProject.label}`
+  const renderSessionRow = ({ session, title, archived }: SessionRowData): React.ReactNode => (
+    <SessionRow
+      key={session.id}
+      session={session}
+      title={title}
+      archived={archived}
+      active={session.id === activeSessionId}
+      renaming={renamingId === session.id}
+      renameDraft={renameDraft}
+      renameInputRef={renameInputRef}
+      menuOpen={menuId === session.id}
+      confirmingDelete={confirmDeleteId === session.id}
+      canDelete={onDelete !== undefined}
+      onRenameDraftChange={setRenameDraft}
+      onRenameKeyDown={handleRenameKeyDown}
+      onRenameBlur={handleRenameBlur}
+      onSelect={onSelect}
+      onOpenMenu={openMenu}
+      onStartRename={startRename}
+      onToggleArchive={toggleArchive}
+      onRequestDelete={requestDelete}
+      onCancelDelete={cancelDelete}
+      onConfirmDelete={confirmDelete}
+    />
+  )
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-sidebar)]">
+      <aside className="fx-fade flex h-full w-64 shrink-0 flex-col bg-[var(--surface-sidebar)]">
       <div className="flex items-center gap-2 px-4 pb-4 pt-4">
-        <img src="/logo.png" alt="" className="h-6 w-6 rounded-md object-cover" />
+        <img src="/logo-64.png" alt="" className="h-6 w-6 rounded-md object-cover" />
         <span className="text-sm font-semibold tracking-tight text-[var(--text)]">FlexAgent</span>
       </div>
 
       <nav className="space-y-1 px-2 pb-4" aria-label="Primary">
         <NavRow
           icon={<NewChatIcon />}
-          label={newChatLabel}
+          label="New chat"
           primary
-          onClick={() => onNewChat(activeProject?.cwd)}
+          onClick={() => onNewChat()}
         />
         <NavRow
           icon={<PluginsIcon />}
@@ -390,90 +571,6 @@ function Sidebar({
         />
         <NavRow icon={<ScheduledIcon />} label="Scheduled" disabled title="Coming soon" />
       </nav>
-
-      {projects.length > 0 && (
-        <>
-          <div className="mx-4 border-t border-[var(--border)]" />
-          <div className="px-2 pt-3" data-testid="projects">
-            <div className="flex items-center gap-1 px-2 pb-1">
-              <button
-                type="button"
-                onClick={() => setProjectsOpen((value) => !value)}
-                aria-expanded={projectsOpen}
-                aria-controls="sidebar-projects"
-                className="flex min-w-0 flex-1 items-center gap-1 rounded text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                data-testid="projects-toggle"
-              >
-                <svg
-                  className={`h-3 w-3 shrink-0 transition-transform ${projectsOpen ? '' : '-rotate-90'}`}
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-                Projects
-                <span className="font-normal">({projects.length})</span>
-              </button>
-              {onAddProject !== undefined && (
-                <IconButton
-                  label="Open a folder as a project"
-                  variant="ghost"
-                  onClick={onAddProject}
-                  data-testid="project-add"
-                >
-                  <svg
-                    className="h-3.5 w-3.5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    strokeLinecap="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 5v14" />
-                    <path d="M5 12h14" />
-                  </svg>
-                </IconButton>
-              )}
-            </div>
-
-            {projectsOpen && (
-              <ul id="sidebar-projects" className="max-h-44 space-y-0.5 overflow-y-auto">
-                {projects.map((project) => {
-                  const isSelected = project.key === projectFilter
-                  return (
-                    <li key={project.key}>
-                      <button
-                        type="button"
-                        onClick={() => toggleProject(project.key)}
-                        aria-pressed={isSelected}
-                        title={project.cwd}
-                        data-testid="project-row"
-                        className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
-                          isSelected
-                            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
-                        }`}
-                      >
-                        <FolderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]" />
-                        <span className="min-w-0 flex-1 truncate">{project.label}</span>
-                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
-                          {project.chats}
-                        </span>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
-        </>
-      )}
 
       <div className="mx-4 mt-3 border-t border-[var(--border)]" />
 
@@ -497,38 +594,45 @@ function Sidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-        <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
-            <span className="truncate" data-testid="session-list-heading">
-              {listHeading}
-            </span>
-            {!showArchived && activeProject !== null && (
-              <button
-                type="button"
-                onClick={() => setProjectFilter(null)}
-                aria-label="Clear project filter"
-                title="Clear project filter"
-                data-testid="project-clear"
-                className="shrink-0 rounded px-1 text-[11px] text-[var(--text-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              >
-                ✕
-              </button>
-            )}
-          </span>
+        <div className="flex items-center justify-start gap-2 px-2 pb-2">
           <button
             type="button"
             aria-pressed={showArchived}
             aria-label={archiveToggleLabel}
             onClick={() => setShowArchived((value) => !value)}
-            className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+            className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-[var(--shadow-sm)] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
               showArchived
-                ? 'border-[var(--border-strong)] bg-[var(--active)] text-[var(--text)]'
-                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+                ? 'border-transparent bg-[var(--accent)] text-[var(--accent-contrast)]'
+                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
             }`}
             data-testid="session-archive-toggle"
           >
+            <svg
+              className="h-3.5 w-3.5 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect width="20" height="5" x="2" y="3" rx="1" />
+              <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+              <path d="M10 12h4" />
+            </svg>
             Archived
-            {archivedCount > 0 && <span className="font-normal">· {archivedCount}</span>}
+            {archivedCount > 0 && (
+              <span
+                className={`rounded-full px-1.5 text-[10px] leading-4 ${
+                  showArchived
+                    ? 'bg-[color-mix(in_srgb,var(--accent-contrast)_25%,transparent)] text-[var(--accent-contrast)]'
+                    : 'bg-[var(--surface-sunken)] text-[var(--text-muted)]'
+                }`}
+              >
+                {archivedCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -537,126 +641,91 @@ function Sidebar({
         ) : emptyMessage !== null ? (
           <p className="px-2 py-1 text-xs text-[var(--text-muted)]">{emptyMessage}</p>
         ) : (
-          <ul className="space-y-1">
-            {visibleSessions.map(({ session, title, archived }) => {
-              const isActive = session.id === activeSessionId
-              const running = session.runState === 'running'
-              const isRenaming = renamingId === session.id
-              const isMenuOpen = menuId === session.id
-              const isConfirmingDelete = confirmDeleteId === session.id
-              return (
-                <li key={session.id} className="group relative" data-session-menu-root={session.id}>
-                  {isRenaming ? (
-                    <input
-                      ref={renameInputRef}
-                      type="text"
-                      value={renameDraft}
-                      onChange={(event) => setRenameDraft(event.target.value)}
-                      onKeyDown={handleRenameKeyDown}
-                      onBlur={handleRenameBlur}
-                      aria-label="Rename session"
-                      spellCheck={false}
-                      className="h-9 w-full rounded-md border border-[var(--border-strong)] bg-[var(--surface)] px-2 text-sm text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                      data-testid="session-rename-input"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => onSelect(session.id)}
-                        aria-current={isActive ? 'true' : undefined}
-                        className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${
-                          isActive
-                            ? 'bg-[var(--active)] font-medium text-[var(--text)]'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
-                        }`}
-                      >
-                        <ChatDotIcon />
-                        <span className="min-w-0 flex-1 truncate">{title}</span>
-                        <span
-                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                            running ? 'bg-[var(--warning)]' : 'bg-[var(--status-idle)]'
-                          }`}
-                          title={running ? 'Running' : 'Idle'}
-                          aria-label={running ? 'Running' : 'Idle'}
-                        />
-                        <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
-                          {formatWhen(session.updatedAt)}
-                        </span>
-                      </button>
-                      <IconButton
-                        label={`Session actions: ${title}`}
-                        variant="ghost"
-                        aria-haspopup="menu"
-                        aria-expanded={isMenuOpen}
-                        onClick={() => openMenu(session.id)}
-                        className={
-                          isMenuOpen
-                            ? 'opacity-100'
-                            : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
-                        }
-                        data-testid="session-row-menu"
-                      >
-                        <MoreIcon />
-                      </IconButton>
-                    </div>
-                  )}
-
-                  {isMenuOpen && (
-                    <MenuPanel
-                      aria-label={`Actions for ${title}`}
-                      className="right-1 top-full mt-0.5 w-44"
+          <>
+            <ul className="space-y-1">
+              {chatsRows.length > 0 && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(CHATS_GROUP_KEY)}
+                    aria-expanded={chatsExpanded}
+                    data-testid="session-list-heading"
+                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+                  >
+                    <svg
+                      className={`h-3 w-3 shrink-0 transition-transform ${chatsExpanded ? '' : '-rotate-90'}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
                     >
-                      {isConfirmingDelete ? (
-                        <>
-                          <p className="px-2.5 py-1.5 text-[11px] leading-4 text-[var(--text-muted)]">
-                            Delete this chat? The transcript is removed for good.
-                          </p>
-                          <MenuItem onClick={cancelDelete} data-testid="session-delete-cancel">
-                            Cancel
-                          </MenuItem>
-                          <MenuItem
-                            onClick={() => confirmDelete(session.id)}
-                            className="gap-1.5 !text-[var(--danger-text)] hover:!bg-[var(--danger-bg)]"
-                            data-testid="session-delete-confirm"
-                          >
-                            <TrashIcon className="h-3.5 w-3.5" />
-                            Delete
-                          </MenuItem>
-                        </>
-                      ) : (
-                        <>
-                          <MenuItem onClick={() => startRename(session.id, title)}>
-                            Rename
-                          </MenuItem>
-                          <MenuItem onClick={() => toggleArchive(session.id, archived)}>
-                            {archived ? 'Unarchive' : 'Archive'}
-                          </MenuItem>
-                          {onDelete !== undefined && (
-                            <MenuItem
-                              onClick={() => requestDelete(session.id)}
-                              data-testid="session-delete"
-                            >
-                              Delete…
-                            </MenuItem>
-                          )}
-                        </>
-                      )}
-                    </MenuPanel>
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                    <ChatDotIcon />
+                    <span className="min-w-0 flex-1 truncate font-medium">Chats</span>
+                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                      {chatsRows.length}
+                    </span>
+                  </button>
+                  {chatsExpanded && (
+                    <ul className="fx-fade mt-0.5 space-y-1 border-l border-[var(--border)] pl-5">
+                      {chatsRows.map((row) => renderSessionRow(row))}
+                    </ul>
                   )}
                 </li>
-              )
-            })}
-          </ul>
+              )}
+              {workspaceGroups.map((group) => {
+                const expanded = expandedGroups[group.key] ?? true
+                return (
+                  <li key={group.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.key)}
+                      aria-expanded={expanded}
+                      title={group.cwd}
+                      data-testid="project-row"
+                      className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+                    >
+                      <svg
+                        className={`h-3 w-3 shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                      <FolderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]" />
+                      <span className="min-w-0 flex-1 truncate font-medium">{group.label}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                        {group.rows.length}
+                      </span>
+                    </button>
+                    {expanded && (
+                      <ul className="fx-fade mt-0.5 space-y-1 border-l border-[var(--border)] pl-5">
+                        {group.rows.map((row) => renderSessionRow(row))}
+                      </ul>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </>
         )}
 
-        {historyHits !== null && historyHits.length > 0 && (
+        {historyOnlyHits !== null && historyOnlyHits.length > 0 && (
           <div className="mt-4 border-t border-[var(--border)] pt-3" data-testid="history-search">
             <div className="px-2 pb-1.5 text-[11px] font-medium text-[var(--text-muted)]">
               History matches
             </div>
             <ul className="space-y-1">
-              {historyHits.map((hit) => (
+              {historyOnlyHits.map((hit) => (
                 <li key={hit.sessionId}>
                   <button
                     type="button"

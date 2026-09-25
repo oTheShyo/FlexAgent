@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { MemoryCard, MemoryCardFile } from '../types'
 import { codexApi } from '../api'
 import { Button, Chip } from './ui'
+import { CloseIcon } from './icons'
 
 const MEMORY_FILE_LABEL: Record<MemoryCardFile, string> = {
   MEMORY: 'Project & environment',
@@ -112,7 +113,7 @@ export default function MemoryPage() {
             aria-label="Dismiss error"
             className="shrink-0 rounded px-1 text-[11px] hover:text-[var(--text)]"
           >
-            ✕
+            <CloseIcon className="h-3 w-3" />
           </button>
         </div>
       )}
@@ -251,7 +252,7 @@ export default function MemoryPage() {
                         aria-label={`Remove card: ${card.text.slice(0, 40)}`}
                         className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
                       >
-                        ✕
+                        <CloseIcon className="h-3 w-3" />
                       </button>
                     </li>
                   ))}

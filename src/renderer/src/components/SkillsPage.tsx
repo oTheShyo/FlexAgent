@@ -11,7 +11,7 @@ import type {
 import { SKILL_STALE_AFTER_MS } from '../types'
 import { codexApi } from '../api'
 import { Button, Chip } from './ui'
-import { PluginsIcon } from './icons'
+import { CloseIcon, PluginsIcon } from './icons'
 
 const SOURCE_LABEL: Record<SkillSummary['source'], string> = {
   user: 'Agent skills',
@@ -598,7 +598,7 @@ function HubView({
                 aria-label={`Remove hub ${hub.name}`}
                 className="-ml-1 rounded-md px-1 text-[10px] text-[var(--text-subtle)] transition-colors hover:text-[var(--text)] disabled:opacity-40"
               >
-                ✕
+                <CloseIcon className="h-3 w-3" />
               </button>
             )}
           </span>
@@ -947,7 +947,7 @@ function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
             aria-label="Dismiss error"
             className="shrink-0 rounded px-1 text-[11px] hover:text-[var(--text)]"
           >
-            ✕
+            <CloseIcon className="h-3 w-3" />
           </button>
         </div>
       )}
