@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { SessionSummary } from '../types'
-import { displaySessionTitle, useSessionMeta } from '../lib/sessionMeta'
 import { formatWhen } from '../lib/formatWhen'
 import { SHORTCUTS } from '../lib/shortcuts'
 import { PluginIcon } from './pluginIcons'
@@ -64,7 +63,6 @@ function CommandPalette({
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const sessionMeta = useSessionMeta()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
 
@@ -109,7 +107,7 @@ function CommandPalette({
     ]
     const sessionCommands: PaletteCommand[] = sessions.map((session) => ({
       id: `session-${session.id}`,
-      label: displaySessionTitle(session, sessionMeta),
+      label: session.title,
       hint:
         session.id === activeSessionId
           ? `Current · ${formatWhen(session.updatedAt)}`
@@ -122,7 +120,7 @@ function CommandPalette({
       }
     }))
     return [...base, ...sessionCommands]
-  }, [sessions, sessionMeta, activeSessionId, runNewChat, runToggleTerminal, runPlugins, runSettings, onOpenSession, onClose])
+  }, [sessions, activeSessionId, runNewChat, runToggleTerminal, runPlugins, runSettings, onOpenSession, onClose])
 
   const filtered = useMemo(() => {
     const scored: { command: PaletteCommand; score: number }[] = []
@@ -229,7 +227,7 @@ function CommandPalette({
             className="h-11 w-full bg-transparent text-sm text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
             data-testid="command-palette-input"
           />
-          <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+          <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-xs text-[var(--text-muted)]">
             Esc
           </kbd>
           <button
@@ -292,17 +290,17 @@ function CommandPalette({
                     >
                       {command.label}
                       {isActiveSession && (
-                        <span className="ml-1.5 text-[11px] font-normal text-[var(--text-muted)]">
+                        <span className="ml-1.5 text-xs font-normal text-[var(--text-muted)]">
                           (current)
                         </span>
                       )}
                     </span>
                     {command.shortcut !== undefined && (
-                      <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+                      <kbd className="shrink-0 rounded border border-[var(--border)] bg-[var(--surface-sunken)] px-1.5 py-0.5 font-mono text-xs text-[var(--text-muted)]">
                         {command.shortcut}
                       </kbd>
                     )}
-                    <span className="shrink-0 text-[11px] font-normal text-[var(--text-muted)]">
+                    <span className="shrink-0 text-xs font-normal text-[var(--text-muted)]">
                       {command.hint}
                     </span>
                   </div>
@@ -312,7 +310,7 @@ function CommandPalette({
           </ul>
         )}
 
-        <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
           <span>
             <kbd className="font-mono">↑↓</kbd> to navigate · <kbd className="font-mono">↵</kbd>{' '}
             to run

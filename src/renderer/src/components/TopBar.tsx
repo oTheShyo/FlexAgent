@@ -2,7 +2,7 @@ import { memo } from 'react'
 import type { ReactNode } from 'react'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Button } from './ui'
-import { ReviewIcon, StopIcon, TerminalIcon } from './icons'
+import { ReviewIcon, TerminalIcon } from './icons'
 
 export interface TopBarProps {
   title?: string
@@ -13,7 +13,6 @@ export interface TopBarProps {
   sessionControls?: boolean
   onToggleTerminal: () => void
   onToggleReview: () => void
-  onStop?: () => void
 }
 
 function ToolbarButton({
@@ -43,7 +42,7 @@ function ToolbarButton({
       {icon}
       <span>{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="fx-fade inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-semibold leading-none text-[var(--accent-contrast)]">
+          <span className="fx-fade inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-xs font-semibold leading-none text-[var(--accent-contrast)]">
           {count}
         </span>
       )}
@@ -59,8 +58,7 @@ function TopBar({
   running = false,
   sessionControls = true,
   onToggleTerminal,
-  onToggleReview,
-  onStop
+  onToggleReview
 }: TopBarProps) {
   const showRunState = sessionControls && running
   const reviewPendingCount = sessionControls && !reviewActive ? reviewCount : 0
@@ -70,7 +68,7 @@ function TopBar({
       <div className="flex min-w-0 items-center gap-2">
         <h1 className="truncate text-sm font-semibold tracking-tight text-[var(--text)]">{title}</h1>
         {showRunState && (
-          <span className="fx-fade flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--warning-border)] bg-[var(--warning-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--warning-text)]">
+          <span className="fx-fade flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--warning-border)] bg-[var(--warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--warning-text)]">
             <span
               className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--warning)]"
               aria-hidden="true"
@@ -86,17 +84,6 @@ function TopBar({
       </div>
       {sessionControls && (
         <div className="fx-fade flex items-center gap-1.5">
-          {running && onStop && (
-            <Button
-              variant="danger"
-              onClick={onStop}
-              aria-label="Stop run"
-              className="fx-fade flex items-center gap-1.5"
-            >
-              <StopIcon className="h-3 w-3 shrink-0" />
-              <span>Stop</span>
-            </Button>
-          )}
           <ToolbarButton
             icon={<TerminalIcon className="h-3.5 w-3.5 shrink-0" />}
             label="Terminal"

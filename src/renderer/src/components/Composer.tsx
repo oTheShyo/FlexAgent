@@ -9,12 +9,15 @@ import type {
   ModelConfig,
   ModelOption,
   PermissionMode,
+  SessionSearchHit,
+  SessionSummary,
   SlashCommandSummary,
   ThinkingLevel
 } from '../types'
+import { codexApi } from '../api'
 import { pathBasename } from '../lib/paths'
 import { ModeSwitcher } from './ModeSwitcher'
-import { filterComposerFiles } from './composerFiles'
+import { createComposerFileIndex } from './composerFiles'
 import {
   composePrompt,
   describeRejections,
@@ -22,9 +25,32 @@ import {
   stageAttachments
 } from './composerAttachments'
 import type { StagedAttachment } from './composerAttachments'
-import { Button, Chip, IconButton, MenuItem, MenuPanel } from './ui'
-import { PERMISSION_MODES } from '../types'
 import {
+  addReference,
+  createSelectionReference,
+  createSessionReference,
+  formatReferencesBlock,
+  MAX_REFERENCES,
+  MAX_TOTAL_REFERENCE_CHARS,
+  countReferenceChars,
+  truncateLabel
+} from './composerReferences'
+import type { ContextReference } from './composerReferences'
+import type { SelectionSource } from '../hooks/useChatSelection'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { debounce } from '../lib/debounce'
+import { Button, Chip, IconButton, MenuItem, MenuPanel } from './ui'
+import {
+  EFFORT_NO_MODEL_REASON,
+  EFFORT_UNSUPPORTED_REASON,
+  PERMISSION_MODES,
+  REASONING_EFFORT_GLOSS,
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_OFF_LABEL,
+  resolveEffortTiers
+} from '../types'
+import {
+  ChatDotIcon,
   CheckIcon,
   ChevronDownIcon,
   CloseIcon,
@@ -35,11 +61,14 @@ import {
   QueueIcon,
   SendIcon,
   SlashIcon,
+  StopIcon,
   TrashIcon
 } from './icons'
 
 export interface ComposerProps {
   onSend: (text: string) => void
+  /** Aborts the run in progress; wired into the send-button slot while running. */
+  onStop: () => void
   disabled?: boolean
   running?: boolean
   cwd?: string
@@ -65,10 +94,49 @@ export interface ComposerProps {
   queuedMessages?: readonly string[]
   onQueueRemove?: (index: number) => void
   onQueueSendNow?: (index: number) => void
+  /**
+   * References staged for this draft, from any entry point (`@`, a transcript
+   * selection, `#`). Sent with the draft, cleared with it.
+   */
+  references?: readonly ContextReference[]
+  onReferencesChange?: (next: readonly ContextReference[]) => void
+  /**
+   * One-shot channel for a selection made in the transcript: it arrives from a
+   * sibling of this component, so App forwards it here and the pick is consumed
+   * the moment it is staged — a copy, never a live re-read.
+   */
+  selectionPick?: { text: string; source: SelectionSource; token: number } | null
+  onSelectionPickConsumed?: () => void
+  /** Chats offered by `#`; the open one is excluded — a chat cannot reference itself. */
+  sessions?: readonly SessionSummary[]
+  activeSessionId?: string | null
 }
 
 const MENTION_BEFORE_CARET = /@[\w./-]*$/
 const SLASH_AT_START = /^\/([\w-]*)$/
+/** `#` stops at whitespace: a chat title with spaces closes the list at that point. */
+const SESSION_BEFORE_CARET = /#([^\s@]*)$/
+/** short enough that the popup still feels keyed to the keystrokes. */
+const MENTION_DEBOUNCE_MS = 120
+
+interface SessionOption {
+  id: string
+  title: string
+  snippet?: string
+  updatedAt: number
+  /** A title-only match carries no content; the chip and the prompt say so. */
+  hasSnippet: boolean
+}
+/** Long enough that a burst of keystrokes is one scan, short enough to feel immediate. */
+const SESSION_SEARCH_DEBOUNCE_MS = 250
+const SESSION_POPUP_LIMIT = 8
+/** Rows of the transcript that hand text over, and what they are called. */
+const SELECTION_LABELS: Record<SelectionSource, string> = {
+  assistant: 'Assistant reply',
+  tool: 'Tool output',
+  user: 'Your message',
+  error: 'Error'
+}
 
 /** The five trust levels, in the order the mode menu lists them. */
 const PERMISSION_MODE_SPECTRUM: readonly PermissionMode[] = PERMISSION_MODES
@@ -80,6 +148,11 @@ function matchMentionQuery(value: string, caret: number): string | null {
 
 function matchSlashQuery(value: string, caret: number): string | null {
   const match = value.slice(0, caret).match(SLASH_AT_START)
+  return match === null ? null : match[1]
+}
+
+function matchSessionQuery(value: string, caret: number): string | null {
+  const match = value.slice(0, caret).match(SESSION_BEFORE_CARET)
   return match === null ? null : match[1]
 }
 
@@ -144,7 +217,7 @@ function CompletionPopup({
                 {item.icon}
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {item.hint !== undefined && (
-                  <span className="max-w-[45%] shrink-0 truncate text-[10px] text-[var(--text-subtle)]">
+                  <span className="max-w-[45%] shrink-0 truncate text-xs text-[var(--text-subtle)]">
                     {item.hint}
                   </span>
                 )}
@@ -177,7 +250,7 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
             <li key={attachment.id}>
               <span
                 title={`${attachment.name} · ${formatBytes(attachment.size)} · contents are inlined into the message`}
-                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] py-1 pl-2 pr-1 text-[11px] text-[var(--text-secondary)]"
+                className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] py-1 pl-2 pr-1 text-xs text-[var(--text-secondary)]"
               >
                 <FileIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
                 <span className="max-w-[180px] truncate font-mono">{attachment.name}</span>
@@ -197,11 +270,87 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
           ))}
         </ul>
       )}
-      {busy && <p className="mt-1 text-[11px] text-[var(--text-muted)]">Reading files…</p>}
+      {busy && <p className="mt-1 text-xs text-[var(--text-muted)]">Reading files…</p>}
       {notice !== null && (
         <p
           role="status"
           data-testid="composer-attachment-notice"
+          className="fx-fade mt-1 text-xs leading-4 text-[var(--warning-text)]"
+        >
+          {notice}
+        </p>
+      )}
+    </div>
+  )
+}
+
+interface ReferenceTrayProps {
+  references: readonly ContextReference[]
+  /** Why the last pick was refused; a refusal is never silent. */
+  notice: string | null
+  onRemove: (id: string) => void
+}
+
+function ReferenceTray({ references, notice, onRemove }: ReferenceTrayProps) {
+  if (references.length === 0 && notice === null) return null
+  const chars = countReferenceChars(references)
+  return (
+    <div
+      className="fx-fade border-b border-[var(--border)] pb-3"
+      data-testid="composer-references"
+    >
+      {references.length > 0 && (
+        <>
+          <ul className="flex flex-wrap gap-1.5">
+            {references.map((reference) => (
+              <li key={reference.id}>
+                <span
+                  title={
+                    reference.partial === true
+                      ? `${truncateLabel(reference.text, 160)} — title only: the transcript of this chat is not reachable from here`
+                      : truncateLabel(reference.text, 160)
+                  }
+                  className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] py-1 pl-2 pr-1 text-xs text-[var(--text-secondary)]"
+                >
+                  {reference.kind === 'session' ? (
+                    <ChatDotIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
+                  ) : (
+                    <FileIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
+                  )}
+                  <span className="max-w-[180px] truncate">{truncateLabel(reference.label)}</span>
+                  {reference.partial === true && (
+                    <span
+                      title="Title only — no content could be collected for this chat"
+                      className="shrink-0 rounded border border-[var(--border-strong)] px-1 text-[10px] text-[var(--text-muted)]"
+                    >
+                      title only
+                    </span>
+                  )}
+                  <span className="shrink-0 text-[var(--text-subtle)]">
+                    {reference.text.length} chars
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onRemove(reference.id)}
+                    aria-label={`Remove reference ${truncateLabel(reference.label)}`}
+                    className="shrink-0 rounded px-1 text-[var(--text-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  >
+                    <CloseIcon className="h-3 w-3" />
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-[11px] text-[var(--text-subtle)]">
+            {references.length} of {MAX_REFERENCES} references · {chars} of{' '}
+            {MAX_TOTAL_REFERENCE_CHARS} characters — all of it travels with the message
+          </p>
+        </>
+      )}
+      {notice !== null && (
+        <p
+          role="status"
+          data-testid="composer-reference-notice"
           className="fx-fade mt-1 text-[11px] leading-4 text-[var(--warning-text)]"
         >
           {notice}
@@ -278,6 +427,7 @@ function QueuedMessageTray({ messages, onEdit, onRemove, onSendNow }: QueuedMess
 
 function Composer({
   onSend,
+  onStop,
   disabled = false,
   running = false,
   cwd,
@@ -294,7 +444,13 @@ function Composer({
   onChangePermissionMode,
   queuedMessages = [],
   onQueueRemove,
-  onQueueSendNow
+  onQueueSendNow,
+  references = [],
+  onReferencesChange,
+  selectionPick = null,
+  onSelectionPickConsumed,
+  sessions = [],
+  activeSessionId = null
 }: ComposerProps) {
   const [text, setText] = useState('')
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -302,24 +458,35 @@ function Composer({
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
   const [slashIndex, setSlashIndex] = useState(0)
   const [dragOver, setDragOver] = useState(false)
-  const [openMenu, setOpenMenu] = useState<'model' | null>(null)
+  const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
   const [attachments, setAttachments] = useState<StagedAttachment[]>([])
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null)
   const [stagingAttachments, setStagingAttachments] = useState(false)
+  const [sessionQuery, setSessionQuery] = useState<string | null>(null)
+  const [sessionIndex, setSessionIndex] = useState(0)
+  const [referenceNotice, setReferenceNotice] = useState<string | null>(null)
+  const [sessionHits, setSessionHits] = useState<SessionSearchHit[]>([])
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const mentionQueryRef = useRef<string | null>(null)
   const slashQueryRef = useRef<string | null>(null)
+  const sessionQueryRef = useRef<string | null>(null)
   const pendingCaretRef = useRef<number | null>(null)
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const attachmentsRef = useRef<StagedAttachment[]>([])
   attachmentsRef.current = attachments
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const referencesRef = useRef<readonly ContextReference[]>(references)
+  referencesRef.current = references
+  const fileIndexRef = useRef(createComposerFileIndex())
 
   const canSend =
-    !disabled && (text.trim().length > 0 || attachments.length > 0)
+    !disabled &&
+    (text.trim().length > 0 || attachments.length > 0 || references.length > 0)
+  const showStop = running && text.trim().length === 0
   const slashOpen = slashQuery !== null
-  const mentionOpen = !slashOpen && mentionQuery !== null
+  const sessionOpen = !slashOpen && sessionQuery !== null
+  const mentionOpen = !slashOpen && !sessionOpen && mentionQuery !== null
 
   const closeMenus = useCallback((): void => {
     setOpenMenu(null)
@@ -348,9 +515,14 @@ function Composer({
     }
   }, [openMenu, closeMenus])
 
+  // The query is debounced before it reaches the list source, and the source
+  // caches per query: an identical query never recomputes. Today the source is a
+  // static fixture, so this only avoids re-rendering the popup; when a real
+  // `listFiles` lands it is the one place that has to change.
+  const mentionListQuery = useDebouncedValue(mentionQuery, MENTION_DEBOUNCE_MS)
   const mentionFiles = useMemo(
-    () => (mentionQuery === null ? [] : filterComposerFiles(mentionQuery)),
-    [mentionQuery]
+    () => (mentionListQuery === null ? [] : fileIndexRef.current.query(mentionListQuery)),
+    [mentionListQuery]
   )
 
   const mentionItems = useMemo<CompletionItem[]>(
@@ -362,6 +534,60 @@ function Composer({
         icon: <FileIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]" />
       })),
     [mentionFiles]
+  )
+
+  /**
+   * `#` picks: chat titles the Composer already knows (no round trip) merged
+   * with transcript hits from the main process, title matches first so a chat
+   * whose name is what the user typed is never buried under an unrelated grep.
+   *
+   * A title match has no content behind it, so it is marked partial and the chip
+   * says the transcript is out of reach rather than implying a quote.
+   */
+  const sessionOptions = useMemo<SessionOption[]>(() => {
+    if (sessionQuery === null) return []
+    const needle = sessionQuery.trim().toLowerCase()
+    const picked: SessionOption[] = []
+    const seen = new Set<string>()
+    // An empty query lists the chats that are reachable at all (the open one is
+    // never an option), the same way a bare `@` lists files.
+    for (const session of sessions) {
+      if (session.id === activeSessionId) continue
+      if (needle.length > 0 && !session.title.toLowerCase().includes(needle)) continue
+      if (seen.has(session.id)) continue
+      seen.add(session.id)
+      picked.push({
+        id: session.id,
+        title: session.title,
+        updatedAt: session.updatedAt,
+        hasSnippet: false
+      })
+    }
+    for (const hit of sessionHits) {
+      if (seen.has(hit.sessionId)) continue
+      seen.add(hit.sessionId)
+      picked.push({
+        id: hit.sessionId,
+        title: hit.title,
+        snippet: hit.snippet,
+        updatedAt: hit.updatedAt,
+        hasSnippet: true
+      })
+    }
+    return picked.slice(0, SESSION_POPUP_LIMIT)
+  }, [sessionQuery, sessions, activeSessionId, sessionHits])
+
+  const sessionItems = useMemo<CompletionItem[]>(
+    () =>
+      sessionOptions.map((option) => ({
+        id: option.id,
+        label: option.title,
+        ...(option.snippet !== undefined && option.snippet.length > 0
+          ? { hint: option.snippet }
+          : {}),
+        icon: <ChatDotIcon className="h-3.5 w-3.5 shrink-0 text-[var(--text-subtle)]" />
+      })),
+    [sessionOptions]
   )
 
   const slashItems = useMemo<CompletionItem[]>(() => {
@@ -395,10 +621,57 @@ function Composer({
     setSlashIndex(0)
   }, [])
 
+  const closeSession = useCallback((): void => {
+    sessionQueryRef.current = null
+    setSessionQuery(null)
+    setSessionIndex(0)
+  }, [])
+
   const closeCompletion = useCallback((): void => {
     closeMention()
     closeSlash()
-  }, [closeMention, closeSlash])
+    closeSession()
+  }, [closeMention, closeSlash, closeSession])
+
+  // Transcript search behind `#`. Cached per query string, because the same
+  // needle typed twice (and every keystroke back onto it) re-scans stored
+  // transcripts otherwise.
+  const sessionHitsCacheRef = useRef(new Map<string, SessionSearchHit[]>())
+  useEffect(() => {
+    if (sessionQuery === null) {
+      setSessionHits([])
+      return
+    }
+    const needle = sessionQuery.trim()
+    if (needle.length === 0) {
+      setSessionHits([])
+      return
+    }
+    const cacheKey = needle.toLowerCase()
+    const cached = sessionHitsCacheRef.current.get(cacheKey)
+    if (cached !== undefined) {
+      setSessionHits(cached)
+      return
+    }
+    let cancelled = false
+    const run = debounce(() => {
+      void codexApi
+        .searchSessions(needle)
+        .then((hits) => {
+          if (cancelled) return
+          sessionHitsCacheRef.current.set(cacheKey, hits)
+          setSessionHits(hits)
+        })
+        .catch(() => {
+          if (!cancelled) setSessionHits([])
+        })
+    }, SESSION_SEARCH_DEBOUNCE_MS)
+    run()
+    return () => {
+      cancelled = true
+      run.cancel()
+    }
+  }, [sessionQuery])
 
   const syncCompletion = useCallback((): void => {
     const el = textareaRef.current
@@ -417,8 +690,29 @@ function Composer({
         mentionQueryRef.current = null
         setMentionQuery(null)
       }
+      if (sessionQueryRef.current !== null) {
+        sessionQueryRef.current = null
+        setSessionQuery(null)
+      }
       return
     }
+
+    // `#` and `@` are the same gesture on different data, so only one of the two
+    // lists may ever be open — a draft cannot be "attaching a file and a chat".
+    const sessionNext = matchSessionQuery(el.value, caret)
+    if (sessionNext !== sessionQueryRef.current) {
+      sessionQueryRef.current = sessionNext
+      setSessionQuery(sessionNext)
+      setSessionIndex(0)
+    }
+    if (sessionNext !== null) {
+      if (mentionQueryRef.current !== null) {
+        mentionQueryRef.current = null
+        setMentionQuery(null)
+      }
+      return
+    }
+
     const mentionNext = matchMentionQuery(el.value, caret)
     if (mentionNext !== mentionQueryRef.current) {
       mentionQueryRef.current = mentionNext
@@ -464,10 +758,60 @@ function Composer({
     [closeSlash]
   )
 
+  /**
+   * Stages a `#` pick. A chat is referenced, not copied: the only content the
+   * contract can hand over for a chat that is not the open one is the search
+   * hit's snippet, so a title-only match becomes a chat named in the prompt and
+   * nothing more (see `## Blocked by (new)` in the ticket).
+   *
+   * Nothing is written into the draft text — the chip and the prompt block are
+   * the reference.
+   */
+  const pickSession = useCallback(
+    (sessionId: string): void => {
+      const el = textareaRef.current
+      if (el === null) return
+      if (matchSessionQuery(el.value, el.selectionStart ?? el.value.length) === null) {
+        closeSession()
+        return
+      }
+      const option = sessionOptions[sessionIndex]
+      if (option === undefined || option.id !== sessionId) {
+        closeSession()
+        return
+      }
+      const candidate = createSessionReference({
+        sessionId: option.id,
+        title: option.title,
+        ...(option.snippet !== undefined && option.snippet.length > 0
+          ? { snippet: option.snippet }
+          : {}),
+        updatedAt: option.updatedAt
+      })
+      const applied = addReference(referencesRef.current, candidate)
+      if (!applied.ok) {
+        // The reason is the product: a silently dropped pick reads as a dead
+        // button.
+        setReferenceNotice(applied.reason)
+        closeSession()
+        return
+      }
+      onReferencesChange?.(applied.references)
+      setReferenceNotice(null)
+      closeSession()
+    },
+    [sessionOptions, sessionIndex, onReferencesChange, closeSession]
+  )
+
   const acceptCompletion = useCallback((): boolean => {
     if (slashOpen) {
       const name = slashItems[slashIndex]?.id
       if (name !== undefined) pickSlashCommand(name)
+      return true
+    }
+    if (sessionOpen) {
+      const id = sessionItems[sessionIndex]?.id
+      if (id !== undefined) pickSession(id)
       return true
     }
     if (mentionOpen) {
@@ -481,14 +825,24 @@ function Composer({
     slashItems,
     slashIndex,
     pickSlashCommand,
+    sessionOpen,
+    sessionItems,
+    sessionIndex,
+    pickSession,
     mentionOpen,
     mentionItems,
     mentionIndex,
     pickMention
   ])
 
-  const activeItems = slashOpen ? slashItems : mentionOpen ? mentionItems : []
-  const setActiveIndex = slashOpen ? setSlashIndex : setMentionIndex
+  const activeItems = slashOpen
+    ? slashItems
+    : sessionOpen
+      ? sessionItems
+      : mentionOpen
+        ? mentionItems
+        : []
+  const setActiveIndex = slashOpen ? setSlashIndex : sessionOpen ? setSessionIndex : setMentionIndex
 
   useEffect(() => {
     if (pendingCaretRef.current === null) return
@@ -507,6 +861,37 @@ function Composer({
   }, [mentionFiles.length, mentionIndex])
 
   useEffect(() => {
+    if (sessionIndex >= sessionItems.length) {
+      setSessionIndex(sessionItems.length > 0 ? sessionItems.length - 1 : 0)
+    }
+  }, [sessionItems.length, sessionIndex])
+
+  // A selection made in the transcript becomes a reference exactly once. The
+  // text is the copy the hook froze at capture time, so a delta that lands
+  // while the chip is being added cannot change what is staged.
+  const stagedTokenRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (selectionPick === null) return
+    // A pick is staged once. Without the token guard a re-running effect (new
+    // callback identity from the parent) would stage the same text a second
+    // time and get it back as a duplicate, showing the user a limit error for
+    // something they never tried to add twice.
+    if (stagedTokenRef.current === selectionPick.token) return
+    stagedTokenRef.current = selectionPick.token
+    const candidate = createSelectionReference(
+      selectionPick.text,
+      SELECTION_LABELS[selectionPick.source]
+    )
+    const applied = addReference(referencesRef.current, candidate)
+    if (!applied.ok) setReferenceNotice(applied.reason)
+    else {
+      onReferencesChange?.(applied.references)
+      setReferenceNotice(null)
+    }
+    onSelectionPickConsumed?.()
+  }, [selectionPick, onReferencesChange, onSelectionPickConsumed])
+
+  useEffect(() => {
     if (slashIndex >= slashItems.length) {
       setSlashIndex(slashItems.length > 0 ? slashItems.length - 1 : 0)
     }
@@ -514,10 +899,19 @@ function Composer({
 
   const submit = (): void => {
     if (!canSend) return
-    onSend(composePrompt(text.trim(), attachments))
+    // The references travel inside the same string the kernel already receives;
+    // the contract has no field of their own yet (see the ticket's Blocked by).
+    const prompt = composePrompt(
+      text.trim(),
+      attachments,
+      formatReferencesBlock(references)
+    )
+    onSend(prompt)
     setText('')
     setAttachments([])
     setAttachmentNotice(null)
+    setReferenceNotice(null)
+    onReferencesChange?.([])
     closeCompletion()
   }
 
@@ -542,7 +936,9 @@ function Composer({
       if (event.nativeEvent.isComposing) return
 
       const completionOpen =
-        slashQueryRef.current !== null || mentionQueryRef.current !== null
+        slashQueryRef.current !== null ||
+        sessionQueryRef.current !== null ||
+        mentionQueryRef.current !== null
 
       if (event.key === 'Escape') {
         if (completionOpen) {
@@ -695,14 +1091,40 @@ function Composer({
     modelConfig === null
       ? []
       : (modelConfig.availableThinkingLevels ?? [modelConfig.thinkingLevel])
+  const effortTiers = resolveEffortTiers(modelConfig?.availableThinkingLevels ?? null)
+  const effortSupported = effortTiers.some((option) => option.available)
+  const currentEffort = modelConfig?.effort ?? null
+  const effortReason =
+    knownModel === null
+      ? EFFORT_NO_MODEL_REASON
+      : effortSupported
+        ? null
+        : EFFORT_UNSUPPORTED_REASON
+  const effortChipLabel =
+    knownModel === null
+      ? '推理'
+      : !effortSupported
+        ? '推理 · —'
+        : currentEffort !== null
+          ? `推理 · ${REASONING_EFFORT_LABELS[currentEffort]}`
+          : currentThinking === 'off'
+            ? `推理 · ${REASONING_EFFORT_OFF_LABEL}`
+            : `推理 · ${currentThinking}`
 
   const activeOptionId = slashOpen
     ? slashItems[slashIndex] !== undefined
       ? `composer-slash-list-option-${slashIndex}`
       : undefined
-    : mentionOpen && mentionItems[mentionIndex] !== undefined
-      ? `composer-mention-list-option-${mentionIndex}`
-      : undefined
+    : sessionOpen && sessionItems[sessionIndex] !== undefined
+      ? `composer-session-list-option-${sessionIndex}`
+      : mentionOpen && mentionItems[mentionIndex] !== undefined
+        ? `composer-mention-list-option-${mentionIndex}`
+        : undefined
+
+  const removeReference = useCallback((id: string): void => {
+    setReferenceNotice(null)
+    onReferencesChange?.(referencesRef.current.filter((entry) => entry.id !== id))
+  }, [onReferencesChange])
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-1" data-testid="composer">
@@ -757,6 +1179,16 @@ function Composer({
             onSelect={setMentionIndex}
             onPick={pickMention}
           />
+        ) : sessionOpen ? (
+          <CompletionPopup
+            listId="composer-session-list"
+            ariaLabel="History chats"
+            emptyLabel="No matching chats"
+            items={sessionItems}
+            selectedIndex={sessionIndex}
+            onSelect={setSessionIndex}
+            onPick={pickSession}
+          />
         ) : null}
 
         {dragOver && (
@@ -780,6 +1212,12 @@ function Composer({
             notice={attachmentNotice}
             busy={stagingAttachments}
             onRemove={removeAttachment}
+          />
+
+          <ReferenceTray
+            references={references}
+            notice={referenceNotice}
+            onRemove={removeReference}
           />
 
           <textarea
@@ -850,7 +1288,27 @@ function Composer({
 
             <div className="flex-1" />
 
-            <div ref={modelMenuRef} className="relative">
+            <div ref={modelMenuRef} className="relative flex items-center gap-1">
+              <Chip
+                disabled={
+                  disabled ||
+                  modelResolving ||
+                  onSetThinkingLevel === undefined ||
+                  effortReason !== null
+                }
+                onClick={() => setOpenMenu((menu) => (menu === 'effort' ? null : 'effort'))}
+                aria-haspopup="menu"
+                aria-expanded={openMenu === 'effort'}
+                aria-label={effortReason ?? undefined}
+                title={effortReason ?? `推理强度 · thinking level ${currentThinking ?? 'off'}`}
+                data-testid="composer-effort-chip"
+                data-effort={currentEffort ?? ''}
+                data-thinking-level={currentThinking ?? ''}
+                className="gap-1 !border-transparent !px-1.5 !text-[var(--text-muted)] hover:!text-[var(--text)]"
+              >
+                <span className="truncate">{effortChipLabel}</span>
+                <ChevronDownIcon className="h-3 w-3" />
+              </Chip>
               <Chip
                 disabled={disabled || onSetModel === undefined || modelResolving}
                 onClick={() => setOpenMenu((menu) => (menu === 'model' ? null : 'model'))}
@@ -867,6 +1325,70 @@ function Composer({
                 )}
                 <ChevronDownIcon className="h-3 w-3" />
               </Chip>
+              {openMenu === 'effort' && (
+                <MenuPanel
+                  aria-label="Reasoning effort"
+                  className="bottom-full right-0 mb-2 w-64 py-1"
+                  data-testid="composer-effort-menu"
+                >
+                  <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                    Reasoning effort 推理强度
+                  </div>
+                  {thinkingLevels.includes('off') && (
+                    <MenuItem
+                      role="menuitemradio"
+                      aria-checked={currentThinking === 'off'}
+                      disabled={onSetThinkingLevel === undefined}
+                      onClick={() => {
+                        onSetThinkingLevel?.('off')
+                        closeMenus()
+                      }}
+                      className="gap-2"
+                      data-testid="composer-effort-option-off"
+                    >
+                      <span className="min-w-0 flex-1">
+                        {REASONING_EFFORT_OFF_LABEL} · Off
+                        <span className="text-[var(--text-subtle)]"> → off</span>
+                      </span>
+                      {currentThinking === 'off' && <CheckIcon className="h-3.5 w-3.5 shrink-0" />}
+                    </MenuItem>
+                  )}
+                  {effortTiers.map((option) => {
+                    const isCurrent = currentEffort === option.effort
+                    return (
+                      <MenuItem
+                        key={option.effort}
+                        role="menuitemradio"
+                        aria-checked={isCurrent}
+                        disabled={!option.available || onSetThinkingLevel === undefined}
+                        onClick={() => {
+                          if (option.level === null) return
+                          onSetThinkingLevel?.(option.level)
+                          closeMenus()
+                        }}
+                        className="gap-2"
+                        data-testid={`composer-effort-option-${option.effort}`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span>
+                            {REASONING_EFFORT_LABELS[option.effort]} ·{' '}
+                            {REASONING_EFFORT_GLOSS[option.effort]}
+                            {option.level !== null && (
+                              <span className="text-[var(--text-subtle)]"> → {option.level}</span>
+                            )}
+                          </span>
+                          {option.reason !== undefined && (
+                            <span className="block text-[10px] font-normal text-[var(--text-subtle)]">
+                              {option.reason}
+                            </span>
+                          )}
+                        </span>
+                        {isCurrent && <CheckIcon className="h-3.5 w-3.5 shrink-0" />}
+                      </MenuItem>
+                    )
+                  })}
+                </MenuPanel>
+              )}
               {openMenu === 'model' && (
                 <MenuPanel
                   aria-label="Model and thinking level"
@@ -937,15 +1459,25 @@ function Composer({
 
             <Button
               variant="primary"
-              disabled={!canSend}
-              onClick={submit}
-              aria-label={running ? 'Queue message' : 'Send message'}
+              disabled={!showStop && !canSend}
+              onClick={showStop ? onStop : submit}
+              aria-label={showStop ? 'Stop' : running ? 'Queue message' : 'Send message'}
               title={
-                running ? 'Queue to send after the current run finishes' : 'Send message'
+                showStop
+                  ? 'Stop the current run'
+                  : running
+                    ? 'Queue to send after the current run finishes'
+                    : 'Send message'
               }
-              className="flex !h-9 w-9 shrink-0 items-center justify-center !rounded-full !px-0"
+              className={`flex !h-9 w-9 shrink-0 items-center justify-center !rounded-full !px-0${
+                showStop ? ' !bg-[var(--danger)] !text-white hover:brightness-110' : ''
+              }`}
             >
-              <SendIcon />
+              {showStop ? (
+                <StopIcon className="h-3.5 w-3.5 shrink-0" />
+              ) : (
+                <SendIcon />
+              )}
             </Button>
           </div>
         </div>
