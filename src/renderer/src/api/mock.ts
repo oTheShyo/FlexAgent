@@ -39,6 +39,7 @@ import {
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
+  type SkillUndoEntry,
   type SkillHubInfo,
   type SkillHubEntry,
   type SkillProvenance,
@@ -1146,6 +1147,15 @@ export class MockCodexApi implements CodexApi {
 
   // ── Skills / Memory / History (v1.7 fixtures) ──
 
+  private readonly skillUndo: SkillUndoEntry[] = [
+    {
+      id: 'undo-mock-1',
+      at: Date.now() - 120_000,
+      summary: ['rewrote skill "wall-detection"', 'wrote references/gaussfit.md in "wall-detection"'],
+      fileCount: 2
+    }
+  ]
+
   private readonly pendingSkillWrites: SkillPendingWrite[] = [
     {
       id: 'pending-mock-1',
@@ -1199,6 +1209,16 @@ export class MockCodexApi implements CodexApi {
 
   async rejectSkillWrite(id: string): Promise<void> {
     await this.approveSkillWrite(id)
+  }
+
+  async listSkillUndo(): Promise<SkillUndoEntry[]> {
+    return this.skillUndo.map((entry) => ({ ...entry }))
+  }
+
+  async revertSkillWrite(id: string): Promise<void> {
+    const index = this.skillUndo.findIndex((entry) => entry.id === id)
+    if (index < 0) throw new ContractError('INVALID_INPUT', `no skill history entry with id ${id}`)
+    this.skillUndo.splice(index, 1)
   }
 
   async listMemoryCards(): Promise<MemoryCard[]> {

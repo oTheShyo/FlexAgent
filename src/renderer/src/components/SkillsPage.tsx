@@ -4,7 +4,8 @@ import type {
   SkillHubInfo,
   SkillPendingWrite,
   SkillProvenance,
-  SkillSummary
+  SkillSummary,
+  SkillUndoEntry
 } from '../types'
 import { codexApi } from '../api'
 import { Button, Chip } from './ui'
@@ -137,6 +138,125 @@ function PendingSection({
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+// ─── Undo section ─────────────────────────────────────────────────────────────
+
+/**
+ * Reversible skill mutations.
+ *
+ * This is the other half of trusting an agent to edit its own instructions: an
+ * evolution that can be rolled back is what makes approving the next one cost
+ * nothing to think about. Entries survive restarts — an in-memory undo stack is
+ * only undoable until the window closes, which is not undo.
+ */
+function SkillUndoSection({
+  onReverted,
+  onError
+}: {
+  onReverted?: () => void
+  onError?: (message: string | null) => void
+} = {}) {
+  const [entries, setEntries] = useState<SkillUndoEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setEntries(await codexApi.listSkillUndo())
+      onError?.(null)
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [onError])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const handleRevert = useCallback(
+    async (id: string): Promise<void> => {
+      setBusyId(id)
+      try {
+        await codexApi.revertSkillWrite(id)
+        await refresh()
+        onReverted?.()
+      } catch (err) {
+        onError?.(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [onError, onReverted, refresh]
+  )
+
+  if (loading) {
+    return (
+      <section className="mt-6" data-testid="skill-undo-section">
+        <div role="status" aria-busy="true" aria-label="Loading skill history" className="h-10" />
+      </section>
+    )
+  }
+
+  if (entries.length === 0) {
+    return (
+      <section className="mt-6" data-testid="skill-undo-section">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+          Change history
+        </h2>
+        <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+          Nothing recorded yet. Skill changes the agent makes are reversible, and stay reversible
+          across restarts.
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="mt-6" data-testid="skill-undo-section">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+        Change history
+      </h2>
+      <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+        Skill changes the agent made. Reverting restores the files to what they held before — it does
+        not undo the undo.
+      </p>
+      <ul className="mt-2 space-y-2" data-testid="skill-undo-list">
+        {entries.map((entry) => (
+          <li
+            key={entry.id}
+            data-testid={`skill-undo-${entry.id}`}
+            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="truncate text-xs text-[var(--text-secondary)]">
+                {new Date(entry.at).toLocaleString()}
+              </span>
+              <span className="ml-auto shrink-0 text-[11px] text-[var(--text-muted)]">
+                {entry.fileCount} file{entry.fileCount === 1 ? '' : 's'}
+              </span>
+              <Button
+                variant="secondary"
+                disabled={busyId !== null}
+                onClick={() => handleRevert(entry.id)}
+                data-testid={`skill-undo-revert-${entry.id}`}
+                className="h-7 shrink-0 px-2.5 text-[11px]"
+              >
+                {busyId === entry.id ? 'Reverting…' : 'Revert'}
+              </Button>
+            </div>
+            <ul className="mt-1 space-y-0.5 text-xs leading-5 text-[var(--text-secondary)]">
+              {entry.summary.map((line, index) => (
+                <li key={index}>· {line}</li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }
@@ -669,7 +789,9 @@ function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6" data-testid="skills-page">
-      <div className="flex items-center justify-between gap-3">
+      <SkillUndoSection onReverted={refresh} onError={setError} />
+
+      <div className="mt-6 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text)]">Skills</h1>
           <p className="mt-0.5 text-xs leading-5 text-[var(--text-muted)]">

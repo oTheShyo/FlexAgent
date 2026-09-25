@@ -34,7 +34,9 @@ import { perfStart } from './perf'
 import {
   approveSkillWrite,
   listPendingSkillWrites,
-  rejectSkillWrite
+  listSkillUndo,
+  rejectSkillWrite,
+  revertSkillWrite
 } from './skills/skillManage'
 import { listSkills } from './skills/skillService'
 import {
@@ -705,6 +707,27 @@ export function registerIpcHandlers(
         // Worker down: the restart path rebuilds loaders from scratch anyway.
       }
       return summary
+    })
+  )
+
+  ipcMain.handle(IPC.listSkillUndo, () => guard(() => listSkillUndo()))
+
+  ipcMain.handle(IPC.revertSkillWrite, (_e, id: unknown) =>
+    guard(() => {
+      if (typeof id !== 'string' || !id) {
+        throw new ContractError('INVALID_INPUT', 'id is required')
+      }
+      const result = revertSkillWrite(id)
+      if (result.reverted.length === 0) {
+        throw new ContractError('INVALID_INPUT', 'nothing to revert — the files were already in that state')
+      }
+      // The reverted skill is live again, so cached loaders carrying the old one
+      // have to go.
+      try {
+        void kernel.request({ type: 'reloadResources' })
+      } catch {
+        // Worker down: an attach after the next start rebuilds loaders anyway.
+      }
     })
   )
 

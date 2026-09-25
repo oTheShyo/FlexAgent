@@ -51,6 +51,7 @@ import {
   type SetThinkingLevelInput,
   type SessionSearchHit,
   type SkillPendingWrite,
+  type SkillUndoEntry,
   type SkillSummary,
   type SkillHubInfo,
   type SkillHubEntry,
@@ -265,6 +266,10 @@ const codex: CodexApi = {
   approveSkillWrite: (id: string) => invoke<void>(IPC.approveSkillWrite, id),
 
   rejectSkillWrite: (id: string) => invoke<void>(IPC.rejectSkillWrite, id),
+
+  listSkillUndo: () => invoke<SkillUndoEntry[]>(IPC.listSkillUndo),
+
+  revertSkillWrite: (id: string) => invoke<void>(IPC.revertSkillWrite, id),
 
   listMemoryCards: () => invoke<MemoryCard[]>(IPC.listMemoryCards),
 

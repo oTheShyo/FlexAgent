@@ -143,6 +143,13 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
       const pending: PendingWrite[] = []
       /** Ids this session produced, flushed or not — invisible to this session. */
       const sessionCardIds = new Set<string>()
+      /**
+       * Whether this run has read the skill inventory. `skill_manage` refuses
+       * mutations until then: a model that skips the read will happily "create"
+       * something that already exists, or patch a file it has never opened.
+       * Enforced in code because a refusal in the prompt is a suggestion.
+       */
+      let inventorySeen = false
 
       /** Commit the queue; returns how many actually landed on disk. */
       const flush = (): number => {
@@ -259,12 +266,15 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
         label: 'Skill manage',
         description:
           'Create, improve, and remove your own skills (procedural memory) under the user skills home. ' +
+          'Call action=list FIRST in every run: the tool refuses any write until you have read what already exists. ' +
           'Prefer patch for small fixes; use batch ops for multi-file changes; skills follow ' +
-          '"When to Use / Procedure / Pitfalls / Verification" and hold lessons, not logs.',
+          '"When to Use / Procedure / Pitfalls / Verification" and hold lessons, not logs. ' +
+          'Every change is recorded in a persistent undo log the user can revert.',
         promptSnippet:
           'skill_manage: create/patch/delete skills (procedural memory) — record reusable workflows and fixes',
         promptGuidelines: [
-          'After escaping an error or dead end, or when the user corrects your approach, record the working path with skill_manage (lessons, not logs).'
+          'After escaping an error or dead end, or when the user corrects your approach, record the working path with skill_manage (lessons, not logs).',
+          'Start each run with skill_manage {action: "list"} so you know what already exists — writes are refused without it, and duplicate skills are the usual result of skipping it.'
         ],
         parameters: SKILL_MANAGE_SCHEMA,
         execute: async (_toolCallId, rawParams) => {
@@ -274,12 +284,16 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
             ? (params.ops as SkillOp[])
             : [{ ...params, action: typeof params.action === 'string' ? params.action : 'list' } as SkillOp]
           try {
-            const outcome = runSkillManage(ops)
+            const outcome = runSkillManage(ops, { stateReady: () => inventorySeen })
+            if (outcome.applied.some((line) => line.action === 'list')) inventorySeen = true
             if (outcome.stagedId === undefined) hooks.onSkillsChanged?.()
             const lines = outcome.applied.map(
               (line) =>
                 `- ${line.action} ${line.skill}: ${line.message}${line.warning !== undefined ? `\n  ⚠ ${line.warning}` : ''}`
             )
+            if (outcome.undoId !== undefined) {
+              lines.push(`\nrecorded in the undo log (${outcome.undoId}) — the user can revert this after a restart`)
+            }
             return textResult(lines.join('\n'))
           } catch (err) {
             return textResult(`skill_manage failed: ${err instanceof Error ? err.message : String(err)}`)

@@ -772,6 +772,21 @@ export interface SkillPendingWrite {
   createdAt: number
 }
 
+/**
+ * A recorded skill mutation (v1.11, additive) — what an "undo" entry is made of.
+ * The user, not the agent, is who reverts: a bad evolution that can be rolled
+ * back is the reason a user is willing to approve the next one.
+ */
+export interface SkillUndoEntry {
+  id: string
+  /** Epoch ms. */
+  at: number
+  /** One line per op in the batch. */
+  summary: string[]
+  /** How many files this entry can restore. */
+  fileCount: number
+}
+
 export type MemoryCardFile = 'MEMORY' | 'USER'
 
 export interface MemoryCard {
@@ -1107,6 +1122,10 @@ export interface CodexApi {
   approveSkillWrite(id: string): Promise<void>
   /** Discard a staged write. */
   rejectSkillWrite(id: string): Promise<void>
+  /** Reversible skill mutations, newest first (persisted across restarts). */
+  listSkillUndo(): Promise<SkillUndoEntry[]>
+  /** Restore the files a recorded skill mutation replaced. */
+  revertSkillWrite(id: string): Promise<void>
   /** Curated memory cards across sessions (`~/.flexagent/memory/`). */
   listMemoryCards(): Promise<MemoryCard[]>
   /** Returns the id so callers can remove precisely later; see v1.10 note above. */
@@ -1189,6 +1208,8 @@ export const IPC = {
   listPendingSkillWrites: 'codex:listPendingSkillWrites',
   approveSkillWrite: 'codex:approveSkillWrite',
   rejectSkillWrite: 'codex:rejectSkillWrite',
+  listSkillUndo: 'codex:listSkillUndo',
+  revertSkillWrite: 'codex:revertSkillWrite',
   listMemoryCards: 'codex:listMemoryCards',
   addMemoryCard: 'codex:addMemoryCard',
   removeMemoryCard: 'codex:removeMemoryCard',

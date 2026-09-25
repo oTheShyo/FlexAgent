@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { isAbsolute, join, resolve, sep } from 'path'
 import { randomUUID } from 'crypto'
 import { ContractError } from '../../shared/contract'
 import type { SkillPendingWrite } from '../../shared/contract'
+import { listSkillHistory, recordSkillHistory, revertSkillHistory, writeFileAtomic } from './skillHistory'
+import type { UndoChange } from './skillHistory'
 
 /**
  * Agent-managed skill engine (Hermes-aligned, M1/M2).
@@ -13,6 +15,17 @@ import type { SkillPendingWrite } from '../../shared/contract'
  * tool; plugin-bundled and project-local skills live elsewhere and are never
  * written here. With `skills.writeApproval` enabled, writes are staged under
  * `~/.flexagent/pending/skills/` until approved (M2 approval gate).
+ *
+ * Three guards, all enforced here rather than requested in the prompt, because
+ * a model that ignores a text instruction still gets to run the tool:
+ *
+ * - **State gate** — a mutation is refused until the agent has read the
+ *   inventory. Without it the agent invents a skill name that already exists,
+ *   or "improves" a skill it has never looked at.
+ * - **Atomic writes** — a crash mid-write used to leave a truncated SKILL.md,
+ *   which the loader then rejects as invalid YAML.
+ * - **Version history** — every mutation records what it replaced, on disk, so
+ *   a bad evolution is reversible after a restart.
  */
 
 export const SKILLS_HOME = join(homedir(), '.flexagent', 'skills')
@@ -54,6 +67,25 @@ export interface SkillWriteOutcome {
   applied: SkillOpResultLine[]
   /** Present when writeApproval is on and the batch was staged instead of applied. */
   stagedId?: string
+  /** Present when the batch changed files and a history entry was recorded. */
+  undoId?: string
+}
+
+/** The projection the UI needs; the log itself keeps the old contents too. */
+export interface UndoEntryLite {
+  id: string
+  at: number
+  summary: string[]
+  fileCount: number
+}
+
+export interface SkillManageOptions {
+  /**
+   * Hard state gate. Returning false refuses every mutating op, including
+   * staging — the agent decides what to write without knowing what exists,
+   * which is how duplicate skills and blind "improvements" happen.
+   */
+  stateReady?: () => boolean
 }
 
 interface ParsedOp {
@@ -308,7 +340,7 @@ function writeTracked(files: AppliedFile[], dirs: AppliedDirs, path: string, con
     mkdirSync(parent, { recursive: true })
   }
   files.push({ path, previousContent: readIfExists(path) })
-  writeFileSync(path, content, 'utf8')
+  writeFileAtomic(path, content)
 }
 
 function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
@@ -333,7 +365,7 @@ function applyOp(op: ParsedOp, applied: AppliedOp): SkillOpResultLine {
     applied.dirs.created.push(skillDir)
     const skillMd = join(skillDir, 'SKILL.md')
     applied.files.push({ path: skillMd, previousContent: null })
-    writeFileSync(skillMd, op.content ?? '', 'utf8')
+    writeFileAtomic(skillMd, op.content ?? '')
     const { body } = splitFrontmatter(op.content ?? '')
     return {
       action: 'create',
@@ -366,7 +398,7 @@ function applyOp(op: ParsedOp, applied: AppliedOp): SkillOpResultLine {
         ? op.content
         : replaceOnce(current, op.oldString ?? '', op.newString ?? '', op.name)
     applied.files.push({ path: skillMd, previousContent: current })
-    writeFileSync(skillMd, next, 'utf8')
+    writeFileAtomic(skillMd, next)
     const { body } = splitFrontmatter(next)
     return {
       action: 'patch',
@@ -434,14 +466,14 @@ function rollback(appliedOps: AppliedOp[]): void {
     for (const file of applied.files) {
       try {
         if (file.previousContent === null) rmSync(file.path, { force: true })
-        else writeFileSync(file.path, file.previousContent, 'utf8')
+        else writeFileAtomic(file.path, file.previousContent)
       } catch {
         /* best-effort rollback */
       }
     }
     for (const file of applied.removedFiles) {
       try {
-        if (file.previousContent !== null) writeFileSync(file.path, file.previousContent, 'utf8')
+        if (file.previousContent !== null) writeFileAtomic(file.path, file.previousContent)
       } catch {
         /* best-effort rollback */
       }
@@ -487,8 +519,26 @@ function summarizeOp(op: ParsedOp): string {
   }
 }
 
+/**
+ * Collect everything a batch touched, in the shape the history log wants.
+ * Reuses the same records `rollback` reads, so the two can never disagree about
+ * what a change did.
+ */
+function changesOf(appliedOps: AppliedOp[]): UndoChange[] {
+  const changes: UndoChange[] = []
+  for (const applied of appliedOps) {
+    for (const file of applied.files) {
+      changes.push({ path: file.path, previousContent: file.previousContent })
+    }
+    for (const file of applied.removedFiles) {
+      changes.push({ path: file.path, previousContent: file.previousContent })
+    }
+  }
+  return changes
+}
+
 /** Entry point for the `skill_manage` tool: a batch (or single op) of writes. */
-export function runSkillManage(rawOps: SkillOp[]): SkillWriteOutcome {
+export function runSkillManage(rawOps: SkillOp[], options: SkillManageOptions = {}): SkillWriteOutcome {
   if (rawOps.length === 0) {
     throw new ContractError('INVALID_INPUT', 'no operations given')
   }
@@ -505,6 +555,16 @@ export function runSkillManage(rawOps: SkillOp[]): SkillWriteOutcome {
     }
   }
 
+  // Hard gate, checked before anything is staged or written. A refusal is a
+  // message, not a failure code: the agent is being asked to go look first.
+  if (options.stateReady !== undefined && !options.stateReady()) {
+    throw new ContractError(
+      'INVALID_INPUT',
+      `refused: read the current state first with skill_manage {action: "list"} (and memory_manage {action: "list"}). ` +
+        'Deciding what to create or change without knowing what already exists is how duplicate skills get created.'
+    )
+  }
+
   if (isSkillWriteApprovalEnabled()) {
     const record: PendingRecord = {
       id: randomUUID(),
@@ -516,7 +576,7 @@ export function runSkillManage(rawOps: SkillOp[]): SkillWriteOutcome {
         .map((op) => skillDirOf(op))
     }
     mkdirSync(PENDING_HOME, { recursive: true })
-    writeFileSync(join(PENDING_HOME, `${record.id}.json`), JSON.stringify(record, null, 2), 'utf8')
+    writeFileAtomic(join(PENDING_HOME, `${record.id}.json`), JSON.stringify(record, null, 2))
     return {
       applied: [
         {
@@ -540,7 +600,22 @@ export function runSkillManage(rawOps: SkillOp[]): SkillWriteOutcome {
     rollback(appliedOps)
     throw err
   }
-  return { applied: lines }
+  return { applied: lines, undoId: recordSkillHistory(lines.map((line) => line.message), changesOf(appliedOps)) }
+}
+
+/** Revert a recorded skill change by its history id (survives restarts). */
+export function revertSkillWrite(id: string): { reverted: string[]; skipped: string[] } {
+  return revertSkillHistory(id)
+}
+
+/** Newest first — backs the "undo" list in the UI. */
+export function listSkillUndo(): UndoEntryLite[] {
+  return listSkillHistory().map((entry) => ({
+    id: entry.id,
+    at: entry.at,
+    summary: entry.summary,
+    fileCount: entry.changes.length
+  }))
 }
 
 export function listPendingSkillWrites(): SkillPendingWrite[] {
@@ -590,7 +665,7 @@ function loadPendingRecord(id: string): PendingRecord {
   }
 }
 
-export function approveSkillWrite(id: string): SkillOpResultLine[] {
+export function approveSkillWrite(id: string): SkillWriteOutcome {
   const record = loadPendingRecord(id)
   const ops = record.ops.map((op, index) => parseOp(op, index))
   const appliedOps: AppliedOp[] = []
@@ -605,8 +680,11 @@ export function approveSkillWrite(id: string): SkillOpResultLine[] {
     rollback(appliedOps)
     throw err
   }
+  // A user-approved write is the one path that must not be gated — the person
+  // already decided — but it still gets history, same as an agent write.
+  const undoId = recordSkillHistory(lines.map((line) => line.message), changesOf(appliedOps))
   rmSync(join(PENDING_HOME, `${id}.json`), { force: true })
-  return lines
+  return { applied: lines, undoId }
 }
 
 export function rejectSkillWrite(id: string): void {

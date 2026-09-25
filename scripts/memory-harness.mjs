@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from 'crypto'
-import { mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildSync } from 'esbuild'
@@ -30,6 +30,8 @@ buildSync({
       export * from './src/main/skills/memoryStore'
       export { createSelfEvolutionExtension, flushPendingMemoryWrites } from './src/main/skills/selfEvolution'
       export * from './src/main/skills/sessionSearch'
+      export * from './src/main/skills/skillManage'
+      export * from './src/main/skills/skillHistory'
     `,
     resolveDir: process.cwd(),
     loader: 'ts'
@@ -243,6 +245,100 @@ check('recall: prefers the informative word', mixed[0] === 'jitter' || mixed.inc
 check(
   'recall: yields nothing usable from a short prompt',
   mod.extractRecallQueries('hi').length === 0
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6. Skill write safety — gate, atomicity, history, undo
+// ════════════════════════════════════════════════════════════════════════════
+
+const { runSkillManage, revertSkillWrite, listSkillUndo, UNDO_LOG, SKILLS_HOME } = mod
+mod.clearSkillHistory()
+
+const readSkill = (name) => readFileSync(join(SKILLS_HOME, name, 'SKILL.md'), 'utf8')
+const listSkillDir = (name) => readdirSync(join(SKILLS_HOME, name))
+
+// The gate: a write without a prior read must be impossible, not discouraged.
+let gateThrew = false
+try {
+  runSkillManage([{ action: 'create', name: 'gate-probe', content: '---\nname: gate-probe\n---\nbody' }], {
+    stateReady: () => false
+  })
+} catch {
+  gateThrew = true
+}
+check('skill gate: refuses a write when the inventory was never read', gateThrew)
+check(
+  'skill gate: reading is still allowed without the gate satisfied',
+  runSkillManage([{ action: 'list' }], { stateReady: () => false }).applied.length === 0
+)
+check(
+  'skill gate: the refusal says what to do next',
+  (() => {
+    try {
+      runSkillManage([{ action: 'create', name: 'gate-probe', content: 'x' }], { stateReady: () => false })
+      return false
+    } catch (err) {
+      return String(err.message).includes('action: "list"')
+    }
+  })(),
+  'a model that ignores the message has no way to guess the remedy'
+)
+
+// With the gate satisfied, the write lands and is atomic.
+const created = runSkillManage(
+  [{ action: 'create', name: 'gate-probe', content: '---\nname: gate-probe\n---\nv1' }],
+  { stateReady: () => true }
+)
+check('skill gate: admits the write once the inventory has been read', created.applied[0].action === 'create')
+check('skill write: content lands exactly', readSkill('gate-probe').endsWith('v1'))
+check('skill write: leaves no temp file behind', !listSkillDir('gate-probe').some((f) => f.startsWith('.tmp')))
+
+// A crash mid-write used to leave a truncated SKILL.md; the rename path must not.
+const before = readSkill('gate-probe')
+runSkillManage([{ action: 'patch', name: 'gate-probe', content: '---\nname: gate-probe\n---\nv2' }], {
+  stateReady: () => true
+})
+check('skill write: patch applied', readSkill('gate-probe').endsWith('v2'))
+
+// History + undo: the reason a user will approve the next evolution.
+const undo = listSkillUndo()
+// create + patch both land, so both are recorded; creation is undoable too.
+check('skill history: records every mutation', undo.length === 2 && undo[0].fileCount === 1, `${undo.length} entries`)
+check('skill history: persists to disk rather than memory', existsSync(UNDO_LOG))
+const patchUndoId = undo[0].id
+const reverted = revertSkillWrite(patchUndoId)
+check('skill undo: restores the previous content', readSkill('gate-probe') === before)
+check('skill undo: reports what it touched', reverted.reverted.length === 1 && reverted.skipped.length === 0)
+check(
+  'skill undo: undoing does not erase the history entry, so it can be redone',
+  listSkillUndo().some((entry) => entry.id === patchUndoId)
+)
+
+// A delete must be reversible too — that is the irreversible-seeming one.
+runSkillManage([{ action: 'delete', name: 'gate-probe' }], { stateReady: () => true })
+check('skill delete: removes the tree', !existsSync(join(SKILLS_HOME, 'gate-probe')))
+const deleteEntry = listSkillUndo()[0]
+revertSkillWrite(deleteEntry.id)
+check('skill undo: brings a deleted skill back', existsSync(join(SKILLS_HOME, 'gate-probe', 'SKILL.md')))
+
+// Depth cap: an edit loop must not grow one file's history forever.
+for (let i = 0; i < 9; i += 1) {
+  runSkillManage(
+    [{ action: 'patch', name: 'gate-probe', content: `---\nname: gate-probe\n---\nround-${i}` }],
+    { stateReady: () => true }
+  )
+}
+const versions = listSkillUndo().filter((entry) => entry.summary.some((line) => line.includes('gate-probe')))
+const perFile = new Map()
+for (const entry of versions) {
+  for (const line of entry.summary) {
+    if (line.includes('gate-probe')) perFile.set('gate-probe', (perFile.get('gate-probe') ?? 0) + 1)
+  }
+}
+check(
+  'skill history: caps versions per file',
+  (perFile.get('gate-probe') ?? 99) <= 6,
+  `${perFile.get('gate-probe')} entries for one file`
 )
 
 // ════════════════════════════════════════════════════════════════════════════
