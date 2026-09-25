@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from 'crypto'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildSync } from 'esbuild'
@@ -32,6 +32,7 @@ buildSync({
       export * from './src/main/skills/sessionSearch'
       export * from './src/main/skills/skillManage'
       export * from './src/main/skills/skillHistory'
+      export * from './src/main/skills/skillUsage'
     `,
     resolveDir: process.cwd(),
     loader: 'ts'
@@ -234,6 +235,87 @@ mod.flushPendingMemoryWrites()
 const flushedUser = mod.listMemoryCards().filter((c) => c.text === 'Works primarily in Chinese')
 check('commit: dispose-time flush rescues uncommitted cards', flushedUser.length === 1)
 
+// ── Atomic update ────────────────────────────────────────────────────────────
+// The point is the failure mode remove+add has: the process dies between the
+// two calls and the corrected fact is gone. update is one write, or none.
+
+await call({ action: 'add', file: 'MEMORY', text: 'Builds with CMake and MSVC' })
+await captured.handlers.turn_end({ type: 'turn_end' })
+const cmakeCard = mod.listMemoryCards().find((c) => c.text === 'Builds with CMake and MSVC')
+check('update: the seeded card is on disk', cmakeCard !== undefined)
+
+const positionBefore = mod.listMemoryCards().findIndex((c) => c.text === 'Builds with CMake and MSVC')
+const corrected = await call({
+  action: 'update',
+  file: 'MEMORY',
+  id: cmakeCard.id,
+  text: 'Builds with CMake and Ninja'
+})
+check('update: queues rather than writing immediately', /queued update/.test(corrected))
+
+const midEdit = mod.listMemoryCards().filter((c) => c.text === 'Builds with CMake and Ninja')
+check('update: nothing visible before the run ends', midEdit.length === 0)
+const stillOld = mod.listMemoryCards().filter((c) => c.text === 'Builds with CMake and MSVC')
+check('update: the pre-correction text is still what the store shows', stillOld.length === 1)
+
+await captured.handlers.turn_end({ type: 'turn_end' })
+const cardsNow = mod.listMemoryCards()
+check(
+  'update: lands as a single card, not a duplicate',
+  cardsNow.filter((c) => c.text === 'Builds with CMake and Ninja').length === 1,
+  'remove+add across a crash leaves the fact missing; update cannot'
+)
+check(
+  'update: happens in place, not appended at the end',
+  cardsNow.findIndex((c) => c.text === 'Builds with CMake and Ninja') === positionBefore &&
+    positionBefore >= 0,
+  'a replacement written as delete-plus-append moves the card to the tail'
+)
+
+const missingTarget = await call({
+  action: 'update',
+  file: 'MEMORY',
+  id: 'deadbeef00',
+  text: 'Updates a card that does not exist'
+})
+check('update: refuses to invent a target', /no card matches/.test(missingTarget))
+
+// ── Queue consistency ────────────────────────────────────────────────────────
+// Every write, delete included, is queued. Otherwise "delete then re-add in the
+// same turn" depends on ordering, and one of the two halves can be lost.
+
+const doomed = 'Temporary tool flag used during the port'
+await call({ action: 'add', file: 'MEMORY', text: doomed })
+const removedRightAfter = await call({ action: 'remove', file: 'MEMORY', id: mod.cardId(doomed) })
+check('queue: remove is deferred like add', /queued remove/.test(removedRightAfter))
+
+await captured.handlers.turn_end({ type: 'turn_end' })
+check(
+  'batch: add then remove nets out to nothing',
+  mod.listMemoryCards().filter((c) => c.text === doomed).length === 0,
+  'one write per file means the two cancel instead of leaving a ghost'
+)
+
+const toCorrect = 'Runs the wall scan at 300x1936'
+await call({ action: 'add', file: 'MEMORY', text: toCorrect })
+await captured.handlers.turn_end({ type: 'turn_end' })
+const editId = mod.listMemoryCards().find((c) => c.text === toCorrect)?.id ?? mod.cardId(toCorrect)
+const updated = await call({ action: 'update', file: 'MEMORY', id: editId, text: 'Runs the wall scan at 300x1936 px' })
+const cancelled = await call({ action: 'remove', file: 'MEMORY', id: editId })
+check(
+  'update: an edit is not mistaken for a duplicate of the card it replaces',
+  /queued update/.test(updated),
+  'an edit is near-identical to its target by construction — dedupe must skip the target'
+)
+check('batch: remove cancels the queued update against the same card', /dropped the queued update/.test(cancelled))
+
+await captured.handlers.turn_end({ type: 'turn_end' })
+check(
+  'batch: the cancelled update never lands',
+  mod.listMemoryCards().some((c) => c.text === toCorrect) &&
+    !mod.listMemoryCards().some((c) => c.text === 'Runs the wall scan at 300x1936 px')
+)
+
 // ════════════════════════════════════════════════════════════════════════════
 // 5. Recall query extraction
 // ════════════════════════════════════════════════════════════════════════════
@@ -245,6 +327,71 @@ check('recall: prefers the informative word', mixed[0] === 'jitter' || mixed.inc
 check(
   'recall: yields nothing usable from a short prompt',
   mod.extractRecallQueries('hi').length === 0
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5b. Timestamps and scope — when a fact was learned, and where it holds
+// ════════════════════════════════════════════════════════════════════════════
+
+const scopedCwd = join(home, 'project-a')
+const bootRun = (cwd) => {
+  const instance = mod.createSelfEvolutionExtension({ cwd })
+  const sink = { tools: {}, handlers: {} }
+  instance.factory({
+    registerTool: (tool) => {
+      sink.tools[tool.name] = tool
+    },
+    on: (name, handler) => {
+      sink.handlers[name] = handler
+    }
+  })
+  return sink
+}
+const callOn = async (sink, params) => (await sink.tools.memory_manage.execute('t', params)).content[0].text
+
+const runIn = bootRun(scopedCwd)
+const runElsewhere = bootRun(join(home, 'project-b'))
+
+const scopedFact = 'Pins CMake 3.24 for the wall-scan build'
+await callOn(runIn, { action: 'add', file: 'MEMORY', text: scopedFact, scope: scopedCwd })
+await runIn.handlers.turn_end({ type: 'turn_end' })
+const scopedCard = mod.listMemoryCards().find((c) => c.text === scopedFact)
+check('scope: the card records the directory it belongs to', scopedCard?.scope === scopedCwd)
+check(
+  'time: a stored card carries timestamps',
+  typeof scopedCard?.createdAt === 'number' && typeof scopedCard?.updatedAt === 'number',
+  'without a date there is no way to tell a fresh fact from one from six months ago'
+)
+check('time: the sidecar is a separate file, not card text', existsSync(join(mod.MEMORY_HOME, '.cards.json')))
+
+// A separate run in the same directory: the card was written by `runIn`, and the
+// run that wrote it is exactly the run forbidden to see it.
+const runReader = bootRun(scopedCwd)
+const inRun = await runReader.handlers.before_agent_start({ systemPrompt: 'BASE', prompt: 'which cmake?' })
+const outRun = await runElsewhere.handlers.before_agent_start({ systemPrompt: 'BASE', prompt: 'which cmake?' })
+check('scope: injected into the run it belongs to', inRun.systemPrompt.includes(scopedFact))
+check(
+  'scope: left out of a run in another directory',
+  !outRun.systemPrompt.includes(scopedFact),
+  'a memory store that injects every fact everywhere is a store the user stops trusting'
+)
+
+const createdAt = scopedCard.createdAt
+await new Promise((resolve) => setTimeout(resolve, 15))
+await callOn(runIn, {
+  action: 'update',
+  file: 'MEMORY',
+  id: scopedCard.id,
+  text: 'Pins CMake 3.26 for the wall-scan build',
+  scope: scopedCwd
+})
+await runIn.handlers.turn_end({ type: 'turn_end' })
+const correctedCard = mod.listMemoryCards().find((c) => c.text === 'Pins CMake 3.26 for the wall-scan build')
+check('time: an edit refreshes updatedAt', (correctedCard?.updatedAt ?? 0) > (createdAt ?? 0))
+check(
+  'time: an edit keeps the original createdAt',
+  correctedCard?.createdAt === createdAt,
+  'correcting a card should not make it look like a new fact'
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -339,6 +486,39 @@ check(
   'skill history: caps versions per file',
   (perFile.get('gate-probe') ?? 99) <= 6,
   `${perFile.get('gate-probe')} entries for one file`
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7. Usage age — the half of "is anyone using this" that is actually observable
+// ════════════════════════════════════════════════════════════════════════════
+
+const wallUsage = mod.listSkillUsage().find((entry) => entry.name.includes('gate-probe'))
+check('usage: a skill the agent wrote is reported', wallUsage !== undefined)
+check('usage: attributed to the write log, not guessed', wallUsage?.source === 'history')
+check(
+  'usage: the timestamp is recent',
+  (wallUsage?.touchedAt ?? 0) > Date.now() - 60_000,
+  'a stale timestamp on a freshly written skill means the source is wrong'
+)
+
+// A skill installed and never edited again: only the log knows it exists, so
+// seed the log rather than pretending an agent wrote it.
+appendFileSync(
+  mod.UNDO_LOG,
+  `${JSON.stringify({
+    id: 'seed-ancient',
+    at: Date.now() - 200 * 24 * 60 * 60 * 1000,
+    summary: ['create skill "ancient-thing"'],
+    changes: [{ path: join(mod.SKILLS_HOME, 'ancient-thing', 'SKILL.md'), previousContent: null }]
+  })}\n`
+)
+
+const staleList = mod.staleSkills()
+check('usage: a skill untouched for months is flagged', staleList.some((e) => e.name === 'ancient-thing'))
+check(
+  'usage: a skill written today is not',
+  !staleList.some((e) => e.name === 'wall-detection'),
+  'flagging the wrong direction destroys the signal'
 )
 
 // ════════════════════════════════════════════════════════════════════════════

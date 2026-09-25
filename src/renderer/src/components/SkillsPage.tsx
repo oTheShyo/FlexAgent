@@ -5,8 +5,10 @@ import type {
   SkillPendingWrite,
   SkillProvenance,
   SkillSummary,
-  SkillUndoEntry
+  SkillUndoEntry,
+  SkillUsageEntry
 } from '../types'
+import { SKILL_STALE_AFTER_MS } from '../types'
 import { codexApi } from '../api'
 import { Button, Chip } from './ui'
 import { PluginsIcon } from './icons'
@@ -257,6 +259,105 @@ function SkillUndoSection({
           </li>
         ))}
       </ul>
+    </section>
+  )
+}
+
+// ─── Usage age ────────────────────────────────────────────────────────────────
+
+/**
+ * Writes, not reads. The kernel loads skills without saying which ones were
+ * used, so "never touched" is the closest observable proxy for "never needed",
+ * and it is offered as a question rather than acted on.
+ */
+function SkillUsageSection({ onError }: { onError?: (message: string | null) => void } = {}) {
+  const [entries, setEntries] = useState<SkillUsageEntry[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setEntries(await codexApi.listSkillUsage())
+      onError?.(null)
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [onError])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  if (loading) {
+    return (
+      <section className="mt-6" data-testid="skill-usage-section">
+        <div role="status" aria-busy="true" aria-label="Loading skill usage" className="h-10" />
+      </section>
+    )
+  }
+
+  const stale = entries.filter((entry) => Date.now() - entry.touchedAt > SKILL_STALE_AFTER_MS)
+
+  return (
+    <section className="mt-6" data-testid="skill-usage-section">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+        Last written
+      </h2>
+      <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+        Nothing here counts how often a skill is <em>used</em> — the kernel does not report which
+        skills a session read. What is recorded is the last time each one was <em>written</em>, which
+        is the closest thing to a signal, and it is why an untouched skill is worth a second look.
+      </p>
+
+      {stale.length > 0 && (
+        <p
+          data-testid="skill-usage-stale-count"
+          className="mt-2 rounded-lg border border-[var(--warning-border)] bg-[var(--warning-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--warning-text)]"
+        >
+          {stale.length} skill{stale.length === 1 ? '' : 's'} not written for over 90 days — the usual
+          reason is that nothing runs them. Delete is on the skill row above; this page only asks.
+        </p>
+      )}
+
+      {entries.length === 0 ? (
+        <p className="mt-2 text-xs text-[var(--text-subtle)]">No writes recorded yet.</p>
+      ) : (
+        <ul className="mt-2 space-y-1" data-testid="skill-usage-list">
+          {entries.map((entry) => {
+            const untouched = Date.now() - entry.touchedAt > SKILL_STALE_AFTER_MS
+            return (
+              <li
+                key={`${entry.name}-${entry.touchedAt}`}
+                data-testid={`skill-usage-${entry.name}`}
+                className="flex items-baseline gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5"
+              >
+                <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-secondary)]">
+                  {entry.name}
+                </span>
+                {untouched && (
+                  <span
+                    title="Not written to since long before the 90-day mark"
+                    className="shrink-0 rounded border border-[var(--warning-border)] px-1 py-px text-[10px] text-[var(--warning-text)]"
+                  >
+                    untouched {Math.floor((Date.now() - entry.touchedAt) / (30 * 24 * 60 * 60 * 1000))}mo
+                  </span>
+                )}
+                <span
+                  className="shrink-0 text-[11px] text-[var(--text-muted)]"
+                  title={
+                    entry.source === 'history'
+                      ? 'Recorded in the undo log'
+                      : 'File modification time — no undo-log entry for this skill'
+                  }
+                >
+                  {new Date(entry.touchedAt).toLocaleDateString()}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </section>
   )
 }
@@ -789,6 +890,7 @@ function SkillsPage({ onOpenMemory }: SkillsPageProps = {}) {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6" data-testid="skills-page">
+      <SkillUsageSection onError={setError} />
       <SkillUndoSection onReverted={refresh} onError={setError} />
 
       <div className="mt-6 flex items-center justify-between gap-3">

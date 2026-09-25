@@ -23,6 +23,7 @@ export default function MemoryPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [memoryFile, setMemoryFile] = useState<MemoryCardFile>('MEMORY')
   const [draft, setDraft] = useState('')
+  const [draftScope, setDraftScope] = useState('')
   const [notices, setNotices] = useState<string[]>([])
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -48,16 +49,18 @@ export default function MemoryPage() {
     try {
       // Advisory only: the card is stored even when the linter objects, so the
       // warning is shown rather than thrown. A rejected card does throw.
-      const receipt = await codexApi.addMemoryCard(memoryFile, text)
+      const scope = draftScope.trim()
+      const receipt = await codexApi.addMemoryCard(memoryFile, text, scope.length > 0 ? scope : undefined)
       setNotices(receipt.warnings ?? [])
       setDraft('')
+      setDraftScope('')
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyId(null)
     }
-  }, [draft, memoryFile, refresh])
+  }, [draft, draftScope, memoryFile, refresh])
 
   const handleRemove = useCallback(
     async (card: MemoryCard): Promise<void> => {
@@ -92,7 +95,8 @@ export default function MemoryPage() {
       <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
         Curated facts injected into every session. The agent maintains them via{' '}
         <code>memory_manage</code>; edits here apply from the next turn. Stored locally in{' '}
-        <code>~/.flexagent/memory/</code>.
+        <code>~/.flexagent/memory/</code>. A card with a scope is only shown in sessions working in
+        that directory.
       </p>
 
       {error !== null && (
@@ -154,6 +158,23 @@ export default function MemoryPage() {
           Add
         </Button>
       </form>
+      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--text-subtle)]">
+        <label htmlFor="memory-scope" className="shrink-0">
+          Scope (optional)
+        </label>
+        <input
+          id="memory-scope"
+          type="text"
+          value={draftScope}
+          onChange={(event) => setDraftScope(event.target.value)}
+          placeholder="Leave empty for everywhere, or paste a project path"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Memory card scope"
+          className="h-6 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-[11px] text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          data-testid="memory-scope-input"
+        />
+      </div>
 
       {notices.length > 0 && (
         <ul
@@ -197,9 +218,32 @@ export default function MemoryPage() {
                       data-testid={`memory-card-${card.file}-${card.index}`}
                       className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
                     >
-                      <span className="min-w-0 flex-1 text-xs leading-5 text-[var(--text-secondary)]">
-                        {card.text}
-                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-xs leading-5 text-[var(--text-secondary)]">
+                          {card.text}
+                        </span>
+                        <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--text-subtle)]">
+                          {card.scope !== undefined && (
+                            <span
+                              data-testid={`memory-card-scope-${card.file}-${card.index}`}
+                              title="Only injected in sessions working in this directory"
+                              className="rounded border border-[var(--border)] px-1 py-px"
+                            >
+                              scope: {card.scope}
+                            </span>
+                          )}
+                          {card.updatedAt !== undefined && (
+                            <span data-testid={`memory-card-updated-${card.file}-${card.index}`}>
+                              updated {new Date(card.updatedAt).toLocaleDateString()}
+                            </span>
+                          )}
+                          {card.createdAt !== undefined && card.createdAt !== card.updatedAt && (
+                            <span title={`Created ${new Date(card.createdAt).toLocaleString()}`}>
+                              since {new Date(card.createdAt).toLocaleDateString()}
+                            </span>
+                          )}
+                        </span>
+                      </div>
                       <button
                         type="button"
                         disabled={busyId !== null}

@@ -1024,6 +1024,7 @@ async function acquireResourceLoader(
       ],
       extensionFactories: [
         createSelfEvolutionExtension({
+          cwd,
           onSkillsChanged: () => resourceLoaders.clear(),
           judgeDuplicate: judgeMemoryDuplicate,
           recallHistory: async (_prompt, limit) => consumeRecall().slice(0, limit)

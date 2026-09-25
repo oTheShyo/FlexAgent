@@ -50,6 +50,7 @@ import {
 } from './skills/skillHub'
 import type { InstallSkillSource } from '../shared/contract'
 import { addMemoryCard, listMemoryCards, removeMemoryCard } from './skills/memoryStore'
+import { listSkillUsage } from './skills/skillUsage'
 import { RECALL_BUDGET, extractRecallQueries, searchSessionRecords } from './skills/sessionSearch'
 import type { SessionSearchHit } from '../shared/contract'
 
@@ -733,20 +734,25 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.listMemoryCards, () => guard(() => listMemoryCards()))
 
-  ipcMain.handle(IPC.addMemoryCard, (_e, input: { file?: unknown; text?: unknown }) =>
-    guard(() => {
-      if (!input || (input.file !== 'MEMORY' && input.file !== 'USER')) {
-        throw new ContractError('INVALID_INPUT', 'file must be MEMORY or USER')
-      }
-      if (typeof input.text !== 'string' || !input.text.trim()) {
-        throw new ContractError('INVALID_INPUT', 'text is required')
-      }
-      // Written straight to disk: the UI is not mid-run, so there is no turn to
-      // defer to. Warnings go back to the caller — the card was stored, but
-      // something about it is probably wrong and the user can judge that.
-      const result = addMemoryCard(input.file, input.text)
-      return { id: result.id, warnings: result.warnings }
-    })
+  ipcMain.handle(
+    IPC.addMemoryCard,
+    (_e, input: { file?: unknown; text?: unknown; scope?: unknown }) =>
+      guard(() => {
+        if (!input || (input.file !== 'MEMORY' && input.file !== 'USER')) {
+          throw new ContractError('INVALID_INPUT', 'file must be MEMORY or USER')
+        }
+        if (typeof input.text !== 'string' || !input.text.trim()) {
+          throw new ContractError('INVALID_INPUT', 'text is required')
+        }
+        if (input.scope !== undefined && (typeof input.scope !== 'string' || input.scope.length === 0)) {
+          throw new ContractError('INVALID_INPUT', 'scope must be a non-empty string')
+        }
+        // Written straight to disk: the UI is not mid-run, so there is no turn to
+        // defer to. Warnings go back to the caller — the card was stored, but
+        // something about it is probably wrong and the user can judge that.
+        const result = addMemoryCard(input.file, input.text, input.scope)
+        return { id: result.id, warnings: result.warnings }
+      })
   )
 
   ipcMain.handle(IPC.removeMemoryCard, (_e, input: { file?: unknown; ref?: unknown; index?: unknown }) =>
@@ -764,6 +770,8 @@ export function registerIpcHandlers(
       removeMemoryCard(input.file, ref)
     })
   )
+
+  ipcMain.handle(IPC.listSkillUsage, () => guard(() => listSkillUsage()))
 
   ipcMain.handle(IPC.searchSessions, (_e, query: unknown) =>
     guard(() => {

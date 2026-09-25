@@ -1,7 +1,14 @@
 import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-agent'
-import type { MemoryCard, MemoryCardFile, SessionSearchHit } from '../../shared/contract'
+import type { MemoryCard, MemoryCardFile, MemoryCardRef, SessionSearchHit } from '../../shared/contract'
 import { SKILLS_HOME, listUserSkillDirs, runSkillManage, type SkillOp } from './skillManage'
-import { MEMORY_HOME, addMemoryCard, cardId, listMemoryCards, removeMemoryCard } from './memoryStore'
+import {
+  MEMORY_HOME,
+  applyMemoryWrites,
+  cardId,
+  listMemoryCards,
+  type MemoryWrite,
+  type MemoryWriteResult
+} from './memoryStore'
 import { firstRejection, lintCard } from './memoryLint'
 import { candidatesAmong, findLocalDuplicate } from './memoryDedupe'
 
@@ -71,6 +78,14 @@ ones.
 Cards are queued and written when the run ends, and nothing you write during a
 run is injected back into that same run. That is deliberate — it keeps you from
 treating what you just said as an established fact from an earlier session.
+
+To correct a card, use update with its id: one write, applied atomically. Prefer
+it over remove then add, which can lose the fact if nothing else happens in
+between.
+
+Scope a card to a project only when the fact is true of that directory and not
+of anywhere else ("this repo pins CMake 3.24"). Unscoped cards are injected
+everywhere, so a fact that is not always true costs context and misleads.
 `.trim()
 
 const MEMORY_NUDGE = `
@@ -80,11 +95,22 @@ memory_manage — do not wait to be asked. Queued cards reach disk automatically
 when the run ends; there is nothing to flush by hand.
 `.trim()
 
-/** A write accepted during the run but not yet committed to disk. */
-interface PendingWrite {
-  file: MemoryCardFile
-  text: string
-  id: string
+/**
+ * A write accepted during the run but not yet committed to disk.
+ *
+ * Every kind — add, update, remove — goes through the queue. A mixed batch is
+ * the case that breaks if deletes land immediately and edits wait: the run that
+ * "corrects" a card would show the user its old text until the turn ended.
+ */
+interface QueuedWrite {
+  write: MemoryWrite
+  /**
+   * Card ids that must stay invisible to this run. For an update the old id
+   * matters: the file still holds the previous text until the batch commits,
+   * and showing the agent its own pre-correction version is the self-reference
+   * loop this design exists to avoid.
+   */
+  hides: string[]
   warnings: string[]
 }
 
@@ -101,6 +127,12 @@ export type MemoryDuplicateJudge = (
 ) => Promise<number | null>
 
 export interface SelfEvolutionHooks {
+  /**
+   * Working directory of the session being started. Cards scoped to a different
+   * one are left out of this run — seeing another project's setup facts is how a
+   * memory store becomes noise.
+   */
+  cwd?: string
   /** Called after skills actually changed on disk (not staged). */
   onSkillsChanged?: () => void
   /** Optional semantic duplicate judge; absent ⇒ rule-based dedupe only. */
@@ -140,7 +172,8 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
   return {
     name: 'flex-self-evolution',
     factory: (pi: ExtensionAPI): void => {
-      const pending: PendingWrite[] = []
+      const sessionCwd = hooks.cwd ?? ''
+      const pending: QueuedWrite[] = []
       /** Ids this session produced, flushed or not — invisible to this session. */
       const sessionCardIds = new Set<string>()
       /**
@@ -151,30 +184,48 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
        */
       let inventorySeen = false
 
-      /** Commit the queue; returns how many actually landed on disk. */
+      /**
+       * Commit the queue; returns how many writes actually landed on disk.
+       *
+       * Grouping by file here, rather than handing the whole batch to
+       * `applyMemoryWrites`, is what keeps `result[i]` aligned with the queued
+       * write that produced it — one file is one transaction, and the caller
+       * still needs to know which of its own writes took effect.
+       */
       const flush = (): number => {
         if (pending.length === 0) return 0
         const batch = pending.splice(0, pending.length)
         let written = 0
+        const byFile = new Map<MemoryCardFile, QueuedWrite[]>()
         for (const item of batch) {
+          const bucket = byFile.get(item.write.file)
+          if (bucket !== undefined) bucket.push(item)
+          else byFile.set(item.write.file, [item])
+        }
+        for (const items of byFile.values()) {
+          const outcomes: MemoryWriteResult[] = []
           try {
-            const result = addMemoryCard(item.file, item.text)
-            sessionCardIds.add(result.id)
-            written += 1
+            outcomes.push(...applyMemoryWrites(items.map((item) => item.write)))
           } catch (err) {
-            // Already checked when queued, so this is the "disk changed under
-            // us" path. Drop it rather than throwing inside a lifecycle hook.
+            // Should not happen: the same rules were applied when queued. Treat
+            // it as "nothing landed" rather than throwing inside a lifecycle hook.
             console.warn(
-              `[self-evolution] queued card failed to commit: ${err instanceof Error ? err.message : String(err)}`
+              `[self-evolution] memory batch failed to commit: ${err instanceof Error ? err.message : String(err)}`
             )
+            continue
           }
+          items.forEach((item, i) => {
+            if (!outcomes[i]?.changed) return
+            written += 1
+            for (const id of item.hides) sessionCardIds.add(id)
+          })
         }
         return written
       }
       flushers.add(flush)
 
       const buildMemorySection = async (prompt: string): Promise<string> => {
-        const cards = listMemoryCards()
+        const cards = listMemoryCards().filter((card) => card.scope === undefined || card.scope === sessionCwd)
         // Cut the self-reinforcement loop: whatever this session produced stays
         // invisible to it, for as many turns as the run takes.
         const foreign = cards.filter((card) => !sessionCardIds.has(card.id))
@@ -213,35 +264,106 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
         return `${SELF_EVOLUTION_RULES}\n${header}${body}${recalled}\n${MEMORY_NUDGE}`
       }
 
-      const queueCard = async (file: MemoryCardFile, rawText: string): Promise<string> => {
-        const text = rawText.trim().replace(/\s*\r?\n\s*/g, ' ')
+      const queuedText = (item: QueuedWrite): string => item.write.text ?? ''
+
+      /** What `prepareWrite` decided about a write the model asked for. */
+      type Prepared =
+        | { verdict: 'queue'; item: QueuedWrite }
+        | { verdict: 'unchanged'; message: string }
+
+      /**
+       * Validate a write. The checks run here rather than at commit time because
+       * the model is still able to react to them; by `turn_end` there is nobody
+       * left to rephrase.
+       */
+      const prepareWrite = async (write: MemoryWrite): Promise<Prepared> => {
+        const onDisk = listMemoryCards().filter((card) => card.file === write.file)
+
+        // A removal has no text to lint or compare, and it is allowed to queue
+        // even when the target is already gone: that is how "add X, then change
+        // your mind" cancels itself instead of writing X.
+        if (write.kind === 'remove') {
+          if (write.ref === undefined) {
+            throw new Error('remove requires a card reference (id or index)')
+          }
+          const target =
+            typeof write.ref === 'string'
+              ? onDisk.find((card) => card.id === write.ref)
+              : onDisk[write.ref]
+          return {
+            verdict: 'queue',
+            item: {
+              write,
+              hides: target !== undefined ? [target.id] : [String(write.ref)],
+              warnings: []
+            }
+          }
+        }
+
+        const text = (write.text ?? '').trim().replace(/\s*\r?\n\s*/g, ' ')
         if (text.length === 0) throw new Error('card text must be a non-empty string')
         if (text.length > 2000) throw new Error('card text is too long (max 2000 chars)')
 
-        // Reject here, not at commit time — the model is still around to rephrase.
         const lint = lintCard(text)
         const rejection = firstRejection(lint)
         if (rejection !== undefined) {
           throw new Error(`card rejected (${rejection.rule}): ${rejection.message}`)
         }
         const warnings = lint.warnings.map((w) => `${w.rule}: ${w.message}`)
-
         const id = cardId(text)
-        if (sessionCardIds.has(id) || pending.some((item) => item.id === id)) {
-          return 'identical card already queued this session — no change'
-        }
-        const onDisk = listMemoryCards().filter((card) => card.file === file)
-        if (onDisk.some((card) => card.id === id)) {
-          return 'identical card already exists — no change'
+        const kept = (): QueuedWrite => ({
+          write: { ...write, text },
+          hides: [id],
+          warnings
+        })
+
+        // A duplicate of something the run already has: nothing to queue, and
+        // queueing it would be a write that silently changes nothing.
+        const alreadyKnown =
+          sessionCardIds.has(id) ||
+          pending.some((item) => cardId(queuedText(item)) === id) ||
+          listMemoryCards().some((card) => card.file === write.file && card.id === id)
+        if (alreadyKnown) {
+          return {
+            verdict: 'unchanged',
+            message: `no change — an identical card already exists in ${write.file}: ${text}`
+          }
         }
 
+        // An update with no target is a bug in the caller, not something to work
+        // around: writing it as a new card would leave the card the model thought
+        // it was correcting exactly where it was, plus a second copy of the fact.
+        let replaced: string | undefined
+        if (write.kind === 'update' && write.ref !== undefined) {
+          const target =
+            typeof write.ref === 'string'
+              ? onDisk.find((card) => card.id === write.ref)
+              : onDisk[write.ref]
+          if (target === undefined) {
+            throw new Error(
+              `no card matches ${String(write.ref)} in ${write.file} — use add to create a new card`
+            )
+          }
+          replaced = target.id
+        }
+
+        // The card being edited is excluded itself. An edit is by definition
+        // near-identical to what it replaces, so leaving it in is a rule that
+        // rejects every correction: fixing "MSVC" to "Ninja" would be refused as
+        // a duplicate of "MSVC", which is the exact opposite of the intent.
         const existingTexts = [
-          ...onDisk.map((card) => card.text),
-          ...pending.map((item) => item.text)
+          ...onDisk.filter((card) => card.id !== replaced).map((card) => card.text),
+          ...pending
+            .filter(
+              (item) =>
+                !(item.write.kind === 'update' && item.write.ref === write.ref) &&
+                !(item.write.kind === 'remove' && item.write.ref === write.ref)
+            )
+            .map((item) => queuedText(item))
         ]
         const localDuplicate = findLocalDuplicate(text, existingTexts)
         if (localDuplicate !== undefined) {
-          return `not written — this restates an existing card: "${existingTexts[localDuplicate]}"`
+          throw new Error(`not written — this restates an existing card: "${existingTexts[localDuplicate]}"`)
         }
 
         // Rules could not settle it. Only now is a model worth its cost, and it
@@ -251,14 +373,33 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
           const candidates = candidateHits.map((hit) => existingTexts[hit.index]!)
           const verdict = await hooks.judgeDuplicate(text, candidates)
           if (verdict !== null && verdict >= 0 && verdict < candidates.length) {
-            return `not written — this says the same as an existing card: "${candidates[verdict]}"`
+            throw new Error(
+              `not written — this says the same as an existing card: "${candidates[verdict]}"`
+            )
           }
         }
 
-        pending.push({ file, text, id, warnings })
+        const item = kept()
+        // Both ids: the file still holds the pre-correction text until the batch
+        // commits, so the old one has to be hidden too or this run reads its own
+        // previous claim back as a fact it already knew.
+        if (replaced !== undefined) item.hides.push(replaced)
+        return { verdict: 'queue', item }
+      }
+
+      const queueWrite = async (write: MemoryWrite): Promise<string> => {
+        const prepared = await prepareWrite(write)
+        if (prepared.verdict === 'unchanged') {
+          return prepared.message
+        }
+        const { write: accepted, warnings } = prepared.item
+        pending.push(prepared.item)
+        const what = accepted.kind === 'add' ? 'card' : accepted.kind
+        const shown = accepted.text ?? ''
         const problems = warnings.length > 0 ? `\n⚠ ${warnings.join('\n⚠ ')}` : ''
-        const note = pending.length === 1 ? '1 card' : `${pending.length} cards`
-        return `queued for ${file} (${note} pending, written when this run ends): ${text}${problems}`
+        const note = pending.length === 1 ? '1 write' : `${pending.length} writes`
+        const tail = shown.length > 0 ? `: ${shown}${problems}` : problems
+        return `queued ${what} for ${accepted.file} (${note} pending, written when this run ends)${tail}`
       }
 
       pi.registerTool({
@@ -306,7 +447,8 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
         label: 'Memory manage',
         description:
           'Read and maintain your persistent memory cards (declarative memory): project/environment facts (MEMORY) and the user profile (USER). ' +
-          'Writes are queued and committed when the run ends; cards you write never come back into the same run.',
+          'add/update/remove are queued and committed when the run ends; cards you write never come back into the same run. ' +
+          'update rewrites a card in one atomic write — use it instead of remove+add.',
         promptSnippet:
           'memory_manage: maintain persistent MEMORY/USER fact cards injected into every session',
         parameters: MEMORY_MANAGE_SCHEMA,
@@ -319,7 +461,7 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
             if (action === 'list') {
               const cards = listMemoryCards()
               const lines = cards.map((card) => `[${card.file}#${card.index} id=${card.id}] ${card.text}`)
-              const queued = pending.map((item) => `[queued ${item.file}] ${item.text}`)
+              const queued = pending.map((item) => `[queued ${item.write.kind} ${item.write.file}] ${item.write.text ?? ''}`)
               if (lines.length === 0 && queued.length === 0) return textResult('No memory cards yet.')
               return textResult(
                 [...lines, ...(queued.length > 0 ? ['', '— pending this run —', ...queued] : [])].join('\n')
@@ -330,25 +472,41 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
             }
             if (action === 'add') {
               const text = typeof params.text === 'string' ? params.text : ''
-              return textResult(await queueCard(file, text))
+              return textResult(await queueWrite({ kind: 'add', file, text, scope: scopeOf(params) }))
+            }
+            if (action === 'update') {
+              const text = typeof params.text === 'string' ? params.text : ''
+              const ref = cardRef(params)
+              if (ref === undefined) {
+                return textResult('memory_manage update requires id (preferred) or index')
+              }
+              if (text.length === 0) {
+                return textResult('memory_manage update requires text')
+              }
+              return textResult(
+                await queueWrite({ kind: 'update', file, text, ref, scope: scopeOf(params) })
+              )
             }
             if (action === 'remove') {
-              const id = typeof params.id === 'string' && params.id.length > 0 ? params.id : undefined
-              if (id !== undefined) {
-                const hit = pending.findIndex((item) => item.id === id)
-                if (hit >= 0) {
-                  pending.splice(hit, 1)
-                  return textResult(`dropped queued card ${id} (never reached disk)`)
-                }
-              }
-              const asIndex = Number(params.index)
-              const ref = id ?? (Number.isFinite(asIndex) ? asIndex : -1)
-              if (typeof ref === 'number' && ref < 0) {
+              const ref = cardRef(params)
+              if (ref === undefined) {
                 return textResult('memory_manage remove requires id (preferred) or index')
               }
-              removeMemoryCard(file, ref)
-              if (typeof ref === 'string') sessionCardIds.delete(ref)
-              return textResult(`removed ${file} card ${ref}`)
+              // A queued write against the same card is cancelled rather than
+              // queued on top: remove wins, and the pending edit never lands.
+              const hit = pending.findIndex(
+                (item) =>
+                  (item.write.kind === 'remove' || item.write.kind === 'update') &&
+                  item.write.ref === ref
+              )
+              if (hit >= 0) {
+                const dropped = pending[hit]!
+                pending.splice(hit, 1)
+                return textResult(
+                  `dropped the queued ${dropped.write.kind} against ${String(ref)} — removed instead, never reached disk`
+                )
+              }
+              return textResult(await queueWrite({ kind: 'remove', file, ref }))
             }
             if (action === 'flush') {
               const written = flush()
@@ -383,6 +541,19 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
 
 function textResult(text: string): { content: Array<{ type: 'text'; text: string }>; details: undefined } {
   return { content: [{ type: 'text', text }], details: undefined }
+}
+
+/** Optional scope from a tool call; absent means "applies to any working directory". */
+function scopeOf(params: Record<string, unknown>): string | undefined {
+  return typeof params.scope === 'string' && params.scope.length > 0 ? params.scope : undefined
+}
+
+/** Card reference from a tool call: `id` when present, otherwise `index`. */
+function cardRef(params: Record<string, unknown>): MemoryCardRef | undefined {
+  const id = typeof params.id === 'string' && params.id.length > 0 ? params.id : undefined
+  if (id !== undefined) return id
+  const index = Number(params.index)
+  return params.index === undefined || !Number.isFinite(index) ? undefined : index
 }
 
 const SKILL_MANAGE_SCHEMA: Record<string, unknown> = {
@@ -429,18 +600,23 @@ const MEMORY_MANAGE_SCHEMA: Record<string, unknown> = {
   properties: {
     action: {
       type: 'string',
-      enum: ['list', 'add', 'remove', 'flush'],
+      enum: ['list', 'add', 'update', 'remove', 'flush'],
       description:
-        'list: show all cards (stored + queued). add: queue a card, committed when the run ends. remove: delete by id (preferred, from list) or index. flush: commit queued cards now.'
+        'list: show all cards (stored + queued). add: queue a card, committed when the run ends. update: correct an existing card in one atomic write — prefer this over remove+add, which can lose the fact if the run dies between them. remove: delete by id (preferred, from list) or index. flush: commit queued writes now.'
     },
     file: {
       type: 'string',
       enum: ['MEMORY', 'USER'],
       description: 'MEMORY = project/environment facts. USER = who the user is and how they work.'
     },
-    text: { type: 'string', description: 'add: one concise fact (single line, ≤2000 chars).' },
-    id: { type: 'string', description: 'remove: stable card id shown by list. Survives other removals; prefer it over index.' },
-    index: { type: 'number', description: 'remove: fallback 0-based position from list.' }
+    text: { type: 'string', description: 'add/update: one concise fact (single line, ≤2000 chars).' },
+    scope: {
+      type: 'string',
+      description:
+        'add/update: only inject this card in sessions whose working directory is this path. Omit for a fact that holds everywhere — a wrong scope is a fact the next session can never see.'
+    },
+    id: { type: 'string', description: 'update/remove: stable card id shown by list. Survives other removals; prefer it over index.' },
+    index: { type: 'number', description: 'update/remove: fallback 0-based position from list.' }
   },
   required: ['action']
 }

@@ -737,6 +737,33 @@ export interface SkillSummary {
 export type SkillProvenanceKind = 'hub' | 'source' | 'folder' | 'agent'
 
 /**
+ * When a skill was last written (v1.12, additive).
+ *
+ * A skill nobody has touched since the day it arrived is worth asking about, and
+ * most of the time that means nobody runs it. Nothing here can measure reads —
+ * the kernel loads skills without reporting which were used — so this is the
+ * write side of the same question, which the undo log and the file mtimes do
+ * answer. The UI offers; it does not delete.
+ */
+export interface SkillUsageEntry {
+  name: string
+  /** Epoch ms of the last recorded write. */
+  touchedAt: number
+  /** Epoch ms of the earliest recorded write; absent when only mtimes are known. */
+  createdAt?: number
+  /** `history`: the undo log has an entry. `filesystem`: mtime only, no history. */
+  source: SkillUsageSource
+}
+
+export type SkillUsageSource = 'history' | 'filesystem'
+
+/**
+ * How long a skill may go without a write before the UI offers it for cleanup
+ * (v1.12). Shared so the hint and the main-side helper cannot drift apart.
+ */
+export const SKILL_STALE_AFTER_MS = 90 * 24 * 60 * 60 * 1000
+
+/**
  * Install-side audit record, written as `.flexagent-source.json` inside the
  * skill dir. Answers "who put this here, from which source, at which revision,
  * and has it been edited since?" — without a network call (GitHub's anonymous
@@ -800,6 +827,19 @@ export interface MemoryCard {
    */
   id: string
   text: string
+  /**
+   * Sidecar timestamps (v1.12, additive). Absent when the card predates the sidecar
+   * or the file was broken: the markdown line stays the source of truth for the
+   * text, and losing the date loses nothing but the ability to sort by it.
+   */
+  createdAt?: number
+  updatedAt?: number
+  /**
+   * Working directory this card belongs to (v1.12, additive). Absent means the
+   * card applies everywhere; a card is only injected into sessions whose cwd
+   * matches when it is set.
+   */
+  scope?: string
 }
 
 /**
@@ -1074,6 +1114,7 @@ export interface CodexApi {
   setNetworkSettings(input: SetNetworkInput): Promise<NetworkSettings>
   /** Where one session's tokens went, split by purpose and by model. */
   sessionUsage(sessionId: SessionId): Promise<UsageReport>
+
   /** Installed plugins (local + bundled). Not session-scoped. */
   listPlugins(): Promise<PluginSummary[]>
   /** Plugin detail: components + userConfig spec + diagnostics. */
@@ -1129,8 +1170,14 @@ export interface CodexApi {
   /** Curated memory cards across sessions (`~/.flexagent/memory/`). */
   listMemoryCards(): Promise<MemoryCard[]>
   /** Returns the id so callers can remove precisely later; see v1.10 note above. */
-  addMemoryCard(file: MemoryCardFile, text: string): Promise<MemoryWriteReceipt>
+  /**
+   * Add a card (v1.12: optional `scope`). `scope` restricts injection to sessions
+   * working in that directory; omitting it means the card applies everywhere.
+   */
+  addMemoryCard(file: MemoryCardFile, text: string, scope?: string): Promise<MemoryWriteReceipt>
   removeMemoryCard(file: MemoryCardFile, ref: MemoryCardRef): Promise<void>
+  /** When each skill was last written — the input to pruning. */
+  listSkillUsage(): Promise<SkillUsageEntry[]>
   /** Substring search across stored session transcripts (titles + messages). */
   searchSessions(query: string): Promise<SessionSearchHit[]>
 
@@ -1213,6 +1260,7 @@ export const IPC = {
   listMemoryCards: 'codex:listMemoryCards',
   addMemoryCard: 'codex:addMemoryCard',
   removeMemoryCard: 'codex:removeMemoryCard',
+  listSkillUsage: 'codex:listSkillUsage',
   searchSessions: 'codex:searchSessions',
   listUserMcpServers: 'codex:listUserMcpServers',
   saveUserMcpServer: 'codex:saveUserMcpServer',

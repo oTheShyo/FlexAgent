@@ -39,6 +39,7 @@ import {
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
+  type SkillUsageEntry,
   type SkillUndoEntry,
   type SkillHubInfo,
   type SkillHubEntry,
@@ -1225,19 +1226,40 @@ export class MockCodexApi implements CodexApi {
     return this.memoryCards.map((card) => ({ ...card }))
   }
 
-  async addMemoryCard(file: MemoryCardFile, text: string): Promise<MemoryWriteReceipt> {
+  async addMemoryCard(file: MemoryCardFile, text: string, scope?: string): Promise<MemoryWriteReceipt> {
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (trimmed.length === 0) throw new ContractError('INVALID_INPUT', 'text is required')
     const id = mockCardId(trimmed)
     const existing = this.memoryCards.find((card) => card.id === id)
     if (existing !== undefined) return { id: existing.id, warnings: [] }
+    const now = Date.now()
     this.memoryCards.push({
       file,
       id,
       index: this.memoryCards.filter((c) => c.file === file).length,
-      text: trimmed
+      text: trimmed,
+      ...(scope !== undefined && scope.length > 0 ? { scope } : {}),
+      createdAt: now,
+      updatedAt: now
     })
     return { id, warnings: [] }
+  }
+
+  // The second entry is deliberately long-untouched so the stale-cleanup hints
+  // have something to show in the mock.
+  async listSkillUsage(): Promise<SkillUsageEntry[]> {
+    return [
+      ...this.skillUndo.map((entry) => ({
+        name: 'wall-detection',
+        touchedAt: entry.at,
+        source: 'history' as const
+      })),
+      {
+        name: 'changelog-review',
+        touchedAt: Date.now() - 200 * 24 * 60 * 60 * 1000,
+        source: 'filesystem' as const
+      }
+    ]
   }
 
   async removeMemoryCard(file: MemoryCardFile, ref: MemoryCardRef): Promise<void> {

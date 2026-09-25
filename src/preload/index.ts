@@ -53,6 +53,7 @@ import {
   type SkillPendingWrite,
   type SkillUndoEntry,
   type SkillSummary,
+  type SkillUsageEntry,
   type SkillHubInfo,
   type SkillHubEntry,
   type AddSkillHubInput,
@@ -273,11 +274,13 @@ const codex: CodexApi = {
 
   listMemoryCards: () => invoke<MemoryCard[]>(IPC.listMemoryCards),
 
-  addMemoryCard: (file: MemoryCardFile, text: string) =>
-    invoke<MemoryWriteReceipt>(IPC.addMemoryCard, { file, text }),
+  addMemoryCard: (file: MemoryCardFile, text: string, scope?: string) =>
+    invoke<MemoryWriteReceipt>(IPC.addMemoryCard, { file, text, scope }),
 
   removeMemoryCard: (file: MemoryCardFile, ref: MemoryCardRef) =>
     invoke<void>(IPC.removeMemoryCard, { file, ref }),
+
+  listSkillUsage: () => invoke<SkillUsageEntry[]>(IPC.listSkillUsage),
 
   searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query),
 
