@@ -34,6 +34,13 @@ export type ChatItem =
     }
   | { kind: 'error'; code: ContractErrorCode; message: string }
 
+export interface ModelRetryState {
+  attempt: number
+  maxAttempts: number
+  delayMs: number
+  errorMessage?: string
+}
+
 export type ConnectionState = 'ok' | 'degraded'
 
 export interface UseChatResult {
@@ -44,6 +51,8 @@ export interface UseChatResult {
   items: ChatItem[]
   files: FileChange[]
   pendingPermission: PermissionRequest | null
+  /** Live "model call failed, retrying" notice, or null. */
+  modelRetry: ModelRetryState | null
   send: (text: string, mode?: PromptMode) => Promise<void>
   stop: () => Promise<void>
   respond: (decision: PermissionDecision) => Promise<void>
@@ -177,6 +186,8 @@ export function useChat(): UseChatResult {
   const [slashCommands, setSlashCommands] = useState<SlashCommandSummary[]>([])
   const [scratchCwd, setScratchCwd] = useState<string | null>(null)
   const [bindingProject, setBindingProject] = useState(false)
+  /** Live kernel retry notice — the run is silent for up to ~1 min per cycle. */
+  const [modelRetry, setModelRetry] = useState<ModelRetryState | null>(null)
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -230,6 +241,7 @@ export function useChat(): UseChatResult {
       case 'run_state': {
         const nextRunState = event.runState
         setRunState(nextRunState)
+        if (nextRunState === 'idle') setModelRetry(null)
         setSessions((prev) =>
           prev.map((session) =>
             session.id === event.sessionId ? { ...session, runState: nextRunState } : session
@@ -237,6 +249,19 @@ export function useChat(): UseChatResult {
         )
         setItems((prev) => closeOpenTools(finalizePartials(prev)))
         if (nextRunState === 'idle') setPendingPermission(null)
+        break
+      }
+      case 'model_retry': {
+        setModelRetry({
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          ...(event.errorMessage !== undefined ? { errorMessage: event.errorMessage } : {})
+        })
+        break
+      }
+      case 'model_retry_end': {
+        setModelRetry(null)
         break
       }
       case 'user_message': {
@@ -412,6 +437,7 @@ export function useChat(): UseChatResult {
       setActiveSessionId(sessionId)
       setItems([])
       setFiles([])
+      setModelRetry(null)
       setPendingPermission(null)
       setHistoryLoading(true)
       try {
@@ -470,6 +496,7 @@ export function useChat(): UseChatResult {
       setActiveSessionId(null)
       setItems([])
       setFiles([])
+      setModelRetry(null)
       setPendingPermission(null)
       setRunState('idle')
       setHistoryLoading(true)
@@ -512,6 +539,7 @@ export function useChat(): UseChatResult {
         setActiveSessionId(null)
         setItems([])
         setFiles([])
+      setModelRetry(null)
         setPendingPermission(null)
         setRunState('idle')
         setModelConfig(null)
@@ -763,6 +791,7 @@ export function useChat(): UseChatResult {
     stop,
     respond,
     applyFiles,
+    modelRetry,
     createSession,
     openSession,
     refreshSessions,

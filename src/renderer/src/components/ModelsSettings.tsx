@@ -81,6 +81,7 @@ function ModelForm({
   const [apiKey, setApiKey] = useState('')
   const [id, setId] = useState(entry?.id ?? '')
   const [label, setLabel] = useState(entry?.label ?? '')
+  const [reasoning, setReasoning] = useState(entry?.reasoning ?? false)
   const [localError, setLocalError] = useState<string | null>(null)
 
   const providers = useMemo(
@@ -142,6 +143,7 @@ function ModelForm({
       baseUrl: nextBaseUrl,
       api: api as CustomModelApi,
       ...(trimmedLabel.length > 0 ? { label: trimmedLabel } : {}),
+      reasoning,
       ...(apiKey.trim().length > 0 ? { apiKey: apiKey.trim() } : {}),
       ...(entry !== undefined ? { original: { provider: entry.provider, id: entry.id } } : {})
     })
@@ -274,6 +276,24 @@ function ModelForm({
         />
       </Field>
 
+      <Field
+        label="Reasoning model"
+        htmlFor="custom-model-reasoning"
+        hint="Enable to expose thinking levels (off/minimal/…/high) in the composer for this model."
+      >
+        <label className="flex h-8 items-center gap-2">
+          <input
+            id="custom-model-reasoning"
+            type="checkbox"
+            checked={reasoning}
+            onChange={(event) => setReasoning(event.target.checked)}
+            className="h-3.5 w-3.5 accent-[var(--accent)]"
+            data-testid="custom-model-reasoning"
+          />
+          <span className="text-xs text-[var(--text)]">Supports thinking</span>
+        </label>
+      </Field>
+
       {localError !== null && (
         <p role="alert" className="mt-2 text-[11px] text-[var(--danger-text)]" data-testid="custom-model-error">
           {localError}
@@ -383,6 +403,7 @@ function ModelsSettings({ controller }: { controller: UseCustomModelsResult }) {
                   <p className="truncate text-[10px] text-[var(--text-muted)]">
                     {model.id} · {model.provider}
                     {model.api !== undefined ? ` · ${model.api}` : ''}
+                    {model.reasoning ? ' · thinking' : ''}
                     {model.apiKeySet ? '' : ' · no key'}
                   </p>
                 </div>

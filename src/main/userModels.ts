@@ -161,6 +161,7 @@ function summarize(providers: Record<string, Record<string, unknown>>): CustomMo
         ...(label !== undefined && label !== id ? { label } : {}),
         ...(baseUrl !== undefined ? { baseUrl } : {}),
         ...(api !== undefined ? { api } : {}),
+        ...(model.reasoning === true ? { reasoning: true } : {}),
         apiKeySet
       })
     }
@@ -237,6 +238,11 @@ export class UserModelsService {
     next.id = id
     if (label !== undefined) next.name = label
     else if (next.name === id) delete next.name
+    // `reasoning` gates PI's thinking-level menu (a model without it reports
+    // only `off`). Explicit true/false writes/clears; omitted keeps the stored
+    // value so hand-tuned entries are not silently downgraded.
+    if (input.reasoning === true) next.reasoning = true
+    else if (input.reasoning === false) delete next.reasoning
     // Replace in place, append otherwise — the file's own order is meaningful
     // (it is what the model picker shows) and a re-sort would rewrite it.
     const at = existing.findIndex((model) => asString(model.id) === id)

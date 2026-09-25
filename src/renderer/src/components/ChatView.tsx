@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
-import type { ChatItem } from '../hooks/useChat'
+import type { ChatItem, ModelRetryState } from '../hooks/useChat'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
 import { CheckIcon, CopyIcon, RegenerateIcon } from './icons'
@@ -7,6 +7,8 @@ import { CheckIcon, CopyIcon, RegenerateIcon } from './icons'
 export interface ChatViewProps {
   items: ChatItem[]
   running?: boolean
+  /** Live kernel retry notice — the model call failed and is being retried. */
+  modelRetry?: ModelRetryState | null
   onRegenerate?: () => void
 }
 
@@ -189,14 +191,69 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolItem }): ReactElem
 
 type ErrorItem = Extract<ChatItem, { kind: 'error' }>
 
-const ErrorBlock = memo(function ErrorBlock({ item }: { item: ErrorItem }): ReactElement {
+const ErrorBlock = memo(function ErrorBlock({
+  item,
+  onRetry
+}: {
+  item: ErrorItem
+  onRetry?: () => void
+}): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const resetTimerRef = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    },
+    []
+  )
+
+  const details = `${item.code}\n${item.message}`
+
+  const handleCopy = useCallback((): void => {
+    copyTextToClipboard(details)
+    setCopied(true)
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = window.setTimeout(() => setCopied(false), 1600)
+  }, [details])
+
   return (
     <div
-      className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2"
+      className="fx-fade rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2"
       data-testid="error-block"
     >
       <span className="font-mono text-[11px] font-semibold text-[var(--danger-text)]">{item.code}</span>
       <p className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--danger-text)]">{item.message}</p>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          data-testid="error-copy-details"
+          onClick={handleCopy}
+          aria-label={copied ? 'Copied' : 'Copy error details'}
+          title={copied ? 'Copied' : 'Copy error details'}
+          className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          {copied ? (
+            <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" />
+          ) : (
+            <CopyIcon className="h-3.5 w-3.5" />
+          )}
+          {copied ? 'Copied' : 'Copy details'}
+        </button>
+        {onRetry && (
+          <button
+            type="button"
+            data-testid="error-retry"
+            onClick={onRetry}
+            aria-label="Retry"
+            title="Retry"
+            className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            <RegenerateIcon className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        )}
+      </div>
     </div>
   )
 })
@@ -292,14 +349,19 @@ const ChatRow = memo(function ChatRow({
       return (
         <div className="flex justify-start">
           <div className="w-full min-w-0 max-w-[92%]">
-            <ErrorBlock item={item} />
+            <ErrorBlock item={item} onRetry={onRegenerate} />
           </div>
         </div>
       )
   }
 })
 
-export function ChatView({ items, running = false, onRegenerate }: ChatViewProps): ReactElement {
+export function ChatView({
+  items,
+  running = false,
+  modelRetry = null,
+  onRegenerate
+}: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
 
@@ -326,13 +388,16 @@ export function ChatView({ items, running = false, onRegenerate }: ChatViewProps
   function renderItems(): ReactElement[] {
     return items.map((item, index) => {
       const isLatestAssistant = index === lastAssistantIndex
+      const isTrailingError = item.kind === 'error' && index === items.length - 1
       return (
         <ChatRow
           key={chatRowKey(item, index)}
           item={item}
           running={item.kind === 'partial' ? running : undefined}
           isLatestAssistant={isLatestAssistant}
-          onRegenerate={isLatestAssistant && onRegenerate ? onRegenerate : undefined}
+          onRegenerate={
+            (isLatestAssistant || isTrailingError) && onRegenerate ? onRegenerate : undefined
+          }
         />
       )
     })
@@ -354,6 +419,17 @@ export function ChatView({ items, running = false, onRegenerate }: ChatViewProps
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6">
           {renderItems()}
           {running && !trailingPartial && <Caret block />}
+          {modelRetry !== null && (
+            <p
+              role="status"
+              data-testid="model-retry-notice"
+              className="fx-fade rounded-lg border border-[var(--warning-border,var(--border))] bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-4 text-[var(--warning-text,var(--text-secondary))]"
+            >
+              Model call failed (attempt {modelRetry.attempt}/{modelRetry.maxAttempts}) — retrying
+              in {Math.max(1, Math.round(modelRetry.delayMs / 1000))}s
+              {modelRetry.errorMessage !== undefined ? ` · ${modelRetry.errorMessage}` : ''}
+            </p>
+          )}
         </div>
       )}
     </div>

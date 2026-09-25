@@ -8,11 +8,12 @@ import type {
 import type {
   ModelConfig,
   ModelOption,
-  PromptMode,
+  PermissionMode,
   SlashCommandSummary,
   ThinkingLevel
 } from '../types'
 import { pathBasename } from '../lib/paths'
+import { ModeSwitcher } from './ModeSwitcher'
 import { filterComposerFiles } from './composerFiles'
 import {
   composePrompt,
@@ -21,19 +22,24 @@ import {
   stageAttachments
 } from './composerAttachments'
 import type { StagedAttachment } from './composerAttachments'
-import { Button, Chip, MenuItem, MenuPanel } from './ui'
+import { Button, Chip, IconButton, MenuItem, MenuPanel } from './ui'
+import { PERMISSION_MODES } from '../types'
 import {
   CheckIcon,
   ChevronDownIcon,
+  CloseIcon,
   FileIcon,
   FolderIcon,
+  PencilIcon,
+  PlusIcon,
   QueueIcon,
   SendIcon,
-  SlashIcon
+  SlashIcon,
+  TrashIcon
 } from './icons'
 
 export interface ComposerProps {
-  onSend: (text: string, mode?: PromptMode) => void
+  onSend: (text: string) => void
   disabled?: boolean
   running?: boolean
   cwd?: string
@@ -42,13 +48,30 @@ export interface ComposerProps {
   projectBusy?: boolean
   modelConfig?: ModelConfig | null
   modelOptions?: ModelOption[]
+  /**
+   * True while a session exists but its model is not known yet (attaching).
+   * Drives the chip's loading copy — an unresolved model must never masquerade
+   * as a model called "Model".
+   */
+  modelResolving?: boolean
   slashCommands?: SlashCommandSummary[]
   onSetModel?: (provider: string, id: string) => void
   onSetThinkingLevel?: (level: ThinkingLevel) => void
+  /** Trust level for the active session; rendered as a live control, not a label. */
+  permissionMode: PermissionMode
+  permissionPending?: boolean
+  onChangePermissionMode: (mode: PermissionMode) => void
+  /** Messages typed during the running turn, waiting for it to finish. */
+  queuedMessages?: readonly string[]
+  onQueueRemove?: (index: number) => void
+  onQueueSendNow?: (index: number) => void
 }
 
 const MENTION_BEFORE_CARET = /@[\w./-]*$/
 const SLASH_AT_START = /^\/([\w-]*)$/
+
+/** The five trust levels, in the order the mode menu lists them. */
+const PERMISSION_MODE_SPECTRUM: readonly PermissionMode[] = PERMISSION_MODES
 
 function matchMentionQuery(value: string, caret: number): string | null {
   const match = value.slice(0, caret).match(MENTION_BEFORE_CARET)
@@ -92,7 +115,7 @@ function CompletionPopup({
       id={listId}
       role="listbox"
       aria-label={ariaLabel}
-      className="absolute inset-x-1.5 bottom-full z-30 mb-2 max-h-56 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-lg)]"
+      className="fx-pop absolute inset-x-1.5 bottom-full z-30 mb-2 max-h-56 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-lg)]"
     >
       {items.length === 0 ? (
         <li role="presentation" className="px-3 py-2 text-xs text-[var(--text-muted)]">
@@ -145,7 +168,7 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
   if (attachments.length === 0 && notice === null && !busy) return null
   return (
     <div
-      className="border-b border-[var(--border)] px-3 py-2"
+      className="fx-fade border-b border-[var(--border)] pb-3"
       data-testid="composer-attachments"
     >
       {attachments.length > 0 && (
@@ -167,7 +190,7 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
                   aria-label={`Remove ${attachment.name}`}
                   className="shrink-0 rounded px-1 text-[var(--text-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
-                  ✕
+                  <CloseIcon className="h-3 w-3" />
                 </button>
               </span>
             </li>
@@ -179,12 +202,77 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
         <p
           role="status"
           data-testid="composer-attachment-notice"
-          className="mt-1 text-[11px] leading-4 text-[var(--warning-text)]"
+          className="fx-fade mt-1 text-[11px] leading-4 text-[var(--warning-text)]"
         >
           {notice}
         </p>
       )}
     </div>
+  )
+}
+
+interface QueuedMessageTrayProps {
+  messages: readonly string[]
+  onEdit?: (index: number) => void
+  onRemove?: (index: number) => void
+  onSendNow?: (index: number) => void
+}
+
+function QueuedMessageTray({ messages, onEdit, onRemove, onSendNow }: QueuedMessageTrayProps) {
+  if (messages.length === 0) return null
+  const actionClass =
+    'rounded-md p-1 text-[var(--text-subtle)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]'
+  return (
+    <ul
+      aria-label="Queued messages"
+      data-testid="queued-tray"
+      className="fx-fade mx-auto mb-2 flex w-full max-w-3xl flex-col gap-1.5"
+    >
+      {messages.map((message, index) => (
+        <li
+          key={index}
+          data-testid="queued-item"
+          className="flex items-center gap-2 rounded-xl border border-[color-mix(in_srgb,var(--info)_30%,var(--border))] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] px-2.5 py-1.5"
+        >
+          <QueueIcon className="h-3.5 w-3.5 shrink-0 text-[var(--info)]" />
+          <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--text-secondary)]">
+            {message}
+          </p>
+          <span className="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => onEdit?.(index)}
+              aria-label="Edit queued message"
+              title="Edit queued message"
+              data-testid="queued-item-edit"
+              className={actionClass}
+            >
+              <PencilIcon className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onRemove?.(index)}
+              aria-label="Remove queued message"
+              title="Remove queued message"
+              data-testid="queued-item-remove"
+              className={actionClass}
+            >
+              <TrashIcon className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onSendNow?.(index)}
+              aria-label="Send queued message now"
+              title="Send now (steer into the running turn)"
+              data-testid="queued-item-send"
+              className={actionClass}
+            >
+              <SendIcon className="h-3.5 w-3.5" />
+            </button>
+          </span>
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -197,12 +285,18 @@ function Composer({
   projectBusy = false,
   modelConfig = null,
   modelOptions = [],
+  modelResolving = false,
   slashCommands = [],
   onSetModel,
-  onSetThinkingLevel
+  onSetThinkingLevel,
+  permissionMode,
+  permissionPending = false,
+  onChangePermissionMode,
+  queuedMessages = [],
+  onQueueRemove,
+  onQueueSendNow
 }: ComposerProps) {
   const [text, setText] = useState('')
-  const [queueNext, setQueueNext] = useState(false)
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
@@ -220,6 +314,7 @@ function Composer({
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const attachmentsRef = useRef<StagedAttachment[]>([])
   attachmentsRef.current = attachments
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const canSend =
     !disabled && (text.trim().length > 0 || attachments.length > 0)
@@ -419,14 +514,25 @@ function Composer({
 
   const submit = (): void => {
     if (!canSend) return
-    const mode: PromptMode | undefined = running && queueNext ? 'followUp' : undefined
-    onSend(composePrompt(text.trim(), attachments), mode)
+    onSend(composePrompt(text.trim(), attachments))
     setText('')
-    setQueueNext(false)
     setAttachments([])
     setAttachmentNotice(null)
     closeCompletion()
   }
+
+  const editQueuedMessage = useCallback(
+    (index: number): void => {
+      const entry = queuedMessages[index]
+      if (entry === undefined) return
+      closeCompletion()
+      setText(entry)
+      pendingCaretRef.current = entry.length
+      textareaRef.current?.focus()
+      onQueueRemove?.(index)
+    },
+    [queuedMessages, onQueueRemove, closeCompletion]
+  )
 
   const submitRef = useRef(submit)
   submitRef.current = submit
@@ -560,9 +666,30 @@ function Composer({
   const hasProject = cwd !== undefined && cwd.length > 0
   const projectLabel = projectBusy ? 'Binding…' : hasProject ? pathBasename(cwd) : 'No project'
 
-  const modelLabel = modelConfig?.model?.label ?? modelConfig?.model?.id ?? 'Model'
-  const thinkingSuffix = modelConfig === null ? '' : ` · ${modelConfig.thinkingLevel}`
-  const currentModel = modelConfig?.model ?? null
+  /**
+   * What the chip says. Three states, and none of them invents a model name:
+   * resolving (attaching), named (provider/id in the tooltip, so an id like
+   * `qwen-chat` is unambiguous), or genuinely unset — which is an invitation to
+   * pick one, not a placeholder pretending to be a name.
+   */
+  const knownModel = modelConfig?.model ?? null
+  const modelLabel = modelResolving
+    ? 'Resolving model…'
+    : knownModel !== null
+      ? (knownModel.label ?? knownModel.id)
+      : 'Select model'
+  const modelHint =
+    knownModel !== null
+      ? `${knownModel.provider}/${knownModel.id}`
+      : modelResolving
+        ? 'Waiting for the session to attach'
+        : disabled
+          ? 'A chat starts on the default model; pick another once it is open'
+          : modelOptions.length === 0
+            ? 'No usable model — add one in Settings › Models'
+            : 'No model set for this chat — pick one here'
+  const thinkingSuffix = knownModel === null ? '' : ` · ${modelConfig?.thinkingLevel}`
+  const currentModel = knownModel
   const currentThinking = modelConfig === null ? null : modelConfig.thinkingLevel
   const thinkingLevels: ThinkingLevel[] =
     modelConfig === null
@@ -578,8 +705,38 @@ function Composer({
       : undefined
 
   return (
-    <div className="shrink-0 px-4 pb-4" data-testid="composer">
-      <div className="relative mx-auto w-full max-w-3xl rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)]">
+    <div className="shrink-0 px-4 pb-4 pt-1" data-testid="composer">
+      <div className="mx-auto w-full max-w-3xl">
+        <button
+          type="button"
+          disabled={disabled || projectBusy || onChooseProject === undefined}
+          onClick={() => onChooseProject?.()}
+          data-testid="composer-project"
+          title={
+            projectBusy
+              ? 'Rebuilding this chat against the new folder…'
+              : hasProject
+                ? cwd
+                : 'No project — this chat runs in the scratch workspace. Pick a folder to give it one.'
+          }
+          className="mb-2 flex w-max max-w-full items-center gap-1.5 rounded-xl bg-[var(--surface-sunken)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <FolderIcon className="h-3.5 w-3.5" />
+          <span className="truncate">{projectLabel}</span>
+          <ChevronDownIcon className="h-3 w-3" />
+        </button>
+      </div>
+
+      {queuedMessages.length > 0 && (
+        <QueuedMessageTray
+          messages={queuedMessages}
+          onEdit={editQueuedMessage}
+          onRemove={onQueueRemove}
+          onSendNow={onQueueSendNow}
+        />
+      )}
+
+        <div className="relative mx-auto flex min-h-[168px] w-full max-w-3xl flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-[var(--ring)]">
         {slashOpen ? (
           <CompletionPopup
             listId="composer-slash-list"
@@ -605,7 +762,7 @@ function Composer({
         {dragOver && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-[var(--border-strong)] bg-[var(--surface-sunken)] text-sm font-medium text-[var(--text-secondary)]"
+            className="fx-fade pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--border-strong)] bg-[var(--surface-sunken)] text-sm font-medium text-[var(--text-secondary)]"
           >
             Drop files to attach
           </div>
@@ -616,27 +773,8 @@ function Composer({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           data-testid="composer-drop"
-          className={dragOver ? 'rounded-xl' : undefined}
+          className={`flex flex-1 flex-col p-4${dragOver ? ' rounded-2xl' : ''}`}
         >
-          <button
-            type="button"
-            disabled={disabled || projectBusy || onChooseProject === undefined}
-            onClick={() => onChooseProject?.()}
-            data-testid="composer-project"
-            title={
-              projectBusy
-                ? 'Rebuilding this chat against the new folder…'
-                : hasProject
-                  ? cwd
-                  : 'No project — this chat runs in the scratch workspace. Pick a folder to give it one.'
-            }
-            className="flex w-full items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <FolderIcon className="h-3.5 w-3.5" />
-            <span className="truncate">{projectLabel}</span>
-            <ChevronDownIcon className="h-3 w-3" />
-          </button>
-
           <AttachmentTray
             attachments={attachments}
             notice={attachmentNotice}
@@ -653,7 +791,13 @@ function Composer({
             onClick={syncCompletion}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={dragOver ? 'Drop files to attach' : running ? 'Steer the running turn…' : 'Do anything'}
+            placeholder={
+              dragOver
+                ? 'Drop files to attach'
+                : running
+                  ? 'Queue for after the current run'
+                  : 'Do anything'
+            }
             disabled={disabled}
             autoFocus
             spellCheck={false}
@@ -666,41 +810,56 @@ function Composer({
                   : undefined
             }
             aria-activedescendant={activeOptionId}
-            className="block min-h-[52px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:opacity-40"
+            // The textarea itself stays ringless (a box inside the card reads
+            // as clutter); focus visibility moves to the card via has-[:focus-visible].
+            className="block min-h-[52px] w-full flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text)] placeholder:text-[var(--text-subtle)] focus:outline-none disabled:opacity-40"
           />
 
-          <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
-            <Chip
-              disabled
-              title="Approval modes aren't wired to the kernel yet — each tool call is confirmed individually"
-              className="gap-1"
+          <div className="mt-auto flex items-center gap-1 pt-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? [])
+                event.target.value = ''
+                if (files.length > 0) void stageFiles(files)
+              }}
+            />
+            <IconButton
+              variant="ghost"
+              label="Attach files"
+              disabled={disabled}
+              onClick={() => fileInputRef.current?.click()}
+              className="!rounded-lg"
             >
-              Manual
-              <ChevronDownIcon className="h-3 w-3" />
-            </Chip>
+              <PlusIcon className="h-4 w-4" />
+            </IconButton>
 
-            {running && (
-              <Chip
-                active={queueNext}
-                disabled={disabled}
-                onClick={() => setQueueNext((value) => !value)}
-                title="Queue this message to send after the current run finishes (followUp)"
-                className="gap-1"
-              >
-                <QueueIcon className="h-3 w-3" />
-                Queue
-              </Chip>
-            )}
+            <ModeSwitcher
+              mode={permissionMode}
+              pending={permissionPending}
+              availableModes={PERMISSION_MODE_SPECTRUM}
+              onChange={onChangePermissionMode}
+              direction="up"
+              compact
+            />
 
             <div className="flex-1" />
 
             <div ref={modelMenuRef} className="relative">
               <Chip
-                disabled={disabled || onSetModel === undefined}
+                disabled={disabled || onSetModel === undefined || modelResolving}
                 onClick={() => setOpenMenu((menu) => (menu === 'model' ? null : 'model'))}
                 aria-haspopup="menu"
                 aria-expanded={openMenu === 'model'}
-                className="gap-1"
+                title={modelHint}
+                data-testid="composer-model-chip"
+                data-model-id={knownModel === null ? '' : `${knownModel.provider}/${knownModel.id}`}
+                className="gap-1 !border-transparent !px-1.5 !text-[var(--text-muted)] hover:!text-[var(--text)]"
               >
                 <span className="truncate">{modelLabel}</span>
                 {thinkingSuffix.length > 0 && (
@@ -748,7 +907,7 @@ function Composer({
                   )}
                   {modelConfig !== null && (
                     <>
-                      <div className="mt-1 border-t border-[var(--border)] px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                      <div className="mt-3 px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
                         Thinking
                       </div>
                       {thinkingLevels.map((level) => {
@@ -780,15 +939,11 @@ function Composer({
               variant="primary"
               disabled={!canSend}
               onClick={submit}
-              aria-label={running && queueNext ? 'Queue message' : 'Send message'}
+              aria-label={running ? 'Queue message' : 'Send message'}
               title={
-                running
-                  ? queueNext
-                    ? 'Queue for after the current run'
-                    : 'Send as a steer (injected mid-run)'
-                  : 'Send message'
+                running ? 'Queue to send after the current run finishes' : 'Send message'
               }
-              className="flex w-8 shrink-0 items-center justify-center !px-0"
+              className="flex !h-9 w-9 shrink-0 items-center justify-center !rounded-full !px-0"
             >
               <SendIcon />
             </Button>
