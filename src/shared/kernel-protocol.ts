@@ -1,12 +1,16 @@
 import type {
   ContractErrorCode,
   KernelEvent,
+  McpServerStatusEntry,
+  PermissionMode,
   PromptDisposition,
   SessionId,
   SessionSearchHit,
   ThinkingLevel,
   ToolCallId
 } from './contract/index'
+
+export type { McpServerStatusEntry } from './contract/index'
 
 /**
  * Internal main ↔ worker protocol (NOT part of the renderer contract).
@@ -45,6 +49,11 @@ export interface PluginMcpServerConfigBase {
   expose?: 'proxy' | 'direct'
   /** Tools/call + connect timeout in milliseconds (connect is min(10s, this)). */
   timeoutMs?: number
+  /**
+   * stdio: pass the whole parent environment instead of the allowlist. MCP has
+   * no sandbox, so this is opt-in and off by default.
+   */
+  envInherit?: boolean
 }
 
 export interface PluginMcpStdioConfig extends PluginMcpServerConfigBase {
@@ -113,6 +122,9 @@ export type WorkerRequest =
     }
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }
+  | { requestId: string; type: 'getPermissionMode'; sessionId: SessionId }
+  | { requestId: string; type: 'setPermissionMode'; sessionId: SessionId; mode: PermissionMode }
+  | { requestId: string; type: 'listPermissionRules' }
   | { requestId: string; type: 'disposeSession'; sessionId: SessionId }
   | { requestId: string; type: 'listModels' }
   | { requestId: string; type: 'warmup'; cwd?: string }
@@ -176,6 +188,7 @@ export type WorkerResponse =
   | { requestId: string; type: 'ok'; result?: unknown }
   | { requestId: string; type: 'fail'; code: ContractErrorCode; message: string; details?: unknown }
   | { type: 'event'; sessionId: SessionId; event: WorkerKernelEvent }
+  | { type: 'mcpStatus'; servers: McpServerStatusEntry[] }
 
 export type MainToWorker = WorkerRequest
 export type WorkerToMain = WorkerResponse

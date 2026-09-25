@@ -95,6 +95,13 @@ export type ContractErrorCode =
   | 'SKILL_HUB_UNAVAILABLE'
   /** Kernel/PI internal failure not attributable to a single event. */
   | 'KERNEL_INTERNAL'
+  /**
+   * A model call failed after the kernel's retries (network unreachable, HTTP
+   * error, auth rejection…). The run is over — the transcript is intact and the
+   * kernel transport is fine, so this is a chat-level error, not a
+   * "connection lost" banner.
+   */
+  | 'MODEL_ERROR'
 
 /**
  * Runtime mirror of {@link ContractErrorCode} — single source for the IPC
@@ -122,7 +129,8 @@ export const CONTRACT_ERROR_CODES = [
   'SKILL_ALREADY_INSTALLED',
   'SKILL_SOURCE_INVALID',
   'SKILL_HUB_UNAVAILABLE',
-  'KERNEL_INTERNAL'
+  'KERNEL_INTERNAL',
+  'MODEL_ERROR'
 ] as const satisfies readonly ContractErrorCode[]
 
 /** Compile-time drift guard: errors if a ContractErrorCode is missing above. */
@@ -187,14 +195,94 @@ export interface PromptAck {
 export type PermissionDecision =
   /** Allow this one tool call only. */
   | 'allowOnce'
-  /** Allow this tool name for the rest of the session. */
+  /** Allow this tool *with the same parameters* for the rest of the session. */
   | 'allowSession'
   | 'deny'
+
+/**
+ * Trust level for a run, along a single spectrum from most conservative to least.
+ * Each mode is implemented as a decision-chain preset (see `permissionGate.ts`);
+ * the mode narrows which layers can answer `allow` without a user prompt.
+ *
+ * - `plan`         read tools auto-allow, every write is blocked outright.
+ * - `default`      heuristic allow for reads, prompt for anything else.
+ * - `acceptEdits`  file read/write auto-allow (version-controlled), bash still judged.
+ * - `auto`         heuristics + rules decide; only genuinely ambiguous calls prompt.
+ * - `bypass`       no prompts at all, except hard-denied destructive patterns.
+ */
+export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'auto' | 'bypass'
+
+/** Which layer of the decision chain produced a verdict — the audit trail. */
+export type PermissionVia = 'mode' | 'rule' | 'heuristic' | 'classifier' | 'user'
+
+export interface PermissionVerdict {
+  outcome: 'allow' | 'deny' | 'ask'
+  via: PermissionVia
+  /** Machine-readable-ish short tag, stable enough to log and display. */
+  reason: string
+}
 
 export interface RespondPermissionInput {
   sessionId: SessionId
   toolCallId: ToolCallId
   decision: PermissionDecision
+}
+
+export interface SetPermissionModeInput {
+  sessionId: SessionId
+  mode: PermissionMode
+}
+
+export type PermissionRuleAction = 'allow' | 'deny' | 'ask'
+
+/**
+ * One ordered rule. Matching is first-hit-wins across the ordered list: the
+ * first rule whose `tool` matches (and whose optional `command`/`path`
+ * predicates also match) decides the call. Order beats specificity on purpose —
+ * numbered priorities are unmaintainable once a few dozen rules exist.
+ */
+export interface PermissionRule {
+  /** Stable tag, shown in the read-only rule list. */
+  id?: string
+  /** Tool-name matcher; `*` matches any tool. Omit to match every tool. */
+  tool?: string
+  /** Bash-command substring matcher (applies to command-shaped tools). */
+  command?: string
+  /** Path substring matcher applied to the tool's path-ish args. */
+  path?: string
+  action: PermissionRuleAction
+  /** Why this rule exists — surfaced in the UI and the dialog reason. */
+  note?: string
+}
+
+export interface PermissionRuleSet {
+  /** Absolute path of the file the rules were loaded from. */
+  sourcePath: string
+  rules: PermissionRule[]
+}
+
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  'plan',
+  'default',
+  'acceptEdits',
+  'auto',
+  'bypass'
+]
+
+export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  plan: 'Plan',
+  default: 'Default',
+  acceptEdits: 'Accept edits',
+  auto: 'Auto',
+  bypass: 'Bypass'
+}
+
+export const PERMISSION_MODE_HINTS: Record<PermissionMode, string> = {
+  plan: 'Read-only planning. Writes are blocked.',
+  default: 'Safe operations run; anything else asks.',
+  acceptEdits: 'File edits run freely; commands still judged.',
+  auto: 'Heuristics and rules decide; you are only asked when genuinely ambiguous.',
+  bypass: 'Never interrupts. Destructive patterns are still refused.'
 }
 
 export interface TerminalCreateInput {
@@ -303,6 +391,12 @@ export interface CustomModelEntry {
   baseUrl?: string
   /** Echoed provider/model `api`; absent when PI infers it from a built-in provider. */
   api?: string
+  /**
+   * True when the model accepts thinking levels (`reasoning: true` in the file).
+   * PI reports only `off` for a model without this flag, so the composer's
+   * THINKING menu collapses to a single entry until it is set.
+   */
+  reasoning?: boolean
   /** True when the provider entry carries an API key (literal or `$ENV_VAR`). */
   apiKeySet: boolean
 }
@@ -322,6 +416,11 @@ export interface CustomModelSaveInput {
   api?: CustomModelApi
   /** Omit to keep the stored key. `$ENV_VAR` references are stored verbatim. */
   apiKey?: string
+  /**
+   * Mark the model as reasoning-capable (shows thinking levels in the picker).
+   * `true` writes the flag, `false` clears it, omit keeps the stored value.
+   */
+  reasoning?: boolean
   /** Present when editing: the entry is moved, not duplicated. */
   original?: CustomModelRef
 }
@@ -599,6 +698,12 @@ export interface UserMcpServerConfig {
   /** http: streamable endpoint. */
   url?: string
   headers?: Record<string, string>
+  /**
+   * stdio: hand the whole parent environment to the server instead of the
+   * allowlist (PATH / HOME / APPDATA / proxies…). Off by default — MCP servers
+   * are not sandboxed, so this is how far the blast radius reaches.
+   */
+  envInherit?: boolean
 }
 
 export interface UserMcpServerSummary {
@@ -614,14 +719,22 @@ export interface UserMcpSaveInput {
 
 /** Live connectivity/tool-count of one bridged MCP server (worker-reported). */
 export interface McpServerStatusEntry {
-  /** `user:<name>` or `plugin:<manifestName>:<serverName>`. */
+  /** `user:<name>` or `plugin:<manifestName>:<serverName>`; `warnings` for bridge-level notices. */
   key: string
   source: 'user' | 'plugin'
   type: UserMcpTransport
   connected: boolean
+  /**
+   * Finer than `connected`: a server can be dialling for several seconds
+   * (measured 5.9–6.9 s for an npx-spawned one), and the UI has to be able to
+   * say so instead of showing an empty panel.
+   */
+  status?: 'connecting' | 'connected' | 'error'
   toolCount?: number
   /** Present when the server failed to connect at bridge startup. */
   error?: string
+  /** Non-fatal notices (tool-name collisions between servers, …). */
+  warnings?: string[]
 }
 
 export interface McpServerStatusEvent {
@@ -715,6 +828,34 @@ export interface MarketplaceApi {
   installFromMarketplace(input: InstallFromMarketplaceInput): Promise<PluginSummary>
   /** Subscribe to install/refresh progress (global channel, mirror of subscribePlugins). */
   subscribeMarketplaceProgress(listener: (event: MarketplaceProgressEvent) => void): () => void
+}
+
+// ─── Frameless window chrome (custom titlebar) ──────────────────────────────
+
+/** Every `web:edit:<kind>` channel, keyed by the operation it runs. */
+export const WEB_EDIT_KINDS = ['undo', 'cut', 'copy', 'paste', 'selectAll'] as const
+
+export type WebEditKind = (typeof WEB_EDIT_KINDS)[number]
+
+/**
+ * Renderer surface for the frameless window strip (TitleBar), exposed by the
+ * preload bridge as `window.electron.windowControls`. Without a main-process
+ * bridge (browser mock) the surface is absent and the chrome renders inert.
+ */
+export interface WindowControlsApi {
+  minimize(): Promise<void>
+  /** Maximize/restore; resolves with the resulting maximized state. */
+  maximizeToggle(): Promise<boolean>
+  close(): Promise<void>
+  quit(): Promise<void>
+  reload(): Promise<void>
+  zoomIn(): Promise<void>
+  zoomOut(): Promise<void>
+  zoomReset(): Promise<void>
+  edit(kind: WebEditKind): Promise<void>
+  about(): Promise<void>
+  /** main → renderer push for the maximized flag (glyph □/❐). Returns unsubscribe. */
+  onMaximizedChange(listener: (maximized: boolean) => void): () => void
 }
 
 // ─── Skills / Memory / History (v1.7, additive) ─────────────────────────────
@@ -971,6 +1112,14 @@ export type KernelEvent =
       isError: boolean
       /** Short single-line outcome for UI cards; not the full tool result payload. */
       summary?: string
+      /**
+       * Wall-clock execution time of the tool itself (observability §3.2).
+       * Deliberately excludes permission wait — approval latency is the user's
+       * time, not the system's, and mixing them poisons performance analysis.
+       */
+      execMs?: number
+      /** Time the kernel spent waiting on the user's permission decision, if any. */
+      waitMs?: number
     })
   /**
    * Kernel is waiting on `respondPermission` (PI: beforeToolCall blocked).
@@ -985,6 +1134,14 @@ export type KernelEvent =
       args: Record<string, unknown>
       /** Why the kernel asked (e.g. write outside cwd, first bash use). */
       reason?: string
+      /** Trust level in force when the gate ran — shown on the dialog. */
+      mode: PermissionMode
+      /**
+       * Verdict the chain reached before it decided a human was needed. Lets the
+       * dialog explain *why* (e.g. "heuristic: write outside workspace") instead
+       * of a generic "approval required".
+       */
+      verdict?: PermissionVerdict
     })
   /**
    * Aggregated file changes visible to the user for this run so far
@@ -999,6 +1156,19 @@ export type KernelEvent =
       message: string
       toolCallId?: ToolCallId
     })
+  /**
+   * The model call failed and the kernel is retrying on its own (PI
+   * `auto_retry_start`). The run is NOT over — this is progress, not an error.
+   */
+  | (EventMeta & {
+      type: 'model_retry'
+      attempt: number
+      maxAttempts: number
+      delayMs: number
+      errorMessage?: string
+    })
+  /** The retry cycle above ended: either recovered or gave up (then `error` follows). */
+  | (EventMeta & { type: 'model_retry_end'; success: boolean })
   /** PTY stdout/stderr chunk (node-pty onData). Append; do not replace. */
   | (EventMeta & { type: 'pty_output'; terminalId: TerminalId; data: string })
   /** PTY process exited. Terminal is dead; further input is invalid. */
@@ -1081,6 +1251,13 @@ export interface CodexApi {
    * Per-file failures land in `result.failed` (not a whole-call reject).
    */
   applyFileChanges(input: ApplyFileChangesInput): Promise<ApplyFileChangesResult>
+
+  /** Trust level in force for one session (falls back to the global default). */
+  getPermissionMode(sessionId: SessionId): Promise<PermissionMode>
+  /** Override the trust level for one session. Persists to the kernel for restarts. */
+  setPermissionMode(input: SetPermissionModeInput): Promise<PermissionMode>
+  /** Ordered rule set actually in force (heuristics + user rules), for display. */
+  listPermissionRules(): Promise<PermissionRuleSet>
 
   /** Available models (provider auth OK). Not session-scoped. */
   listModels(): Promise<ModelOption[]>
@@ -1169,7 +1346,7 @@ export interface CodexApi {
   revertSkillWrite(id: string): Promise<void>
   /** Curated memory cards across sessions (`~/.flexagent/memory/`). */
   listMemoryCards(): Promise<MemoryCard[]>
-  /** Returns the id so callers can remove precisely later; see v1.10 note above. */
+/** Returns the id so callers can remove precisely later; see v1.10 note above. */
   /**
    * Add a card (v1.12: optional `scope`). `scope` restricts injection to sessions
    * working in that directory; omitting it means the card applies everywhere.
@@ -1219,6 +1396,9 @@ export const IPC = {
   setModel: 'codex:setModel',
   setThinkingLevel: 'codex:setThinkingLevel',
   pickDirectory: 'codex:pickDirectory',
+  setPermissionMode: 'codex:setPermissionMode',
+  getPermissionMode: 'codex:getPermissionMode',
+  listPermissionRules: 'codex:listPermissionRules',
   listCustomModels: 'codex:listCustomModels',
   customModelsPath: 'codex:customModelsPath',
   saveCustomModel: 'codex:saveCustomModel',
@@ -1268,7 +1448,33 @@ export const IPC = {
   toggleUserMcpServer: 'codex:toggleUserMcpServer',
   listMcpServerStatus: 'codex:listMcpServerStatus',
   /** main → renderer push for McpServerStatusEvent (global, per webContents). */
-  mcpStatusChanged: 'codex:mcpStatusChanged'
+  mcpStatusChanged: 'codex:mcpStatusChanged',
+  /** Frameless window chrome (TitleBar). */
+  windowMinimize: 'window:minimize',
+  windowMaximizeToggle: 'window:maximizeToggle',
+  windowClose: 'window:close',
+  windowQuit: 'window:quit',
+  /** main → renderer push for the maximized flag (global, per webContents). */
+  windowMaximized: 'window:maximized',
+  webReload: 'web:reload',
+  webZoomIn: 'web:zoomIn',
+  webZoomOut: 'web:zoomOut',
+  webZoomReset: 'web:zoomReset',
+  webEditUndo: 'web:edit:undo',
+  webEditCut: 'web:edit:cut',
+  webEditCopy: 'web:edit:copy',
+  webEditPaste: 'web:edit:paste',
+  webEditSelectAll: 'web:edit:selectAll',
+  appAbout: 'app:about'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
+
+/** `web:edit:<kind>` channel for one {@link WebEditKind}. */
+export const WEB_EDIT_CHANNELS: Readonly<Record<WebEditKind, string>> = {
+  undo: IPC.webEditUndo,
+  cut: IPC.webEditCut,
+  copy: IPC.webEditCopy,
+  paste: IPC.webEditPaste,
+  selectAll: IPC.webEditSelectAll
+}

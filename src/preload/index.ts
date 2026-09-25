@@ -4,6 +4,7 @@ import {
   ContractError,
   CONTRACT_ERROR_CODES,
   IPC,
+  WEB_EDIT_CHANNELS,
   type ApplyFileChangesInput,
   type ApplyFileChangesResult,
   type CodexApi,
@@ -41,8 +42,11 @@ import {
   type McpServerStatusEvent,
   type UserMcpSaveInput,
   type UserMcpServerSummary,
+  type PermissionMode,
+  type PermissionRuleSet,
   type PromptInput,
   type RespondPermissionInput,
+  type SetPermissionModeInput,
   type SessionDetail,
   type SessionId,
   type SessionSummary,
@@ -52,8 +56,8 @@ import {
   type SessionSearchHit,
   type SkillPendingWrite,
   type SkillUndoEntry,
-  type SkillSummary,
   type SkillUsageEntry,
+  type SkillSummary,
   type SkillHubInfo,
   type SkillHubEntry,
   type AddSkillHubInput,
@@ -61,7 +65,9 @@ import {
   type SlashCommandSummary,
   type TerminalCreateInput,
   type TerminalInputInput,
-  type TerminalResizeInput
+  type TerminalResizeInput,
+  type WebEditKind,
+  type WindowControlsApi
 } from '../shared/contract'
 
 interface IpcFailure {
@@ -160,6 +166,14 @@ const codex: CodexApi = {
 
   respondPermission: (input: RespondPermissionInput) =>
     invoke<void>(IPC.respondPermission, input),
+
+  getPermissionMode: (sessionId: SessionId) =>
+    invoke<PermissionMode>(IPC.getPermissionMode, sessionId),
+
+  setPermissionMode: (input: SetPermissionModeInput) =>
+    invoke<PermissionMode>(IPC.setPermissionMode, input),
+
+  listPermissionRules: () => invoke<PermissionRuleSet>(IPC.listPermissionRules),
 
   subscribe(sessionId: SessionId, listener: (event: KernelEvent) => void): () => void {
     const handler = (_event: IpcRendererEvent, payload: KernelEvent): void => {
@@ -327,7 +341,39 @@ const marketplace: MarketplaceApi = {
   }
 }
 
-contextBridge.exposeInMainWorld('electron', { codex, diag, marketplace })
+const windowControls: WindowControlsApi = {
+  minimize: () => invoke<void>(IPC.windowMinimize),
+
+  maximizeToggle: () => invoke<boolean>(IPC.windowMaximizeToggle),
+
+  close: () => invoke<void>(IPC.windowClose),
+
+  quit: () => invoke<void>(IPC.windowQuit),
+
+  reload: () => invoke<void>(IPC.webReload),
+
+  zoomIn: () => invoke<void>(IPC.webZoomIn),
+
+  zoomOut: () => invoke<void>(IPC.webZoomOut),
+
+  zoomReset: () => invoke<void>(IPC.webZoomReset),
+
+  edit: (kind: WebEditKind) => invoke<void>(WEB_EDIT_CHANNELS[kind]),
+
+  about: () => invoke<void>(IPC.appAbout),
+
+  onMaximizedChange(listener: (maximized: boolean) => void): () => void {
+    const handler = (_event: IpcRendererEvent, maximized: boolean): void => {
+      listener(maximized)
+    }
+    ipcRenderer.on(IPC.windowMaximized, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.windowMaximized, handler)
+    }
+  }
+}
+
+contextBridge.exposeInMainWorld('electron', { codex, diag, marketplace, windowControls })
 
 declare global {
   interface Window {
@@ -335,6 +381,7 @@ declare global {
       codex: CodexApi
       diag?: { killWorker: () => Promise<{ killed: boolean }> }
       marketplace?: MarketplaceApi
+      windowControls?: WindowControlsApi
     }
   }
 }

@@ -21,6 +21,8 @@ import {
   type ModelRoleState,
   type NetworkSettings,
   type PermissionDecision,
+  type PermissionMode,
+  type PermissionRuleSet,
   type PluginChangeEvent,
   type PluginDetail,
   type PluginId,
@@ -36,10 +38,10 @@ import {
   type SetModelInput,
   type SetModelRoleInput,
   type SetNetworkInput,
+  type SetPermissionModeInput,
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
-  type SkillUsageEntry,
   type SkillUndoEntry,
   type SkillHubInfo,
   type SkillHubEntry,
@@ -47,6 +49,7 @@ import {
   type AddSkillHubInput,
   type InstallSkillInput,
   type SkillSummary,
+  type SkillUsageEntry,
   type MemoryCard,
   type MemoryCardFile,
   type MemoryCardRef,
@@ -99,6 +102,7 @@ interface SessionState {
   pendingPermission: PendingPermission | null
   terminals: Map<TerminalId, TerminalState>
   modelConfig: ModelConfig
+  permissionMode: PermissionMode
 }
 
 /** Deterministic per-token delays (ms), cycled to keep streaming inside 50–100ms. */
@@ -121,6 +125,13 @@ const MOCK_MODEL_OPTIONS: ModelOption[] = [
   { provider: 'anthropic', id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }
 ]
 const MOCK_THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high']
+const MOCK_PERMISSION_MODES: readonly PermissionMode[] = [
+  'plan',
+  'default',
+  'acceptEdits',
+  'auto',
+  'bypass'
+]
 
 // Regex: shell-ish prompts trigger the gated bash tool (the M4 permission path).
 const SHELL_PROMPT_RE =
@@ -590,6 +601,7 @@ export class MockCodexApi implements CodexApi {
         name: 'bash',
         label,
         args,
+        mode: session.permissionMode,
         reason: 'First bash tool call in this session'
       })
       if (!alive()) return false
@@ -647,7 +659,8 @@ export class MockCodexApi implements CodexApi {
         model: MOCK_MODEL_OPTIONS[0] ?? null,
         thinkingLevel: 'medium',
         availableThinkingLevels: [...MOCK_THINKING_LEVELS]
-      }
+      },
+      permissionMode: 'default'
     }
   }
 
@@ -691,6 +704,41 @@ export class MockCodexApi implements CodexApi {
     const session = this.requireSession(input.sessionId)
     session.modelConfig = { ...session.modelConfig, thinkingLevel: input.level }
     return { ...session.modelConfig }
+  }
+
+  async getPermissionMode(sessionId: SessionId): Promise<PermissionMode> {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw new ContractError('INVALID_INPUT', 'sessionId is required')
+    }
+    return this.requireSession(sessionId).permissionMode
+  }
+
+  async setPermissionMode(input: SetPermissionModeInput): Promise<PermissionMode> {
+    if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+      throw new ContractError('INVALID_INPUT', 'sessionId is required')
+    }
+    if (!MOCK_PERMISSION_MODES.includes(input.mode)) {
+      throw new ContractError('INVALID_INPUT', `unknown permission mode: ${String(input.mode)}`)
+    }
+    const target = this.requireSession(input.sessionId)
+    target.permissionMode = input.mode
+    return input.mode
+  }
+
+  async listPermissionRules(): Promise<PermissionRuleSet> {
+    return {
+      sourcePath: '<mock: permissions.json>',
+      rules: [
+        { id: 'read-tools', tool: '*read*', action: 'allow', note: 'Read-only tool' },
+        { id: 'destructive-force', command: 'rm -rf', action: 'deny', note: 'Recursive force delete' },
+        {
+          id: 'user-rules',
+          tool: '*',
+          action: 'ask',
+          note: 'Everything else is judged, then asked'
+        }
+      ]
+    }
   }
 
   async pickDirectory(): Promise<string | null> {
