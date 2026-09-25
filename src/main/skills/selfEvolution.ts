@@ -410,7 +410,9 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
           'Call action=list FIRST in every run: the tool refuses any write until you have read what already exists. ' +
           'Prefer patch for small fixes; use batch ops for multi-file changes; skills follow ' +
           '"When to Use / Procedure / Pitfalls / Verification" and hold lessons, not logs. ' +
-          'Every change is recorded in a persistent undo log the user can revert.',
+          'Every change is recorded in a persistent undo log the user can revert. ' +
+          'Skip it when the knowledge is one-off or session-only, when an existing skill already covers it, ' +
+          'or when the user wants the fix applied now rather than something reusable afterwards.',
         promptSnippet:
           'skill_manage: create/patch/delete skills (procedural memory) — record reusable workflows and fixes',
         promptGuidelines: [
@@ -448,7 +450,9 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
         description:
           'Read and maintain your persistent memory cards (declarative memory): project/environment facts (MEMORY) and the user profile (USER). ' +
           'add/update/remove are queued and committed when the run ends; cards you write never come back into the same run. ' +
-          'update rewrites a card in one atomic write — use it instead of remove+add.',
+          'update rewrites a card in one atomic write — use it instead of remove+add. ' +
+          'Skip it for session-only details and for anything that expires (a current version, an open bug, ' +
+          'today\'s numbers): a card is re-injected into every future run, so a stale one outlives the fact it described.',
         promptSnippet:
           'memory_manage: maintain persistent MEMORY/USER fact cards injected into every session',
         parameters: MEMORY_MANAGE_SCHEMA,
