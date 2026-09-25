@@ -40,4 +40,10 @@
 
 - ✅ `npm run build` 绿；本轨文件 tsc 干净（工作区其余 tsc 报错来自另一条轨道的在制品）。
 - ✅ 队列 + 角色并发表逻辑 19/19：`node --experimental-strip-types scripts/diag-swarm-queue.mjs`（临时目录，不碰真实队列）。
-- ⚠️ 未做端到端走查（需真实模型调用）：`task` 工具真实派发、权限转发弹窗链路、peer 领取循环。建议后续 `qa-multi-agent.mjs` 走查。
+- ✅ **端到端实测（真实模型，2026-09-26）**：`node scripts/diag-multie2e.mjs`（直驱 `out/main/worker.js`，与应用同一条 worker 派发链路），7 阶段 46/46 检查全过，证据落盘 `.scratch/zcode-gap/reports/03-multie2e-evidence.json`，交叉证据为 `~/.flexagent/observability/llm-calls.jsonl` 的 `role_task` 行、`~/.flexagent/audit/*.jsonl` 的 `child-permission` 行、PI transcript 中的 `task` 工具结果：
+  - **single / parallel / chain 各一成功用例**：single 子报告经 `task` 工具结果回传；parallel 单次调用同波派发 2 个 researcher，两条 `role_task` 时间窗重叠（并发实证，非顺序）；chain step2 回显 step1 产出的 token（`{previous}` 传递）。
+  - **上下文隔离**：父对话含暗号 `ZEBRA-42`，子任务简报不含暗号，子代理枚举所见上下文为 `NO_PRIOR_CONTEXT` 且输出无暗号。
+  - **工具白名单 + 深度上限 1**：researcher 子代理自报工具集实测仅 `read,grep,find,ls`（清单外工具不存在）；子代理内再派发 `task` 被拒（`TOOL_NOT_AVAILABLE`）。
+  - **权限继承**：`default` 模式下子代理 `bash` 重定向命令被评估为 ask → 以合成 id `subagent-*` 转发父会话 UI 通道（label 带角色名），裁决 deny 后命令未执行（探针文件缺席），审计落 `child-permission`；`bypass` 模式下同一命令无弹窗直接执行（探针文件存在，验收后清理）。
+- ✅ 本次走查修复 1 个真实 bug：子代理以 PI 的 session-file uuid（`ctx.sessionManager.getSessionId()`）寻址父会话，而 worker 会话表以 kernel SessionId 为键——两个 id 空间不相交，寻址落空使**所有子代理工具调用被拒**（"the parent session ended while the child was running"），且 `role_task` 成本记到一个不属于任何会话的 id。修复：新增 `src/main/agents/parentLookup.ts`（双 id 空间解析），`worker.ts` 的 `forwardChildPermission` 与 `observeChildRun` 两处接入；回归覆盖 `tests/multiAgentParentLookup.test.ts`（5 例）+ 验收脚本 `single`（role_task 归属）与 `perm-default`（`subagent-*` 转发）阶段。
+- ⚠️ 仍未端到端走查（超出本工单范围）：swarm peer 领取循环。
