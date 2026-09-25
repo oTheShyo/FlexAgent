@@ -3,6 +3,9 @@ import type { ChatItem, ModelRetryState } from '../hooks/useChat'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
 import { CheckIcon, CopyIcon, RegenerateIcon } from './icons'
+import SelectionToolbar from './SelectionToolbar'
+import { useChatSelection } from '../hooks/useChatSelection'
+import type { SelectionSnapshot, SelectionSource } from '../hooks/useChatSelection'
 
 export interface ChatViewProps {
   items: ChatItem[]
@@ -10,6 +13,17 @@ export interface ChatViewProps {
   /** Live kernel retry notice — the model call failed and is being retried. */
   modelRetry?: ModelRetryState | null
   onRegenerate?: () => void
+  /**
+   * Retry for trailing errors whose run never produced an assistant message —
+   * falls back to onRegenerate, which is undefined in that case.
+   */
+  onErrorRetry?: () => void
+  /**
+   * "Add to the current task" for a selected piece of a reply, a tool result or
+   * an error. The text arrives as a plain string: nothing re-reads the DOM
+   * afterwards, so a delta landing mid-selection cannot change what is sent.
+   */
+  onAddReference?: (payload: { text: string; source: SelectionSource }) => void
 }
 
 const AssistantContent = memo(function AssistantContent({
@@ -102,7 +116,7 @@ function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
       onClick={onClick}
       aria-label="Regenerate response"
       title="Regenerate response"
-      className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-xs font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       <RegenerateIcon className="h-3.5 w-3.5" />
       Regenerate
@@ -222,7 +236,7 @@ const ErrorBlock = memo(function ErrorBlock({
       className="fx-fade rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2"
       data-testid="error-block"
     >
-      <span className="font-mono text-[11px] font-semibold text-[var(--danger-text)]">{item.code}</span>
+      <span className="font-mono text-xs font-semibold text-[var(--danger-text)]">{item.code}</span>
       <p className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--danger-text)]">{item.message}</p>
       <div className="mt-2 flex items-center gap-1.5">
         <button
@@ -231,7 +245,7 @@ const ErrorBlock = memo(function ErrorBlock({
           onClick={handleCopy}
           aria-label={copied ? 'Copied' : 'Copy error details'}
           title={copied ? 'Copied' : 'Copy error details'}
-          className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         >
           {copied ? (
             <CheckIcon className="h-3.5 w-3.5 text-[var(--success)]" />
@@ -247,7 +261,7 @@ const ErrorBlock = memo(function ErrorBlock({
             onClick={onRetry}
             aria-label="Retry"
             title="Retry"
-            className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             <RegenerateIcon className="h-3.5 w-3.5" />
             Retry
@@ -283,6 +297,8 @@ function chatRowKey(item: ChatItem, index: number): string {
       return item.toolCallId
     case 'error':
       return `error-${index}`
+    case 'notice':
+      return `notice-${index}`
   }
 }
 
@@ -290,19 +306,21 @@ const ChatRow = memo(function ChatRow({
   item,
   running,
   isLatestAssistant = false,
-  onRegenerate
+  onRegenerate,
+  onErrorRetry
 }: {
   item: ChatItem
   running?: boolean
   isLatestAssistant?: boolean
   onRegenerate?: () => void
+  onErrorRetry?: () => void
 }): ReactElement {
   switch (item.kind) {
     case 'message': {
       const { message } = item
       if (message.role === 'user') {
         return (
-          <div className="group flex items-start justify-end gap-1.5">
+          <div className="group flex items-start justify-end gap-1.5" data-selection-source="user">
             <div className="max-w-[75%] rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] px-4 py-2.5 text-sm leading-6 text-[var(--text)]">
               <span className="whitespace-pre-wrap">{message.content}</span>
             </div>
@@ -313,7 +331,7 @@ const ChatRow = memo(function ChatRow({
         )
       }
       return (
-        <div className="flex justify-start">
+        <div className="flex justify-start" data-selection-source="assistant">
           <div className="w-full min-w-0 max-w-[92%]">
             <div className="group">
               <AssistantContent content={message.content} />
@@ -330,7 +348,7 @@ const ChatRow = memo(function ChatRow({
     }
     case 'partial':
       return (
-        <div className="flex justify-start">
+        <div className="flex justify-start" data-selection-source="assistant">
           <div className="w-full min-w-0 max-w-[92%]">
             <AssistantContent content={item.content} streaming />
             {running && <Caret />}
@@ -339,7 +357,7 @@ const ChatRow = memo(function ChatRow({
       )
     case 'tool':
       return (
-        <div className="flex justify-start">
+        <div className="flex justify-start" data-selection-source="tool">
           <div className="w-full min-w-0 max-w-[92%]">
             <ToolCard item={item} />
           </div>
@@ -347,9 +365,21 @@ const ChatRow = memo(function ChatRow({
       )
     case 'error':
       return (
-        <div className="flex justify-start">
+        <div className="flex justify-start" data-selection-source="error">
           <div className="w-full min-w-0 max-w-[92%]">
-            <ErrorBlock item={item} onRetry={onRegenerate} />
+            <ErrorBlock item={item} onRetry={onErrorRetry ?? onRegenerate} />
+          </div>
+        </div>
+      )
+    case 'notice':
+      return (
+        <div
+          className="flex justify-start"
+          data-selection-source="notice"
+          data-testid="chat-notice"
+        >
+          <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+            {item.text}
           </div>
         </div>
       )
@@ -360,10 +390,27 @@ export function ChatView({
   items,
   running = false,
   modelRetry = null,
-  onRegenerate
+  onRegenerate,
+  onErrorRetry,
+  onAddReference
 }: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
+
+  // The scroll container doubles as the selection host: everything the
+  // transcript renders is inside it, and the composer is not.
+  const { snapshot, dismiss } = useChatSelection(scrollRef)
+
+  const handleAddSelection = useCallback(
+    (picked: SelectionSnapshot): void => {
+      if (onAddReference === undefined) return
+      onAddReference({ text: picked.text, source: picked.source })
+      // Drop the highlight with the bar, so the picked text is visibly moved out
+      // of the transcript and into the draft.
+      dismiss()
+    },
+    [onAddReference, dismiss]
+  )
 
   useEffect(() => {
     const el = scrollRef.current
@@ -398,6 +445,7 @@ export function ChatView({
           onRegenerate={
             (isLatestAssistant || isTrailingError) && onRegenerate ? onRegenerate : undefined
           }
+          onErrorRetry={isTrailingError && onErrorRetry ? onErrorRetry : undefined}
         />
       )
     })
@@ -411,6 +459,7 @@ export function ChatView({
       aria-live="polite"
       aria-label="Chat messages"
     >
+      <SelectionToolbar snapshot={snapshot} onAdd={handleAddSelection} />
       {items.length === 0 ? (
         <div className="flex h-full items-center justify-center px-6">
           <p className="text-sm text-[var(--text-subtle)]">Send a message to start.</p>
@@ -423,7 +472,7 @@ export function ChatView({
             <p
               role="status"
               data-testid="model-retry-notice"
-              className="fx-fade rounded-lg border border-[var(--warning-border,var(--border))] bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-4 text-[var(--warning-text,var(--text-secondary))]"
+              className="fx-fade rounded-lg border border-[var(--warning-border,var(--border))] bg-[var(--surface-sunken)] px-3 py-2 text-xs leading-4 text-[var(--warning-text,var(--text-secondary))]"
             >
               Model call failed (attempt {modelRetry.attempt}/{modelRetry.maxAttempts}) — retrying
               in {Math.max(1, Math.round(modelRetry.delayMs / 1000))}s

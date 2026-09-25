@@ -90,12 +90,11 @@ export function DiffPanel({
   const active = activeIndex >= 0 ? parsedFiles[activeIndex] : null
 
   useEffect(() => {
-    if (flash === null) return
-    const duration = flash.kind === 'error' ? 5000 : 2200
+    if (flash === null || flash.kind === 'error') return
     const timer = window.setTimeout(() => {
       setFlash(null)
       if (flash.kind === 'rejected') onReject?.()
-    }, duration)
+    }, 2200)
     return () => window.clearTimeout(timer)
   }, [flash, onReject])
 
@@ -253,13 +252,18 @@ export function DiffPanel({
 
             <footer className="flex h-14 shrink-0 items-center justify-between border-t border-[var(--border)] bg-[var(--surface)] px-4">
               <span
-                role="status"
-                aria-live="polite"
+                role={flash?.kind === 'error' ? 'alert' : 'status'}
+                aria-live={flash?.kind === 'error' ? 'assertive' : 'polite'}
                 className={`min-w-0 truncate pr-3 text-xs transition-opacity duration-150 ${statusClassName}`}
               >
                 {statusText}
               </span>
               <div className="flex shrink-0 items-center gap-2">
+                {flash?.kind === 'error' && (
+                  <Button variant="secondary" data-testid="diff-dismiss" onClick={() => setFlash(null)}>
+                    Dismiss
+                  </Button>
+                )}
                 <Button
                   variant="danger"
                   data-testid="diff-reject"

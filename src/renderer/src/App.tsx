@@ -14,20 +14,17 @@ import { usePlugins } from './hooks/usePlugins'
 import ChatView from './components/ChatView'
 import DiffPanel from './components/DiffPanel'
 import PermissionDialog from './components/PermissionDialog'
+import QuestionPanel from './components/QuestionPanel'
 import CommandPalette from './components/CommandPalette'
 import ErrorBoundary from './components/ErrorBoundary'
 import ConnectionBanner from './components/ConnectionBanner'
 import { ChatSkeleton } from './components/Skeleton'
 import { useChat } from './hooks/useChat'
 import { usePermissionMode } from './hooks/usePermissionMode'
-import {
-  clearSessionMeta,
-  displaySessionTitle,
-  pruneSessionMeta,
-  useSessionMeta
-} from './lib/sessionMeta'
 import { useShortcuts } from './lib/shortcuts'
 import { pathKey } from './lib/paths'
+import type { SelectionSource } from './hooks/useChatSelection'
+import type { ContextReference } from './components/composerReferences'
 
 // Deferred so xterm (~345 kB source) and the settings tree load only when
 // their surface is first opened, keeping them out of the entry chunk.
@@ -59,7 +56,6 @@ export default function App({ children }: AppProps) {
   const toggleSidebar = useCallback((): void => {
     setSidebarOpen((value) => !value)
   }, [])
-  const sessionMeta = useSessionMeta()
   const {
     plugins,
     loading: pluginsLoading,
@@ -82,6 +78,9 @@ export default function App({ children }: AppProps) {
     files,
     pendingPermission,
     modelRetry,
+    pendingQuestion,
+    respondQuestion,
+    stopQuestionTimer,
     send,
     stop,
     respond,
@@ -89,6 +88,8 @@ export default function App({ children }: AppProps) {
     openSession,
     refreshSessions,
     deleteSession,
+    renameSession,
+    setSessionArchived,
     newChat,
     chooseProject,
     bindingProject,
@@ -161,14 +162,6 @@ export default function App({ children }: AppProps) {
     setShowReview(true)
   }, [files, isStreaming])
 
-  // The rename/archive overlay is keyed by session id, so an entry whose
-  // session is gone (deleted elsewhere, or through the kernel) would silently
-  // re-title an unrelated id. Drop those once the list has settled.
-  useEffect(() => {
-    if (sessionsLoaded !== true) return
-    pruneSessionMeta(sessions.map((session) => session.id))
-  }, [sessions, sessionsLoaded])
-
   // A message sent while the active run is streaming waits here instead of
   // steering into the turn. Keyed by session so switching chats never mixes
   // two backlogs; in-memory only, so nothing survives an app restart.
@@ -218,6 +211,37 @@ export default function App({ children }: AppProps) {
     })
     void send(first)
   }, [runState, activeSessionId, queuedBySession, send])
+
+  // References staged for the current draft. They live here because the
+  // transcript and the Composer are siblings, but the Composer decides how a
+  // pick is staged (limits, the refusal notice) — the two entry points share
+  // one list, so one of them cannot have a different idea of the ceiling.
+  const [references, setReferences] = useState<readonly ContextReference[]>([])
+  const [selectionPick, setSelectionPick] = useState<{
+    text: string
+    source: SelectionSource
+    token: number
+  } | null>(null)
+  const selectionPickSeqRef = useRef(0)
+
+  const handleAddReference = useCallback(
+    (payload: { text: string; source: SelectionSource }): void => {
+      selectionPickSeqRef.current += 1
+      setSelectionPick({ ...payload, token: selectionPickSeqRef.current })
+    },
+    []
+  )
+
+  const handleSelectionPickConsumed = useCallback((): void => {
+    setSelectionPick(null)
+  }, [])
+
+  // Switching chats invalidates the references: a quote from a transcript that
+  // is no longer on screen has no business sitting in the next chat's draft.
+  useEffect(() => {
+    setReferences([])
+    setSelectionPick(null)
+  }, [activeSessionId])
 
   const handleQueueRemove = useCallback((sessionId: string, index: number): void => {
     setQueuedBySession((prev) => {
@@ -290,6 +314,19 @@ export default function App({ children }: AppProps) {
 
   const onRegenerate = canRegenerate ? handleRegenerate : undefined
 
+  // A run can fail before any assistant message exists (first-turn failures);
+  // retry must not be gated on an assistant message in that case.
+  const canRetryError =
+    runState === 'idle' &&
+    items.some(
+      (item) =>
+        item.kind === 'message' &&
+        item.message.role === 'user' &&
+        item.message.content.trim().length > 0
+    )
+
+  const onErrorRetry = canRetryError ? handleRegenerate : undefined
+
   const handleNewChat = useCallback(
     (cwd?: string): void => {
       setShowPlugins(false)
@@ -301,13 +338,43 @@ export default function App({ children }: AppProps) {
     [newChat, closeDetail]
   )
 
+  const handleAnswerQuestion = useCallback(
+    (questionId: string, answer: string): void => {
+      void respondQuestion(questionId, answer)
+    },
+    [respondQuestion]
+  )
+
+  const handleStopQuestionTimer = useCallback(
+    (questionId: string): void => {
+      void stopQuestionTimer(questionId)
+    },
+    [stopQuestionTimer]
+  )
+
   const handleDeleteSession = useCallback(
     (sessionId: string): void => {
-      // The overlay is local, so it has to be cleared alongside the real delete.
-      clearSessionMeta(sessionId)
       void deleteSession(sessionId)
     },
     [deleteSession]
+  )
+
+  // Rename and archive are registry writes: the list is re-read afterwards so
+  // what the sidebar shows is what the registry has, not what the click hoped
+  // for. A failed write therefore leaves the row unchanged instead of showing a
+  // title that was never persisted.
+  const handleRenameSession = useCallback(
+    (sessionId: string, title: string): void => {
+      void renameSession(sessionId, title)
+    },
+    [renameSession]
+  )
+
+  const handleSetArchived = useCallback(
+    (sessionId: string, archived: boolean): void => {
+      void setSessionArchived(sessionId, archived)
+    },
+    [setSessionArchived]
   )
 
   // Composer chip: give the open chat a workspace (or replace the current one).
@@ -625,7 +692,14 @@ export default function App({ children }: AppProps) {
   const content =
     children ??
     (items.length > 0 ? (
-      <ChatView items={items} running={isStreaming} modelRetry={modelRetry} onRegenerate={onRegenerate} />
+      <ChatView
+        items={items}
+        running={isStreaming}
+        modelRetry={modelRetry}
+        onRegenerate={onRegenerate}
+        onAddReference={handleAddReference}
+        onErrorRetry={onErrorRetry}
+      />
     ) : historyLoading === true ? (
       <ChatSkeleton />
     ) : (
@@ -672,6 +746,8 @@ export default function App({ children }: AppProps) {
               onAddProject={handleAddProject}
               scratchCwd={scratchCwd}
               onDelete={handleDeleteSession}
+              onRenameSession={handleRenameSession}
+              onSetArchived={handleSetArchived}
               loading={sessionsLoaded !== true}
               onOpenPlugins={handleOpenPlugins}
               pluginsActive={showPlugins}
@@ -692,7 +768,7 @@ export default function App({ children }: AppProps) {
           <TopBar
             title={
               activePageName ??
-              (activeSession ? displaySessionTitle(activeSession, sessionMeta) : 'New chat')
+              (activeSession ? activeSession.title : 'New chat')
             }
             terminalActive={showTerminal}
             reviewActive={showReview}
@@ -701,7 +777,6 @@ export default function App({ children }: AppProps) {
             sessionControls={activePageName === null}
             onToggleTerminal={handleToggleTerminal}
             onToggleReview={handleToggleReview}
-            onStop={handleStop}
           />
 
           {connectionState === 'degraded' && connectionMessage !== undefined && (
@@ -735,6 +810,7 @@ export default function App({ children }: AppProps) {
           {activePageName === null && (
             <Composer
               onSend={handleSend}
+              onStop={handleStop}
               disabled={!activeSessionId}
               running={isStreaming}
               cwd={activeProjectCwd}
@@ -754,6 +830,12 @@ export default function App({ children }: AppProps) {
               queuedMessages={queuedMessages}
               onQueueRemove={handleComposerQueueRemove}
               onQueueSendNow={handleComposerQueueSendNow}
+              references={references}
+              onReferencesChange={setReferences}
+              selectionPick={selectionPick}
+              onSelectionPickConsumed={handleSelectionPickConsumed}
+              sessions={sessions}
+              activeSessionId={activeSessionId}
             />
           )}
 
@@ -792,6 +874,13 @@ export default function App({ children }: AppProps) {
             <PermissionDialog
               request={pendingPermission}
               onRespond={handleRespond}
+            />
+          )}
+          {pendingQuestion && (
+            <QuestionPanel
+              question={pendingQuestion}
+              onAnswer={handleAnswerQuestion}
+              onStopTimer={handleStopQuestionTimer}
             />
           )}
           {showPalette && (

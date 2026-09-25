@@ -70,7 +70,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               re-render it, or reload the app to start fresh.
             </p>
             {error.message.length > 0 && (
-              <p className="mx-auto mt-2 max-w-sm break-all font-mono text-[11px] leading-4 text-[var(--text-subtle)]">
+              <p className="mx-auto mt-2 max-w-sm break-all font-mono text-xs leading-4 text-[var(--text-subtle)]">
                 {error.message}
               </p>
             )}
