@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from 'crypto'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildSync } from 'esbuild'
@@ -489,7 +489,86 @@ check(
 )
 
 // ════════════════════════════════════════════════════════════════════════════
-// 7. Usage age — the half of "is anyone using this" that is actually observable
+// 7. Injection budget — who survives the cut is a decision, not a side effect
+// ════════════════════════════════════════════════════════════════════════════
+
+// Cards keep the line they were written on, so "the last N in the file" actually
+// means "the N written earliest". One the user keeps correcting can be cut while
+// a year-old one holds its slot — and its context.
+//
+// Seeded straight into the markdown, not through memory_manage: the dedupe rule
+// reads "plinth 1" and "granite 2" as adjacent enough to be the same lesson, so
+// a tool-driven seed caps out at a single card. What is under test here is who
+// survives the injection cut, not dedupe.
+const sidecarPath = join(mod.MEMORY_HOME, '.cards.json')
+const words = [
+  'plinth', 'granite', 'burlap', 'cobalt', 'dovetail', 'epoch', 'fulcrum', 'hearth',
+  'indigo', 'juniper', 'kiln', 'lattice', 'marlin', 'nimbus', 'onyx', 'parch',
+  'quarry', 'relic', 'sapphire', 'thicket', 'umber', 'vellum', 'wicker', 'yarrow',
+  'zephyr', 'anvil', 'brass', 'cinder', 'drift', 'ember', 'flint', 'gossamer',
+  'hazel', 'ivory', 'kestrel', 'lagoon', 'moss', 'nettle', 'opal', 'pewter',
+  'quill', 'rune', 'sable', 'tundra', 'umbra'
+]
+const fillerTexts = words.map((word, i) => `${word} ${i + 1}`)
+// Leading newline matters: the file may not end with one, and a card line glued
+// onto an existing line is not a card line.
+appendFileSync(join(mod.MEMORY_HOME, 'MEMORY.md'), `\n${fillerTexts.map((t) => `- ${t}`).join('\n')}\n`)
+
+const filler = mod.listMemoryCards().filter((card) => words.includes(card.text.split(' ')[0] ?? ''))
+check('budget: enough filler cards landed to exceed the cap', filler.length === 45, `${filler.length} cards`)
+
+const index = JSON.parse(readFileSync(sidecarPath, 'utf8'))
+index['MEMORY.md'] ??= {}
+for (const card of filler) index['MEMORY.md'][card.id] = { created: Date.now(), updated: Date.now() }
+const last = filler[filler.length - 1] // last line of the file …
+const maintained = filler[2] // … while this one sits early but is the current one
+index['MEMORY.md'][maintained.id].updated = Date.now() + 5_000
+index['MEMORY.md'][last.id] = {
+  created: Date.now() - 400 * 24 * 60 * 60 * 1000,
+  updated: Date.now() - 400 * 24 * 60 * 60 * 1000
+}
+writeFileSync(sidecarPath, JSON.stringify(index, null, 2))
+
+const budgeted = (await beforeAgentStart({ systemPrompt: 'BASE', prompt: 'continue with the build' })).systemPrompt
+check(
+  'budget: a card kept current early in the file still gets injected',
+  budgeted.includes(`- ${maintained.text}`),
+  `position in the file is not how current the card is — the tail would have won: ${last.text}`
+)
+check(
+  'budget: a stale card sitting at the tail of the file is cut instead',
+  !budgeted.includes(`- ${last.text}`),
+  'the tail is where the oldest card sits, not the most relevant one'
+)
+
+const shownWords = [...budgeted.matchAll(/^- ([a-z]+) \d+/gm)].map((m) => m[1])
+check('budget: the cut never exceeds the cap', shownWords.length <= 40, `${shownWords.length} filler cards injected`)
+check(
+  'budget: survivors keep file order, so the block does not reshuffle',
+  shownWords.every((word, i) => i === 0 || words.indexOf(shownWords[i - 1]) <= words.indexOf(word)),
+  'recency decides who is in; line order decides how it reads'
+)
+
+// Correcting a card changes its id, and the sidecar only ever knew the old one.
+// Without a timestamp on the new id the correction ranks as the oldest card in
+// the store — the exact opposite of the edit that produced it.
+const touched = filler[7]
+const touchedOut = await call({
+  action: 'update',
+  file: 'MEMORY',
+  id: touched.id,
+  text: 'the eighth tier was re-checked by hand today'
+})
+await captured.handlers.turn_end({ type: 'turn_end' })
+const touchedNow = mod.listMemoryCards().find((card) => card.text.includes('re-checked'))
+check(
+  'budget: a corrected card carries a fresh timestamp',
+  (touchedNow?.updatedAt ?? 0) > Date.now() - 60_000,
+  `tool said: ${touchedOut.slice(0, 100)} | card: ${JSON.stringify(touchedNow)}`
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8. Usage age — the half of "is anyone using this" that is actually observable
 // ════════════════════════════════════════════════════════════════════════════
 
 const wallUsage = mod.listSkillUsage().find((entry) => entry.name.includes('gate-probe'))

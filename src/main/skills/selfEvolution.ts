@@ -156,6 +156,33 @@ function renderCards(entries: MemoryCard[]): string {
   return entries.map((card) => `- ${card.text}`).join('\n')
 }
 
+/** How recently a card was last touched; cards without timestamps rank oldest. */
+function recencyOf(card: MemoryCard): number {
+  return card.updatedAt ?? card.createdAt ?? 0
+}
+
+/**
+ * Choose which cards are injected, within `MAX_INJECTED_CARDS`.
+ *
+ * The store is append-only, so "the last N in the file" is not "the N the user
+ * has kept current". A card that gets corrected every week sits at its original
+ * line, while something untouched for a year keeps its slot and keeps costing
+ * context. Last-update decides who is in.
+ *
+ * Rendering still follows file order — only the cut is by recency — so the
+ * injected block does not reshuffle between turns just because one card
+ * changed.
+ */
+function pickForInjection(cards: MemoryCard[]): MemoryCard[] {
+  if (cards.length <= MAX_INJECTED_CARDS) return cards
+  return cards
+    .map((card, index) => ({ card, index }))
+    .sort((a, b) => recencyOf(b.card) - recencyOf(a.card) || a.index - b.index)
+    .slice(0, MAX_INJECTED_CARDS)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.card)
+}
+
 function buildRecalledSection(hits: SessionSearchHit[]): string {
   if (hits.length === 0) return ''
   const lines = hits.map((hit) => {
@@ -235,12 +262,10 @@ export function createSelfEvolutionExtension(hooks: SelfEvolutionHooks = {}): In
         let body = ''
         // USER.md is small and always relevant: it shapes tone, not just facts.
         if (user.length > 0) {
-          body += `\n### User profile (USER.md)\n${renderCards(user.slice(-MAX_INJECTED_CARDS))}`
+          body += `\n### User profile (USER.md)\n${renderCards(pickForInjection(user))}`
         }
         if (memory.length > 0) {
-          // Newest within budget — the store is append-only, and recent cards
-          // describe the project as it is now.
-          const shown = memory.slice(-MAX_INJECTED_CARDS)
+          const shown = pickForInjection(memory)
           const hidden = memory.length - shown.length
           body += `\n### Project & environment facts (MEMORY.md)\n${renderCards(shown)}`
           if (hidden > 0) {
