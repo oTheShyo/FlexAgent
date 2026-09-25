@@ -25,11 +25,43 @@ import type { SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent'
 type KernelModel = NonNullable<ReturnType<ModelRuntime['getModel']>>
 type CompactPreparation = SessionBeforeCompactEvent['preparation']
 
+/**
+ * Sent to the summariser as the compaction's "Additional focus" (see
+ * COMPACTION_FOCUS below). PI's own summarisation prompt only tells the model
+ * not to continue the conversation; it says nothing about tools, and nothing
+ * about what survives. The whole point of the transaction is that the
+ * transcript is dropped afterwards, so the summary is the only thing the next
+ * turn has to work from.
+ *
+ * PI appends this rather than replacing its prompt, so the two do not fight:
+ * its guard line stays, and this adds the rest.
+ */
+const COMPACTION_FOCUS = [
+  'Summarise only. Call no tools, read no files, answer no question, and write no reply to the user: the transcript ends here and this summary is all that carries forward.',
+  'Output one block of plain prose — no headings, no bullet lists, no preamble about summarising.',
+  'Preserve: file paths with line numbers, every decision plus the evidence behind it, identifiers and command output that re-deriving would cost a turn, and any claim that is still unverified.',
+  'Drop: narration about what you were doing, replays of long command output (keep the result, not the log), and anything already stated in the previous summary.'
+].join(' ')
+
 export interface CompactionRoutingDeps {
   /** The configured compaction model, or `null` to leave PI's choice alone. */
   resolveCompactionModel: () => Promise<KernelModel | null>
   /** The shared runtime, for that model's credentials. */
   getRuntime: () => Promise<ModelRuntime>
+}
+
+/**
+ * The value handed to `compact()` as its focus.
+ *
+ * Split out and exported so the channel can be checked without a session: it
+ * was wired to `event.customInstructions` and left that undefined everywhere,
+ * which fails silently — the summary still gets written, just with no format
+ * promise and no instruction about what to keep.
+ */
+export function compactionFocus(event: SessionBeforeCompactEvent): string {
+  const explicit = event.customInstructions
+  if (explicit === undefined || explicit === '') return COMPACTION_FOCUS
+  return `${COMPACTION_FOCUS} The requesting agent asked to focus on: ${explicit}`
 }
 
 /** PI drops headers whose value is empty; mirror that rather than sending "null". */
@@ -82,7 +114,7 @@ export function createCompactionRoutingExtension(deps: CompactionRoutingDeps): I
             requestModel,
             apiKey,
             headers,
-            event.customInstructions,
+            focus,
             event.signal,
             undefined,
             undefined,
