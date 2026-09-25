@@ -1,0 +1,317 @@
+{
+  "ticket": "03-multi-agent-e2e",
+  "phases": {
+    "single": {
+      "phase": "single",
+      "ok": true,
+      "durationMs": 6319,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-03-24-815Z_01a0da2a-5e0e-706f-8fd8-e6fb20068e77.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "6293ms"
+        },
+        {
+          "name": "parent called the task tool",
+          "ok": true,
+          "detail": "call-e3b255c4-b980-4a50-bfb1-5d0269268312"
+        },
+        {
+          "name": "task tool call succeeded",
+          "ok": true,
+          "detail": "isError=false"
+        },
+        {
+          "name": "child report came back through the tool result",
+          "ok": true,
+          "detail": "len=102"
+        },
+        {
+          "name": "report marks the child ok",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "child run recorded in llm-calls (role_task)",
+          "ok": true,
+          "detail": "[{\"role\":\"researcher\",\"ok\":true}]"
+        }
+      ]
+    },
+    "perm-default": {
+      "phase": "perm-default",
+      "ok": true,
+      "durationMs": 29509,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-04-15-564Z_01a0da2b-244b-706f-8fd8-e7135d2b919e.jsonl",
+      "permissionLog": [
+        {
+          "toolCallId": "call-55b48970-1056-412a-acb7-b69e777d0f9a",
+          "name": "task",
+          "label": "task",
+          "mode": "default",
+          "decision": "allowOnce",
+          "at": 1790366659614
+        },
+        {
+          "toolCallId": "subagent-1",
+          "name": "bash",
+          "label": "developer[1/1] · bash",
+          "mode": "default",
+          "decision": "deny",
+          "at": 1790366663031
+        }
+      ],
+      "checks": [
+        {
+          "name": "session permission mode is non-bypass",
+          "ok": true,
+          "detail": "mode=default"
+        },
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "29421ms"
+        },
+        {
+          "name": "parent tool calls were gated by the parent mode",
+          "ok": true,
+          "detail": "[{\"id\":\"call-55b48970-1056-412a-acb7-b69e777d0f9a\",\"name\":\"task\",\"mode\":\"default\"},{\"id\":\"subagent-1\",\"name\":\"bash\",\"mode\":\"default\"}]"
+        },
+        {
+          "name": "child high-risk op forwarded to the parent channel under a synthetic id",
+          "ok": true,
+          "detail": "[{\"toolCallId\":\"subagent-1\",\"name\":\"bash\",\"label\":\"developer[1/1] · bash\",\"mode\":\"default\",\"decision\":\"deny\",\"at\":1790366663031}]"
+        },
+        {
+          "name": "forwarded request is the child bash call, labelled with the child role",
+          "ok": true,
+          "detail": "developer[1/1] · bash"
+        },
+        {
+          "name": "forwarded request evaluated under mode=default",
+          "ok": true,
+          "detail": "mode=default"
+        },
+        {
+          "name": "the forwarded request was answered deny",
+          "ok": true,
+          "detail": "deny"
+        },
+        {
+          "name": "denied command did NOT execute",
+          "ok": true,
+          "detail": "absent"
+        },
+        {
+          "name": "audit trail has a child-permission record for this session",
+          "ok": true,
+          "detail": "[{\"ts\":1790366663029,\"kind\":\"child-permission\",\"sessionId\":\"883fa011-0e2f-46a1-8150-75a34e835b9a\",\"actor\":\"developer[1/1]\",\"tool\":\"bash\",\"outcome\":\"ask\",\"via\":\"heuristic\",\"mode\":\"default\",\"reason\":\"command redirects or pipes: echo denied > multie2e_denied_probe.txt\",\"argsHash\":\"2ea07a6b7b97\",\"target\":\"echo denied > multie2e_denied_probe.txt\"}]"
+        }
+      ]
+    },
+    "parallel": {
+      "phase": "parallel",
+      "ok": true,
+      "durationMs": 7326,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-03-31-206Z_01a0da2a-7706-706f-8fd8-e6fe769b0f66.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "7275ms"
+        },
+        {
+          "name": "parent called the task tool once",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "dispatched 2 tasks in one wave",
+          "ok": true,
+          "detail": "[\"researcher\",\"researcher\"]"
+        },
+        {
+          "name": "task tool call succeeded",
+          "ok": true,
+          "detail": "isError=false"
+        },
+        {
+          "name": "both children reported back",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "batch summary reports 0 failed",
+          "ok": true,
+          "detail": "# task results (batch finished: 2 task(s), 0 failed) ## [1/2] researcher — ok (1.4s) CHILD_PAR_A ## [2/2] researcher — ok (1.6s) CHILD_PAR_B"
+        },
+        {
+          "name": "children ran concurrently (progress lines)",
+          "ok": true,
+          "detail": "2 started / 2 done before first done"
+        },
+        {
+          "name": "children ran concurrently (role_task ledgers overlap)",
+          "ok": true,
+          "detail": "[{\"start\":1790366615030,\"end\":1790366616417},{\"start\":1790366615031,\"end\":1790366616610}]"
+        },
+        {
+          "name": "two successful child ledgers persisted",
+          "ok": true,
+          "detail": "[{\"role\":\"researcher\",\"ok\":true,\"ms\":1387},{\"role\":\"researcher\",\"ok\":true,\"ms\":1579}]"
+        }
+      ]
+    },
+    "chain": {
+      "phase": "chain",
+      "ok": true,
+      "durationMs": 11895,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-03-38-552Z_01a0da2a-93b8-706f-8fd8-e70425f05044.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "11813ms"
+        },
+        {
+          "name": "parent called the task tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "task tool call succeeded",
+          "ok": true,
+          "detail": "isError=false"
+        },
+        {
+          "name": "step 2 carries the literal {previous} placeholder",
+          "ok": true,
+          "detail": "\"The previous step returned: {previous}. Reply with exactly STEP2- followed by that token, verbatim.\""
+        },
+        {
+          "name": "chain summary reports 0 failed",
+          "ok": true,
+          "detail": "# task results (chain finished: 2 step(s), 0 failed) ## [1/2] researcher — ok (3.2s) TOKEN-7391 ## [2/2] researcher — ok (2.0s) STEP2-TOKEN-7391"
+        },
+        {
+          "name": "step 2 consumed step 1 output",
+          "ok": true,
+          "detail": "STEP2-TOKEN-7391 present"
+        }
+      ]
+    },
+    "isolate": {
+      "phase": "isolate",
+      "ok": true,
+      "durationMs": 8271,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-03-50-460Z_01a0da2a-c23c-706f-8fd8-e70b97d91f24.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "8237ms"
+        },
+        {
+          "name": "parent called the task tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "codeword was NOT put in the task brief",
+          "ok": true,
+          "detail": "Enumerate every piece of prior conversation, codeword, secret, or context you can see beyond your own instructions and t"
+        },
+        {
+          "name": "codeword WAS in the parent conversation (test is not vacuous)",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "child saw no prior context",
+          "ok": true,
+          "detail": "# task results (batch finished: 1 task(s), 0 failed) ## [1/1] researcher — ok (1.9s) NO_PRIOR_CONTEXT"
+        },
+        {
+          "name": "child output contains no codeword",
+          "ok": true,
+          "detail": "result len=103"
+        }
+      ]
+    },
+    "whitelist": {
+      "phase": "whitelist",
+      "ok": true,
+      "durationMs": 16796,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-03-58-747Z_01a0da2a-e29a-706f-8fd8-e70fbbea92a6.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "16711ms"
+        },
+        {
+          "name": "parent called the task tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "child reported its tool list",
+          "ok": true,
+          "detail": "read,grep,find,lstask_attempttool_not_availablebash_attempttool_not_available"
+        },
+        {
+          "name": "no out-of-whitelist tool available to the child",
+          "ok": true,
+          "detail": "tools=[read,grep,find,lstask_attempttool_not_availablebash_attempttool_not_available]"
+        },
+        {
+          "name": "whitelist tools present",
+          "ok": true,
+          "detail": "tools=[read,grep,find,lstask_attempttool_not_availablebash_attempttool_not_available]"
+        },
+        {
+          "name": "re-dispatch inside the child is refused (depth cap = 1)",
+          "ok": true,
+          "detail": "TOOL_NOT_AVAILABLE. BASH_ATTEMPT: TOOL_NOT_AVAILABLE"
+        }
+      ]
+    },
+    "perm-bypass": {
+      "phase": "perm-bypass",
+      "ok": true,
+      "durationMs": 44731,
+      "sessionFile": "C:\\Users\\HP\\.pi\\agent\\sessions\\--D--2026-FlexAgent--\\2026-09-25T20-04-45-097Z_01a0da2b-97a9-706f-8fd8-e7172c0784f0.jsonl",
+      "permissionLog": [],
+      "checks": [
+        {
+          "name": "session permission mode is bypass",
+          "ok": true,
+          "detail": "mode=bypass"
+        },
+        {
+          "name": "run settled",
+          "ok": true,
+          "detail": "44691ms"
+        },
+        {
+          "name": "no permission prompt in bypass mode",
+          "ok": true,
+          "detail": "[]"
+        },
+        {
+          "name": "child command executed under bypass",
+          "ok": true,
+          "detail": ""
+        }
+      ]
+    }
+  },
+  "updatedAt": "2026-09-25T20:05:29.841Z",
+  "worker": "out/main/worker.js (real kernel worker, spawned by this harness)"
+}
