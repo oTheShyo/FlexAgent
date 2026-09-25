@@ -23,6 +23,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
+import type { ReasoningEffort, ThinkingLevel } from '../shared/contract'
 
 const OBS_ROOT =
   process.env.FLEXAGENT_OBS_HOME ?? join(homedir(), '.flexagent')
@@ -67,7 +68,7 @@ const PIPELINE_FILE = join(OBS_ROOT, 'observability', 'pipeline.jsonl')
  * currency (docs/observability.md §5): Skill Hub downloads (undici retries),
  * install staging/swap, marketplace archives.
  */
-export type PipelineKind = 'skill_hub' | 'skill_install'
+export type PipelineKind = 'skill_hub' | 'skill_install' | 'marketplace'
 
 export interface PipelineObservation {
   kind: PipelineKind
@@ -92,6 +93,13 @@ export type CallSource =
   | 'permission_classifier'
   | 'memory_dedupe'
   | 'role_task'
+  /**
+   * The post-turn automatic memory pass (issue 15). Separate from
+   * `memory_dedupe` because that one only answers "is this a duplicate",
+   * while this is the call that decides *whether there is anything to keep* —
+   * the cost the user needs to see when they turn the feature on.
+   */
+  | 'memory_extract'
 
 export interface LlmCallObservation {
   callSource: CallSource
@@ -119,6 +127,14 @@ export interface LlmCallObservation {
     cacheWrite?: number
   }
   cost?: number
+  /**
+   * PI thinking level in effect when the call was made (kernel `chat` calls) —
+   * together with `effort` this is the llm-calls.jsonl evidence that a
+   * reasoning tier actually reached the request (issue 08).
+   */
+  thinkingLevel?: ThinkingLevel
+  /** Reasoning tier (低/高/最高) behind `thinkingLevel`; `null` = off/unmapped. */
+  effort?: ReasoningEffort | null
 }
 
 /** Session ids are app-generated, but a directory name is a boundary — sanitize. */

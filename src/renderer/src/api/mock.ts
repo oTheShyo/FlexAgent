@@ -1,6 +1,7 @@
 import {
   ContractError,
   MODEL_ROLES,
+  effortForLevel,
   type ApplyFileChangesInput,
   type ApplyFileChangesResult,
   type ChatMessage,
@@ -22,7 +23,10 @@ import {
   type NetworkSettings,
   type PermissionDecision,
   type PermissionMode,
+  type PermissionRule,
   type PermissionRuleSet,
+  type RemovePermissionRuleInput,
+  type SavePermissionRuleInput,
   type PluginChangeEvent,
   type PluginDetail,
   type PluginId,
@@ -30,6 +34,9 @@ import {
   type PromptAck,
   type PromptInput,
   type RespondPermissionInput,
+  type RespondQuestionInput,
+  type StopQuestionTimerInput,
+  type ReasoningEffort,
   type RoutingState,
   type SessionDetail,
   type SessionId,
@@ -39,6 +46,13 @@ import {
   type SetModelRoleInput,
   type SetNetworkInput,
   type SetPermissionModeInput,
+  type GlobalUsageStats,
+  type MemorySettings,
+  type QuestionSettings,
+  type RenameSessionInput,
+  type SetMemoryAutoExtractInput,
+  type SetQuestionAutoContinueInput,
+  type SetSessionArchivedInput,
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SkillPendingWrite,
@@ -55,6 +69,7 @@ import {
   type MemoryCardRef,
   type MemoryWriteReceipt,
   type McpServerStatusEntry,
+  type PluginMcpServerOverrides,
   type McpServerStatusEvent,
   type SlashCommandSummary,
   type TerminalCreateAck,
@@ -125,6 +140,9 @@ const MOCK_MODEL_OPTIONS: ModelOption[] = [
   { provider: 'anthropic', id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }
 ]
 const MOCK_THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high']
+
+const mockEffort = (level: ThinkingLevel): ReasoningEffort | null =>
+  effortForLevel(level, MOCK_THINKING_LEVELS)
 const MOCK_PERMISSION_MODES: readonly PermissionMode[] = [
   'plan',
   'default',
@@ -273,6 +291,33 @@ export class MockCodexApi implements CodexApi {
     return { ...session.summary }
   }
 
+  async renameSession(input: RenameSessionInput): Promise<SessionSummary> {
+    const session = this.sessions.get(input?.sessionId)
+    if (!session) {
+      throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${input?.sessionId}`)
+    }
+    const title = typeof input.title === 'string' ? input.title.trim() : ''
+    if (title.length === 0) {
+      throw new ContractError('INVALID_INPUT', 'title is required')
+    }
+    session.summary.title = title.slice(0, 80)
+    session.summary.updatedAt = Date.now()
+    return { ...session.summary }
+  }
+
+  async setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary> {
+    const session = this.sessions.get(input?.sessionId)
+    if (!session) {
+      throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${input?.sessionId}`)
+    }
+    if (typeof input.archived !== 'boolean') {
+      throw new ContractError('INVALID_INPUT', 'archived must be a boolean')
+    }
+    session.summary.archived = input.archived
+    session.summary.updatedAt = Date.now()
+    return { ...session.summary }
+  }
+
   async openSession(sessionId: SessionId): Promise<SessionDetail> {
     const session = this.sessions.get(sessionId)
     if (!session) {
@@ -339,6 +384,20 @@ export class MockCodexApi implements CodexApi {
     session.summary.runState = 'idle'
     session.summary.updatedAt = Date.now()
     this.emitEvent(session, { type: 'run_state', runState: 'idle' })
+  }
+
+  async respondQuestion(input: RespondQuestionInput): Promise<void> {
+    // The mock never asks questions, so there is nothing to answer; accepting
+    // the shape keeps the API honest without inventing a fake question.
+    if (typeof input?.questionId !== 'string' || !input.questionId) {
+      throw new ContractError('INVALID_INPUT', 'questionId is required')
+    }
+  }
+
+  async stopQuestionTimer(input: StopQuestionTimerInput): Promise<void> {
+    if (typeof input?.questionId !== 'string' || !input.questionId) {
+      throw new ContractError('INVALID_INPUT', 'questionId is required')
+    }
   }
 
   async respondPermission(input: RespondPermissionInput): Promise<void> {
@@ -658,6 +717,7 @@ export class MockCodexApi implements CodexApi {
       modelConfig: {
         model: MOCK_MODEL_OPTIONS[0] ?? null,
         thinkingLevel: 'medium',
+        effort: mockEffort('medium'),
         availableThinkingLevels: [...MOCK_THINKING_LEVELS]
       },
       permissionMode: 'default'
@@ -686,9 +746,11 @@ export class MockCodexApi implements CodexApi {
     if (!model) {
       throw new ContractError('INVALID_INPUT', `Unknown model: ${input.provider}/${input.id}`)
     }
+    const thinkingLevel = input.thinkingLevel ?? session.modelConfig.thinkingLevel
     session.modelConfig = {
       model: { ...model },
-      thinkingLevel: input.thinkingLevel ?? session.modelConfig.thinkingLevel,
+      thinkingLevel,
+      effort: mockEffort(thinkingLevel),
       availableThinkingLevels: [...MOCK_THINKING_LEVELS]
     }
     return { ...session.modelConfig }
@@ -702,7 +764,11 @@ export class MockCodexApi implements CodexApi {
       throw new ContractError('INVALID_INPUT', `Invalid thinkingLevel: ${String(input.level)}`)
     }
     const session = this.requireSession(input.sessionId)
-    session.modelConfig = { ...session.modelConfig, thinkingLevel: input.level }
+    session.modelConfig = {
+      ...session.modelConfig,
+      thinkingLevel: input.level,
+      effort: mockEffort(input.level)
+    }
     return { ...session.modelConfig }
   }
 
@@ -725,20 +791,82 @@ export class MockCodexApi implements CodexApi {
     return input.mode
   }
 
-  async listPermissionRules(): Promise<PermissionRuleSet> {
+  // Mutable, unlike the read-only fixture it replaces: permission rules are the
+  // one settings value the mock has to be able to write for the rules panel to
+  // mean anything. Save/remove deliberately repeat main's derivation rather than
+  // importing it — a mock that shared code with main would stop testing the
+  // contract between them.
+  private permissionRules: PermissionRule[] = [
+    {
+      id: 'read-tools',
+      tool: '*read*',
+      action: 'allow',
+      note: 'Read-only tool',
+      origin: 'builtin'
+    },
+    {
+      id: 'destructive-force',
+      command: 'rm -rf',
+      action: 'deny',
+      note: 'Recursive force delete',
+      origin: 'builtin'
+    },
+    {
+      id: 'user-rules',
+      tool: '*',
+      action: 'ask',
+      note: 'Everything else is judged, then asked',
+      origin: 'user',
+      createdAt: Date.now()
+    }
+  ]
+
+  private permissionRuleSet(): PermissionRuleSet {
     return {
       sourcePath: '<mock: permissions.json>',
-      rules: [
-        { id: 'read-tools', tool: '*read*', action: 'allow', note: 'Read-only tool' },
-        { id: 'destructive-force', command: 'rm -rf', action: 'deny', note: 'Recursive force delete' },
-        {
-          id: 'user-rules',
-          tool: '*',
-          action: 'ask',
-          note: 'Everything else is judged, then asked'
-        }
-      ]
+      rules: this.permissionRules.map((rule) => ({ ...rule }))
     }
+  }
+
+  async listPermissionRules(): Promise<PermissionRuleSet> {
+    return this.permissionRuleSet()
+  }
+
+  async savePermissionRule(input: SavePermissionRuleInput): Promise<PermissionRuleSet> {
+    if (typeof input.tool !== 'string' || input.tool === '') {
+      throw new ContractError('INVALID_INPUT', 'tool is required for a saved rule')
+    }
+    if (input.scope !== 'global' && input.scope !== 'project') {
+      throw new ContractError('INVALID_INPUT', `unknown rule scope: ${String(input.scope)}`)
+    }
+    const args = input.args ?? {}
+    const command = typeof args.command === 'string' ? args.command.trim() : ''
+    const rule: PermissionRule = {
+      id: `rule-${this.permissionRules.length + 1}`,
+      tool: input.tool,
+      action: input.action,
+      createdAt: Date.now(),
+      origin: 'user',
+      note: input.note ?? (command !== '' ? `${input.action} "${command}"` : `${input.action} ${input.tool}`)
+    }
+    if (command !== '') rule.command = command
+    if (input.scope === 'project') {
+      rule.scope = 'project'
+      // Same resolution main does from the registry, from the mock's own view of
+      // the session.
+      rule.projectPath = this.requireSession(input.sessionId).summary.cwd
+    }
+    this.permissionRules = [...this.permissionRules, rule]
+    return this.permissionRuleSet()
+  }
+
+  async removePermissionRule(input: RemovePermissionRuleInput): Promise<PermissionRuleSet> {
+    const next = this.permissionRules.filter((rule) => rule.id !== input.id)
+    if (next.length === this.permissionRules.length) {
+      throw new ContractError('INVALID_INPUT', `no saved rule with id "${String(input.id)}"`)
+    }
+    this.permissionRules = next
+    return this.permissionRuleSet()
   }
 
   async pickDirectory(): Promise<string | null> {
@@ -915,6 +1043,8 @@ export class MockCodexApi implements CodexApi {
   // The real fields live in the kernel's settings.json; the mock keeps the same
   // shape so the panel is identical in both bridges.
 
+  private memoryAutoExtract = false
+  private questionAutoContinue = true
   private mockNetwork = {
     proxy: '',
     idleTimeoutMs: 300_000,
@@ -965,6 +1095,64 @@ export class MockCodexApi implements CodexApi {
 
   private static bucket(key: string): UsageBucket {
     return { key, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+  }
+
+  async getUsageStats(): Promise<GlobalUsageStats> {
+    // Same numbers the per-session ledger reports, pooled: the demo has no
+    // observability log, so the report is derived from the fixture transcript
+    // rather than claiming zeros that would look like a broken feature.
+    const calls = [...this.sessions.values()].reduce(
+      (sum, session) => sum + session.messages.filter((m) => m.role === 'assistant').length,
+      0
+    )
+    const input = calls * 6_400
+    const output = calls * 420
+    const bucket = {
+      key: 'all',
+      calls,
+      input,
+      output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      total: input + output,
+      failed: 0
+    }
+    return {
+      generatedAt: Date.now(),
+      hasData: calls > 0,
+      totals: bucket,
+      byModel: calls > 0 ? [{ ...bucket, key: 'mock/model', cost: 0 }] : [],
+      byCallSource: calls > 0 ? [{ ...bucket, key: 'chat' }] : [],
+      byDay: [],
+      toolCalls: 0,
+      toolCallsByTool: [],
+      sessions: this.sessions.size
+    }
+  }
+
+  async getMemorySettings(): Promise<MemorySettings> {
+    return { autoExtract: this.memoryAutoExtract }
+  }
+
+  async setMemoryAutoExtract(input: SetMemoryAutoExtractInput): Promise<MemorySettings> {
+    if (typeof input?.autoExtract !== 'boolean') {
+      throw new ContractError('INVALID_INPUT', 'autoExtract must be a boolean')
+    }
+    this.memoryAutoExtract = input.autoExtract
+    return { autoExtract: this.memoryAutoExtract }
+  }
+
+  async getQuestionSettings(): Promise<QuestionSettings> {
+    return { autoContinue: this.questionAutoContinue, timeoutMs: 5 * 60 * 1000 }
+  }
+
+  async setQuestionAutoContinue(input: SetQuestionAutoContinueInput): Promise<QuestionSettings> {
+    if (typeof input?.autoContinue !== 'boolean') {
+      throw new ContractError('INVALID_INPUT', 'autoContinue must be a boolean')
+    }
+    this.questionAutoContinue = input.autoContinue
+    return { autoContinue: this.questionAutoContinue, timeoutMs: 5 * 60 * 1000 }
   }
 
   async sessionUsage(sessionId: SessionId): Promise<UsageReport> {
@@ -1185,6 +1373,14 @@ export class MockCodexApi implements CodexApi {
       servers.push({ key: `user:${name}`, source: 'user', type: config.type, connected: true, toolCount: 0 })
     }
     return servers
+  }
+
+  async listPluginMcpServerOverrides(): Promise<PluginMcpServerOverrides> {
+    return {}
+  }
+
+  async setPluginMcpServerEnabled(_input: { key: string; enabled: boolean }): Promise<PluginMcpServerOverrides> {
+    return {}
   }
 
   subscribeMcpStatus(listener: (event: McpServerStatusEvent) => void): () => void {

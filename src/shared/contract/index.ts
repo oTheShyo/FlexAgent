@@ -7,6 +7,7 @@
  * - Transport (mock / Electron IPC / anything else) is disposable.
  * - PI (@earendil-works) types must NOT leak into this file.
  */
+import type { ReasoningEffort } from '../reasoningEffort'
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
 
@@ -45,6 +46,12 @@ export interface SessionSummary {
   createdAt: number
   updatedAt: number
   runState: RunState
+  /**
+   * Archived sessions stay in the registry but leave the main list.
+   * Optional so a pre-`archived` sessions.json still loads; readers treat a
+   * missing value as `false` rather than as a third state.
+   */
+  archived?: boolean
 }
 
 export interface SessionDetail {
@@ -172,6 +179,25 @@ export interface SetSessionCwdInput {
 }
 
 /**
+ * User-set display name, persisted in the registry (not a UI-only overlay, so
+ * it survives a restart and a second window). Rejects blank titles — a session
+ * must always have something to show.
+ */
+export interface RenameSessionInput {
+  sessionId: SessionId
+  title: string
+}
+
+/**
+ * Archive (or restore). Archived is not deleted: the transcript and the
+ * registry record both stay, the session only leaves the main list.
+ */
+export interface SetSessionArchivedInput {
+  sessionId: SessionId
+  archived: boolean
+}
+
+/**
  * How a prompt attaches to an in-flight run (PI: prompt() must choose when streaming).
  * - Kernel behavior when `runState === 'idle'`: mode is ignored; run starts (`disposition: 'started'`).
  * - When `runState === 'running'`:
@@ -233,16 +259,57 @@ export interface SetPermissionModeInput {
   mode: PermissionMode
 }
 
+/** One selectable answer to an agent question (issue 10). */
+export interface QuestionOption {
+  id: string
+  label: string
+  description?: string
+}
+
+export interface RespondQuestionInput {
+  sessionId: SessionId
+  questionId: string
+  /** The chosen option's id, or free text when the user typed instead. */
+  answer: string
+}
+
+/**
+ * Stop the countdown for one question, permanently. Sent as soon as the user
+ * touches the question at all — hovering counts — because a timer that resumes
+ * is a timer that can answer on their behalf (issue 10).
+ */
+export interface StopQuestionTimerInput {
+  sessionId: SessionId
+  questionId: string
+}
+
 export type PermissionRuleAction = 'allow' | 'deny' | 'ask'
 
 /**
- * One ordered rule. Matching is first-hit-wins across the ordered list: the
- * first rule whose `tool` matches (and whose optional `command`/`path`
+ * How far a rule reaches. `global` is the original meaning of a rule (every
+ * workspace); `project` additionally requires the call to happen inside the
+ * project recorded in `projectPath`. Absent means `global`, so a rule file
+ * written before scopes existed keeps behaving the same way.
+ */
+export type PermissionRuleScope = 'global' | 'project'
+
+/** Who wrote a rule. Only `user` rules are removable from the settings list. */
+export type PermissionRuleOrigin = 'builtin' | 'user'
+
+/**
+ * One ordered rule. Matching is first-hit-wins *within one action class*,
+ * and the classes are collected deny → ask → allow (see `permissionGate.ts`):
+ * the first rule whose `tool` matches (and whose optional `command`/`path`
  * predicates also match) decides the call. Order beats specificity on purpose —
  * numbered priorities are unmaintainable once a few dozen rules exist.
+ *
+ * Two rules that both match a call but disagree on the outcome never depend on
+ * their position in the file: a refusal always wins, and an explicit "ask"
+ * outranks an allow. That is what makes a user-written deny able to survive an
+ * earlier built-in allow.
  */
 export interface PermissionRule {
-  /** Stable tag, shown in the read-only rule list. */
+  /** Stable tag, shown in the read-only rule list; used as the revoke handle. */
   id?: string
   /** Tool-name matcher; `*` matches any tool. Omit to match every tool. */
   tool?: string
@@ -253,6 +320,44 @@ export interface PermissionRule {
   action: PermissionRuleAction
   /** Why this rule exists — surfaced in the UI and the dialog reason. */
   note?: string
+  /** v1.19: reach of the rule. Absent = `global` (pre-existing semantics). */
+  scope?: PermissionRuleScope
+  /**
+   * v1.19: cwd the rule belongs to, recorded for `scope: 'project'` rules so a
+   * rule made in one checkout does not follow the user into a sibling clone.
+   * Ignored unless `scope` is `'project'`.
+   */
+  projectPath?: string
+  /** v1.19: when the rule was authored, ms epoch. Absent for pre-v1.19 files. */
+  createdAt?: number
+  /** v1.19: absent on purpose — the loader fills `'user'` for file rules. */
+  origin?: PermissionRuleOrigin
+}
+
+/**
+ * A rule authored from the confirmation dialog: the matchers are derived from
+ * the call the user is looking at, so the caller only has to say which call and
+ * how far the resulting rule should reach.
+ */
+export interface SavePermissionRuleInput {
+  /** Tool name of the call being approved or refused. */
+  tool: string
+  /** Raw call arguments — the matchers are derived from them in main. */
+  args: Record<string, unknown>
+  /**
+   * Session the decision belongs to. Main resolves it to the session cwd, which
+   * is what a `project` rule anchors to — the renderer is not trusted to know
+   * which directory a rule was made in.
+   */
+  sessionId: SessionId
+  scope: PermissionRuleScope
+  action: Exclude<PermissionRuleAction, 'ask'>
+  /** Why the user chose this; stored verbatim for the settings list. */
+  note?: string
+}
+
+export interface RemovePermissionRuleInput {
+  id: string
 }
 
 export interface PermissionRuleSet {
@@ -328,6 +433,13 @@ export interface ApplyFileChangesResult {
 /** PI thinking levels (session-scoped; clamped to model capability on set). */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/**
+ * Reasoning-effort tiers (低/高/最高) and their capability-driven mapping onto
+ * thinking levels — implemented in `../reasoningEffort`, re-exported here so
+ * every consumer reaches the seam the same way it reaches `ThinkingLevel`.
+ */
+export * from '../reasoningEffort'
+
 /** Minimal model identity exposed to the UI (no PI types). */
 export interface ModelOption {
   provider: string
@@ -341,6 +453,12 @@ export interface ModelConfig {
   /** `null` when the session has no model selected yet. */
   model: ModelOption | null
   thinkingLevel: ThinkingLevel
+  /**
+   * Tier (低/高/最高) the current level resolves to on this model — `null`
+   * when the level is `off`, no model is selected, or the level sits outside
+   * the tier set (raw level picked in the advanced menu).
+   */
+  effort: ReasoningEffort | null
   /** Levels the current model accepts (PI `getAvailableThinkingLevels`). Omitted when no model. */
   availableThinkingLevels?: ThinkingLevel[]
 }
@@ -584,6 +702,40 @@ export interface UsageReport {
   byModel: UsageBucket[]
 }
 
+/** One row of the app-wide usage report (issue 09). */
+export interface GlobalUsageBucket extends UsageBucket {
+  /** input + output + cacheRead + cacheWrite — what the user pays for. */
+  total: number
+  /** Calls that did not succeed (`ok: false`). */
+  failed: number
+}
+
+/**
+ * App-wide usage, aggregated offline from the observability NDJSON (issue 09).
+ * Deliberately not a live counter: it is a report over what was recorded, so it
+ * cannot disagree with the event log.
+ */
+export interface GlobalUsageStats {
+  generatedAt: number
+  /** False when nothing has been recorded yet — the UI shows a guided empty state. */
+  hasData: boolean
+  totals: GlobalUsageBucket
+  byModel: GlobalUsageBucket[]
+  /**
+   * The axis that answers "what did turning this feature on cost me": chat,
+   * compaction, permission_classifier, memory_dedupe, memory_extract, role_task.
+   */
+  byCallSource: GlobalUsageBucket[]
+  /** UTC days, oldest first. */
+  byDay: GlobalUsageBucket[]
+  toolCalls: number
+  toolCallsByTool: { name: string; count: number }[]
+  /** Distinct sessions seen in the log. */
+  sessions: number
+  firstTs?: number
+  lastTs?: number
+}
+
 // ─── Plugins (v1.4) ──────────────────────────────────────────────────────────
 
 /** Stable plugin identity: `${name}@${source}`. */
@@ -675,7 +827,10 @@ export interface SlashCommandSummary {
 
 // ─── User-level MCP servers (v1.8) ───────────────────────────────────────────
 
-export type UserMcpTransport = 'stdio' | 'http'
+export type UserMcpTransport = 'stdio' | 'http' | 'sse'
+
+/** User enable/disable flips for plugin-declared MCP servers, keyed by bridge key. */
+export type PluginMcpServerOverrides = Record<string, { enabled: boolean }>
 
 /**
  * One entry of the user-level `~/.flexagent/mcp.json` (`mcpServers` map).
@@ -991,6 +1146,37 @@ export interface MemoryCard {
  * describing the agent rather than the user). Rejections surface as errors;
  * warnings are the band where the caller may know better than the linter.
  */
+/**
+ * Settings for the automatic memory pass (issue 15).
+ *
+ * Off by default, matching ZCode: the pass costs an extra model call per turn,
+ * so it is opt-in rather than a surprise on the user's bill. Flipping it only
+ * affects sessions created afterwards — a run already in flight keeps the
+ * setting it was created with, because re-deciding mid-run would make the same
+ * conversation behave differently halfway through.
+ */
+export interface MemorySettings {
+  autoExtract: boolean
+}
+
+export interface SetMemoryAutoExtractInput {
+  autoExtract: boolean
+}
+
+export interface QuestionSettings {
+  /**
+   * When the agent asks a question and the user has not answered, continue
+   * without an answer once the countdown expires (issue 10).
+   */
+  autoContinue: boolean
+  /** Countdown length in ms for newly created questions. */
+  timeoutMs: number
+}
+
+export interface SetQuestionAutoContinueInput {
+  autoContinue: boolean
+}
+
 export interface MemoryWriteReceipt {
   id: string
   warnings: string[]
@@ -1149,6 +1335,35 @@ export type KernelEvent =
    * Full replacement snapshot, not a delta.
    */
   | (EventMeta & { type: 'file_changes'; files: FileChange[] })
+  /**
+   * The agent is asking the user a question and is blocked on the answer
+   * (issue 10). Distinct from `permission_request`: this one has a countdown and
+   * can resolve itself, and it asks about intent rather than about permission.
+   */
+  | (EventMeta & {
+      type: 'question_request'
+      questionId: string
+      /** The question, verbatim from the tool call. */
+      prompt: string
+      options: QuestionOption[]
+      /**
+       * Countdown length for *this* question, captured when it was created —
+       * changing the setting later must not retime a question already on screen.
+       * 0 means no countdown: it waits until answered.
+       */
+      timeoutMs: number
+      autoContinue: boolean
+    })
+  /**
+   * The question is settled: answered, timed out, or discarded (session
+   * disposed). The UI shows the outcome in the transcript when nobody answered.
+   */
+  | (EventMeta & {
+      type: 'question_resolved'
+      questionId: string
+      outcome: 'answered' | 'timeout' | 'cancelled'
+      answer?: string
+    })
   /** Async failure during a run. Run may still settle afterward. */
   | (EventMeta & {
       type: 'error'
@@ -1215,6 +1430,10 @@ export interface CodexApi {
    * against the workspace). The transcript is preserved.
    */
   setSessionCwd(input: SetSessionCwdInput): Promise<SessionSummary>
+  /** Persist a user-set title. Throws INVALID_INPUT on a blank title. */
+  renameSession(input: RenameSessionInput): Promise<SessionSummary>
+  /** Archive or restore a session. Both are persisted, neither deletes. */
+  setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
 
   /**
    * Submit user text. Resolves when accepted (not when the run finishes).
@@ -1226,6 +1445,10 @@ export interface CodexApi {
   abort(sessionId: SessionId): Promise<void>
 
   /** Answer a pending `permission_request`. */
+  /** Answer a pending `question_request`. Never blocked by a countdown. */
+  respondQuestion(input: RespondQuestionInput): Promise<void>
+  /** Stop one question's countdown for good (any interaction counts). */
+  stopQuestionTimer(input: StopQuestionTimerInput): Promise<void>
   respondPermission(input: RespondPermissionInput): Promise<void>
 
   /**
@@ -1258,6 +1481,14 @@ export interface CodexApi {
   setPermissionMode(input: SetPermissionModeInput): Promise<PermissionMode>
   /** Ordered rule set actually in force (heuristics + user rules), for display. */
   listPermissionRules(): Promise<PermissionRuleSet>
+  /**
+   * Persist one rule derived from a call the user just answered (v1.19). The
+   * rule takes effect on the next evaluation — the gate re-reads the file per
+   * call, so nothing has to be pushed to the running session.
+   */
+  savePermissionRule(input: SavePermissionRuleInput): Promise<PermissionRuleSet>
+  /** Drop one previously saved rule. Built-ins have no id to remove. */
+  removePermissionRule(input: RemovePermissionRuleInput): Promise<PermissionRuleSet>
 
   /** Available models (provider auth OK). Not session-scoped. */
   listModels(): Promise<ModelOption[]>
@@ -1291,6 +1522,14 @@ export interface CodexApi {
   setNetworkSettings(input: SetNetworkInput): Promise<NetworkSettings>
   /** Where one session's tokens went, split by purpose and by model. */
   sessionUsage(sessionId: SessionId): Promise<UsageReport>
+  /** Automatic memory pass settings (off by default). */
+  getMemorySettings(): Promise<MemorySettings>
+  setMemoryAutoExtract(input: SetMemoryAutoExtractInput): Promise<MemorySettings>
+  /** App-wide usage, aggregated offline from the observability log (issue 09). */
+  getUsageStats(): Promise<GlobalUsageStats>
+  /** Question countdown settings (issue 10). */
+  getQuestionSettings(): Promise<QuestionSettings>
+  setQuestionAutoContinue(input: SetQuestionAutoContinueInput): Promise<QuestionSettings>
 
   /** Installed plugins (local + bundled). Not session-scoped. */
   listPlugins(): Promise<PluginSummary[]>
@@ -1325,6 +1564,10 @@ export interface CodexApi {
   toggleUserMcpServer(name: string, enabled: boolean): Promise<UserMcpServerSummary[]>
   /** Last known bridge status (tool counts / errors). Empty until the worker first attached. */
   listMcpServerStatus(): Promise<McpServerStatusEntry[]>
+  /** User enable/disable flips for plugin-declared MCP servers (issue 23). */
+  listPluginMcpServerOverrides(): Promise<PluginMcpServerOverrides>
+  /** Flip one plugin MCP server; reloads the bridge. Returns the updated overrides. */
+  setPluginMcpServerEnabled(input: { key: string; enabled: boolean }): Promise<PluginMcpServerOverrides>
   /**
    * Subscribe to MCP bridge status updates (global, outside `KernelEvent`/`seq`).
    * Returns unsubscribe.
@@ -1383,9 +1626,13 @@ export const IPC = {
   deleteSession: 'codex:deleteSession',
   scratchCwd: 'codex:scratchCwd',
   setSessionCwd: 'codex:setSessionCwd',
+  renameSession: 'codex:renameSession',
+  setSessionArchived: 'codex:setSessionArchived',
   prompt: 'codex:prompt',
   abort: 'codex:abort',
   respondPermission: 'codex:respondPermission',
+  respondQuestion: 'codex:respondQuestion',
+  stopQuestionTimer: 'codex:stopQuestionTimer',
   terminalCreate: 'codex:terminalCreate',
   terminalInput: 'codex:terminalInput',
   terminalResize: 'codex:terminalResize',
@@ -1399,6 +1646,8 @@ export const IPC = {
   setPermissionMode: 'codex:setPermissionMode',
   getPermissionMode: 'codex:getPermissionMode',
   listPermissionRules: 'codex:listPermissionRules',
+  savePermissionRule: 'codex:savePermissionRule',
+  removePermissionRule: 'codex:removePermissionRule',
   listCustomModels: 'codex:listCustomModels',
   customModelsPath: 'codex:customModelsPath',
   saveCustomModel: 'codex:saveCustomModel',
@@ -1408,6 +1657,11 @@ export const IPC = {
   getNetworkSettings: 'codex:getNetworkSettings',
   setNetworkSettings: 'codex:setNetworkSettings',
   sessionUsage: 'codex:sessionUsage',
+  getMemorySettings: 'codex:getMemorySettings',
+  setMemoryAutoExtract: 'codex:setMemoryAutoExtract',
+  getUsageStats: 'codex:getUsageStats',
+  getQuestionSettings: 'codex:getQuestionSettings',
+  setQuestionAutoContinue: 'codex:setQuestionAutoContinue',
   listSkillHubs: 'codex:listSkillHubs',
   addSkillHub: 'codex:addSkillHub',
   removeSkillHub: 'codex:removeSkillHub',
@@ -1447,6 +1701,9 @@ export const IPC = {
   removeUserMcpServer: 'codex:removeUserMcpServer',
   toggleUserMcpServer: 'codex:toggleUserMcpServer',
   listMcpServerStatus: 'codex:listMcpServerStatus',
+  /** Plugin MCP server enable/disable overrides (issue 23). */
+  listPluginMcpServerOverrides: 'codex:listPluginMcpServerOverrides',
+  setPluginMcpServerEnabled: 'codex:setPluginMcpServerEnabled',
   /** main → renderer push for McpServerStatusEvent (global, per webContents). */
   mcpStatusChanged: 'codex:mcpStatusChanged',
   /** Frameless window chrome (TitleBar). */
