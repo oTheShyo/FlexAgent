@@ -41,7 +41,6 @@ export const COMPOSER_FILES: readonly string[] = [
   'src/renderer/src/hooks/useMarketplace.ts',
   'src/renderer/src/hooks/usePlugins.ts',
   'src/renderer/src/lib/formatWhen.ts',
-  'src/renderer/src/lib/sessionMeta.ts',
   'src/renderer/src/lib/shapes.ts',
   'src/renderer/src/lib/shortcuts.ts',
   'src/renderer/src/lib/theme.ts',
@@ -58,15 +57,46 @@ export const COMPOSER_FILES: readonly string[] = [
 
 export const MENTION_EMPTY_LIMIT = 8
 
-export function filterComposerFiles(query: string): string[] {
+export function filterComposerFiles(
+  query: string,
+  files: readonly string[] = COMPOSER_FILES
+): string[] {
   const q = query.trim().toLowerCase()
-  if (q.length === 0) return COMPOSER_FILES.slice(0, MENTION_EMPTY_LIMIT)
+  if (q.length === 0) return files.slice(0, MENTION_EMPTY_LIMIT)
   const prefix: string[] = []
   const substring: string[] = []
-  for (const path of COMPOSER_FILES) {
+  for (const path of files) {
     const lower = path.toLowerCase()
     if (lower.startsWith(q)) prefix.push(path)
     else if (lower.includes(q)) substring.push(path)
   }
   return [...prefix, ...substring]
+}
+
+/**
+ * Caching wrapper over the filter above.
+ *
+ * The list is a static fixture today, so the cache costs nothing and proves
+ * nothing yet — it is the seam the real source plugs into. When `listFiles`
+ * lands (see `## Blocked by (new)` in the ticket) the scan goes from "filter
+ * 53 strings" to "walk a repo", and this is the one place that has to change.
+ * The cached array is returned by identity so a repeated query cannot produce a
+ * fresh list and re-render the popup for no reason.
+ */
+export interface ComposerFileIndex {
+  query(rawQuery: string): string[]
+}
+
+export function createComposerFileIndex(files: readonly string[] = COMPOSER_FILES): ComposerFileIndex {
+  const cache = new Map<string, string[]>()
+  return {
+    query(rawQuery: string): string[] {
+      const key = rawQuery.trim().toLowerCase()
+      const cached = cache.get(key)
+      if (cached !== undefined) return cached
+      const result = filterComposerFiles(key, files)
+      cache.set(key, result)
+      return result
+    }
+  }
 }

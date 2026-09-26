@@ -213,8 +213,25 @@ export function buildAttachmentBlock(attachments: readonly StagedAttachment[]): 
     .join('\n')
 }
 
-export function composePrompt(text: string, attachments: readonly StagedAttachment[]): string {
-  if (attachments.length === 0) return text
-  const block = buildAttachmentBlock(attachments)
-  return text.length === 0 ? block : `${text}\n\n${block}`
+/**
+ * Composes the text the kernel receives: the draft, then the inlined files,
+ * then the reference block the user picked (`@`/selection/`#`) — passed in
+ * already formatted by `formatReferencesBlock`, so this module stays about
+ * attachments and the reference module stays about references.
+ *
+ * References sit last on purpose: the draft stays a readable sentence and the
+ * block behind it cannot be mistaken for something the user typed. With no
+ * reference block the output is byte-identical to the two-argument form.
+ */
+export function composePrompt(
+  text: string,
+  attachments: readonly StagedAttachment[],
+  referenceBlock?: string
+): string {
+  const parts: string[] = []
+  if (text.length > 0) parts.push(text)
+  if (attachments.length > 0) parts.push(buildAttachmentBlock(attachments))
+  if (referenceBlock !== undefined && referenceBlock.trim().length > 0) parts.push(referenceBlock)
+  if (parts.length === 0) return ''
+  return parts.join('\n\n')
 }
