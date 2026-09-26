@@ -22,6 +22,10 @@ await build({
   format: 'esm',
   platform: 'node',
   target: 'node20',
+  // `electron` is only resolvable inside the app. Leaving it out means the
+  // vault finds no safeStorage and takes its documented hv1 fallback — which is
+  // exactly what this script is entitled to, it only asks what got persisted.
+  external: ['electron'],
   logLevel: 'error'
 })
 
@@ -41,7 +45,7 @@ const stored = JSON.parse(readFileSync(join(process.env.USERPROFILE, '.flexagent
 console.log('--- what landed in mcp.json ---')
 console.log(JSON.stringify(stored, null, 2))
 
-const listed = service.list()
+const listed = await service.list()
 console.log('\n--- what list() returns ---')
 console.log(JSON.stringify(listed, null, 2))
 

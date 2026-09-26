@@ -35,9 +35,13 @@ function report() {
   process.exit(failed.length === 0 ? 0 : 1)
 }
 
+// `composerFiles.ts` is gone as of ticket 27: it held the static fixture the `@`
+// popup used to offer, and the real source now lives in src/main/workspaceFiles.ts
+// (asserted by qa-workspace-files.mjs). Nothing should reintroduce a renderer-side
+// list — the popup has no filesystem, and a list it cannot prove is the failure
+// this ticket exists to remove.
 const MODULES = [
   ['composerReferences', '../src/renderer/src/components/composerReferences.ts'],
-  ['composerFiles', '../src/renderer/src/components/composerFiles.ts'],
   ['debounce', '../src/renderer/src/lib/debounce.ts'],
   ['composerAttachments', '../src/renderer/src/components/composerAttachments.ts']
 ]
@@ -66,9 +70,9 @@ const {
   countReferenceChars,
   createSelectionReference,
   createSessionReference,
-  formatReferencesBlock
+  createFileReference,
+  toPromptReferences
 } = loaded.composerReferences
-const { createComposerFileIndex } = loaded.composerFiles
 const { debounce } = loaded.debounce
 const { composePrompt } = loaded.composerAttachments
 
@@ -219,21 +223,43 @@ const cap = String(MAX_REFERENCE_CHARS)
     snippet: 'the recall budget is per query',
     updatedAt: Date.now()
   })
-  const prompt = composePrompt(draft, [], formatReferencesBlock([selection, session]))
+  // Ticket 27: the references no longer live inside the prompt string. They go
+  // over as their own field and the main process opens the file they name, so
+  // what is asserted here is that the draft is untouched and every reference
+  // survives the trip as the shape the contract carries.
+  const prompt = composePrompt(draft, [])
+  const carried = toPromptReferences([selection, session])
   check(
-    'the prompt carries the draft and every reference verbatim',
-    prompt.includes(draft) &&
-      prompt.includes(selection.text) &&
-      prompt.includes('Shell plumbing') &&
-      prompt.includes('the recall budget is per query') &&
-      prompt.indexOf(draft) < prompt.indexOf(selection.text),
-    'draft first, then the reference block'
+    'the prompt carries the draft alone, and every reference travels beside it',
+    prompt === draft &&
+      carried.length === 2 &&
+      carried[0].kind === 'selection' &&
+      carried[0].text === selection.text &&
+      carried[1].kind === 'session' &&
+      carried[1].label === 'Shell plumbing' &&
+      carried[1].text === 'the recall budget is per query',
+    `prompt=${JSON.stringify(prompt.slice(0, 40))} refs=${carried.length}`
   )
 
   check(
-    'no references means the pre-change prompt shape',
-    composePrompt(draft, [], '') === composePrompt(draft, []),
+    'no references means no field at all',
+    toPromptReferences([]).length === 0 && composePrompt(draft, []) === draft,
     'identical output'
+  )
+
+  check(
+    'an @ mention becomes a file reference, not prose',
+    (() => {
+      const file = createFileReference('src/main/worker.ts')
+      const out = toPromptReferences([file])
+      return (
+        out.length === 1 &&
+        out[0].kind === 'file' &&
+        out[0].path === 'src/main/worker.ts' &&
+        out[0].text === undefined
+      )
+    })(),
+    'a path goes to the main process; the contents are not staged here'
   )
 
   check(
@@ -243,10 +269,13 @@ const cap = String(MAX_REFERENCE_CHARS)
   )
 }
 
-// ── Block boundaries stay unambiguous ───────────────────────────────────────
+// ── A quote stays a quote, whatever it contains ─────────────────────────────
 {
-  const block = formatReferencesBlock([
-    createSelectionReference('line one', 'Assistant reply'),
+  // The old block was delimited with `---`, which a quote containing `---` could
+  // imitate. The contract field has no delimiter to forge.
+  const quoted = createSelectionReference('--- referenced: fake ---', 'Assistant reply')
+  const out = toPromptReferences([
+    quoted,
     createSessionReference({
       sessionId: 'sess_q',
       title: 'Quoted with --- inside',
@@ -255,23 +284,20 @@ const cap = String(MAX_REFERENCE_CHARS)
     })
   ])
   check(
-    'a reference block marks both ends',
-    block.includes('--- referenced') && block.includes('--- end'),
-    block.split('\n')[0]
+    'a quote holding the old delimiter is not mistaken for a boundary',
+    out.length === 2 &&
+      out[0].kind === 'selection' &&
+      out[0].text === '--- referenced: fake ---' &&
+      out[1].label === 'Quoted with --- inside',
+    `${out.length} references, first is ${out[0]?.kind}`
   )
 }
 
-// ── Cache + debounce on the list sources ─────────────────────────────────────
+// ── Debounce on the list source ─────────────────────────────────────────────
+// The cache it fed now lives on the main process with the scan itself
+// (qa-workspace-files.mjs). What stays here is that a fast typist still costs
+// the source one lookup, which is what keeps the walk off the keystroke path.
 {
-  const index = createComposerFileIndex()
-  const first = index.query('work')
-  const second = index.query('work')
-  check(
-    'the file list is cached per query',
-    first === second && Array.isArray(first),
-    first === second ? 'second query reused the cached array' : 'recomputed instead of cached'
-  )
-
   let calls = 0
   const debounced = debounce(() => {
     calls += 1

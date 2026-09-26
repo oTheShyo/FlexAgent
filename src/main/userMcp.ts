@@ -408,9 +408,9 @@ export class UserMcpService {
 function toPluginConfig(config: UserMcpServerConfig): PluginMcpServerConfig {
   const expose = config.expose === 'direct' ? ({ expose: 'direct' } as const) : {}
   const inherit = config.envInherit === true ? ({ envInherit: true } as const) : {}
-  if (config.type === 'http') {
+  if (config.type === 'http' || config.type === 'sse') {
     return {
-      type: 'http',
+      type: config.type,
       url: config.url ?? '',
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
       env: {},

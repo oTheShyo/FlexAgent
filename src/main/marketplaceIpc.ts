@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain } from './ipcGuard'
 import {
   ContractError,
   CONTRACT_ERROR_CODES,
