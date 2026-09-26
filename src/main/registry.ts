@@ -13,6 +13,10 @@ export interface RegistryRecord {
   updatedAt: number
   runState: RunState
   piSessionFile?: string
+  /** Persisted in the registry, not in the renderer: a rename is data. */
+  archived?: boolean
+  /** When the title last stopped being the cwd-derived default. */
+  renamedAt?: number
 }
 
 interface PersistShape {
@@ -96,6 +100,11 @@ export class SessionRegistry {
         this.records.set(rec.id, {
           ...rec,
           runState: 'idle',
+          // Registries written before rename/archive existed simply lack the
+          // fields; reading them as "not archived, default title" is the only
+          // interpretation that does not invent history.
+          archived: rec.archived === true,
+          title: typeof rec.title === 'string' && rec.title.trim() ? rec.title : defaultTitle(rec.cwd),
           updatedAt: Number(rec.updatedAt) || Number(rec.createdAt) || Date.now(),
           createdAt: Number(rec.createdAt) || Date.now()
         })
@@ -173,6 +182,34 @@ export class SessionRegistry {
     return rec
   }
 
+  /**
+   * User-set title. Persisted in the registry so a second window — or the same
+   * window after a restart — shows the same name; a renderer-only overlay
+   * could not, which is what this replaces.
+   */
+  setTitle(id: SessionId, title: string): RegistryRecord {
+    const trimmed = title.trim()
+    if (!trimmed) {
+      throw new ContractError('INVALID_INPUT', 'title must be a non-empty string')
+    }
+    const rec = this.require(id)
+    rec.title = trimmed.slice(0, MAX_TITLE)
+    rec.renamedAt = Date.now()
+    rec.updatedAt = Date.now()
+    this.persist()
+    return rec
+  }
+
+  /** Archive or restore. The record and its transcript are kept either way. */
+  setArchived(id: SessionId, archived: boolean): RegistryRecord {
+    const rec = this.require(id)
+    if (rec.archived === archived) return rec
+    rec.archived = archived
+    rec.updatedAt = Date.now()
+    this.persist()
+    return rec
+  }
+
   attachPiSession(id: SessionId, piSessionFile: string): void {
     const rec = this.require(id)
     rec.piSessionFile = piSessionFile
@@ -208,6 +245,7 @@ function toSummary(rec: RegistryRecord): SessionSummary {
     cwd: rec.cwd,
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
-    runState: rec.runState
+    runState: rec.runState,
+    archived: rec.archived === true
   }
 }

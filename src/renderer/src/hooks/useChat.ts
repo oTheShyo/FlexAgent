@@ -12,6 +12,7 @@ import {
   type PromptMode,
   type PromptReference,
   type SessionContextResult,
+  type QuestionOption,
   type RunState,
   type SessionSummary,
   type SlashCommandSummary,
@@ -35,6 +36,23 @@ export type ChatItem =
       summary?: string
     }
   | { kind: 'error'; code: ContractErrorCode; message: string }
+  /** A system note in the transcript, e.g. "question went unanswered". */
+  | { kind: 'notice'; text: string }
+
+/**
+ * A question the agent is waiting on (issue 10). Carries its own deadline so
+ * the panel can count down without asking the kernel every second.
+ */
+export interface QuestionNotice {
+  questionId: string
+  prompt: string
+  options: QuestionOption[]
+  /** 0 = no countdown: the question waits until answered. */
+  timeoutMs: number
+  autoContinue: boolean
+  /** Wall-clock deadline; null once stopped or when there is no countdown. */
+  expiresAt: number | null
+}
 
 export interface ModelRetryState {
   attempt: number
@@ -55,6 +73,12 @@ export interface UseChatResult {
   pendingPermission: PermissionRequest | null
   /** Live "model call failed, retrying" notice, or null. */
   modelRetry: ModelRetryState | null
+  /** Question awaiting an answer, or null. */
+  pendingQuestion: QuestionNotice | null
+  /** Answer it. Stops the countdown as a side effect of settling it. */
+  respondQuestion: (questionId: string, answer: string) => Promise<void>
+  /** Stop one question's countdown for good. */
+  stopQuestionTimer: (questionId: string) => Promise<void>
   send: (text: string, mode?: PromptMode, references?: PromptReference[]) => Promise<void>
   /** Ticket 27: files offered by the Composer `@` popup, for this session. */
   listWorkspaceFiles: (sessionId: string, query: string) => Promise<string[]>
@@ -72,6 +96,10 @@ export interface UseChatResult {
    * remaining session is opened instead. Resolves false when the call failed.
    */
   deleteSession: (sessionId: string) => Promise<boolean>
+  /** Persist a user-set title; resolves false when the write was rejected. */
+  renameSession: (sessionId: string, title: string) => Promise<boolean>
+  /** Persist archive/restore; resolves false when the write was rejected. */
+  setSessionArchived: (sessionId: string, archived: boolean) => Promise<boolean>
   /**
    * Start a chat that has no project yet — it runs in the scratch workspace, so
    * New chat never interrupts with a folder picker. Pass a cwd to skip that and
@@ -194,6 +222,7 @@ export function useChat(): UseChatResult {
   const [bindingProject, setBindingProject] = useState(false)
   /** Live kernel retry notice — the run is silent for up to ~1 min per cycle. */
   const [modelRetry, setModelRetry] = useState<ModelRetryState | null>(null)
+  const [pendingQuestion, setPendingQuestion] = useState<QuestionNotice | null>(null)
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -268,6 +297,7 @@ export function useChat(): UseChatResult {
       }
       case 'model_retry_end': {
         setModelRetry(null)
+      setPendingQuestion(null)
         break
       }
       case 'user_message': {
@@ -404,6 +434,32 @@ export function useChat(): UseChatResult {
         )
         break
       }
+      case 'question_request': {
+        const request = event
+        setPendingQuestion({
+          questionId: request.questionId,
+          prompt: request.prompt,
+          options: request.options,
+          timeoutMs: request.timeoutMs,
+          autoContinue: request.autoContinue,
+          expiresAt: request.timeoutMs > 0 ? Date.now() + request.timeoutMs : null
+        })
+        break
+      }
+      case 'question_resolved': {
+        setPendingQuestion((prev) =>
+          prev !== null && prev.questionId === event.questionId ? null : prev
+        )
+        // The run continued on its own: the transcript has to say so, otherwise
+        // the next answer looks like it came out of nowhere.
+        if (event.outcome === 'timeout') {
+          setItems((prev) => [
+            ...prev,
+            { kind: 'notice', text: 'Question went unanswered — continuing automatically.' }
+          ])
+        }
+        break
+      }
       case 'file_changes': {
         setFiles(event.files)
         break
@@ -444,6 +500,7 @@ export function useChat(): UseChatResult {
       setItems([])
       setFiles([])
       setModelRetry(null)
+      setPendingQuestion(null)
       setPendingPermission(null)
       setHistoryLoading(true)
       try {
@@ -503,6 +560,7 @@ export function useChat(): UseChatResult {
       setItems([])
       setFiles([])
       setModelRetry(null)
+      setPendingQuestion(null)
       setPendingPermission(null)
       setRunState('idle')
       setHistoryLoading(true)
@@ -546,6 +604,7 @@ export function useChat(): UseChatResult {
         setItems([])
         setFiles([])
       setModelRetry(null)
+      setPendingQuestion(null)
         setPendingPermission(null)
         setRunState('idle')
         setModelConfig(null)
@@ -558,6 +617,45 @@ export function useChat(): UseChatResult {
       return true
     },
     [openSession, refreshSessions]
+  )
+
+  /**
+   * Rename is a registry write, not a kernel call, so it is safe while a run is
+   * in flight. The list is re-read afterwards: the sidebar then shows what the
+   * registry holds rather than an optimistic title that a rejected write would
+   * leave lying about the session's name.
+   */
+  const renameSession = useCallback(
+    async (sessionId: string, title: string): Promise<boolean> => {
+      try {
+        await codexApi.renameSession({ sessionId, title })
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return false
+      }
+      await refreshSessions()
+      return true
+    },
+    [refreshSessions]
+  )
+
+  /**
+   * Archive or restore. Archiving the open session is allowed — the sidebar
+   * keeps the active row visible — and unlike delete it touches nothing else:
+   * transcript, registry record and model binding all survive.
+   */
+  const setSessionArchived = useCallback(
+    async (sessionId: string, archived: boolean): Promise<boolean> => {
+      try {
+        await codexApi.setSessionArchived({ sessionId, archived })
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return false
+      }
+      await refreshSessions()
+      return true
+    },
+    [refreshSessions]
   )
 
   const newChat = useCallback(
@@ -787,6 +885,40 @@ export function useChat(): UseChatResult {
     [pendingPermission]
   )
 
+  /** Answer the pending question. Settles it, so the countdown dies with it. */
+  const respondQuestion = useCallback(
+    async (questionId: string, answer: string): Promise<void> => {
+      const sessionId = activeIdRef.current
+      if (!sessionId) return
+      setPendingQuestion(null)
+      try {
+        await codexApi.respondQuestion({ sessionId, questionId, answer })
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+      }
+    },
+    []
+  )
+
+  /**
+   * Stop the countdown permanently. Any interaction counts — hover, click,
+   * typing — because a timer that can resume is a timer that can answer for the
+   * user. The question itself stays open.
+   */
+  const stopQuestionTimer = useCallback(async (questionId: string): Promise<void> => {
+    const sessionId = activeIdRef.current
+    if (!sessionId) return
+    setPendingQuestion((prev) =>
+      prev !== null && prev.questionId === questionId ? { ...prev, expiresAt: null } : prev
+    )
+    try {
+      await codexApi.stopQuestionTimer({ sessionId, questionId })
+    } catch {
+      // Failing to stop a timer must not disturb the question: the local
+      // deadline is already cleared, which is what the user sees.
+    }
+  }, [])
+
   const applyFiles = useCallback(
     async (fileChanges: FileChange[]): Promise<ApplyFileChangesResult | null> => {
       const sessionId = activeIdRef.current
@@ -842,10 +974,15 @@ export function useChat(): UseChatResult {
     respond,
     applyFiles,
     modelRetry,
+    pendingQuestion,
+    respondQuestion,
+    stopQuestionTimer,
     createSession,
     openSession,
     refreshSessions,
     deleteSession,
+    renameSession,
+    setSessionArchived,
     newChat,
     chooseProject,
     bindingProject,

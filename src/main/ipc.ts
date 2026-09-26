@@ -1,4 +1,5 @@
-import { BrowserWindow, app, dialog, ipcMain } from 'electron'
+import { BrowserWindow, app, dialog } from 'electron'
+import { ipcMain } from './ipcGuard'
 import type { MessageBoxOptions, WebContents } from 'electron'
 import { randomUUID } from 'crypto'
 import {
@@ -31,7 +32,14 @@ import {
   type UserMcpSaveInput,
   type WebEditKind
 } from '../shared/contract'
+import { collectUsageStats } from './usageStats'
 import { applyFileChanges } from './applyChanges'
+import {
+  readMemoryAutoExtract,
+  readQuestionSettings,
+  writeMemoryAutoExtract,
+  writeQuestionAutoContinue
+} from './settings'
 import type { KernelHost } from './kernel'
 import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
@@ -291,6 +299,101 @@ export function registerIpcHandlers(
   )
 
   ipcMain.handle(IPC.scratchCwd, () => guard(() => scratchCwd()))
+
+  ipcMain.handle(IPC.respondQuestion, (_e, input: { sessionId?: unknown; questionId?: unknown; answer?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (typeof input.questionId !== 'string' || !input.questionId) {
+        throw new ContractError('INVALID_INPUT', 'questionId is required')
+      }
+      if (typeof input.answer !== 'string' || !input.answer.trim()) {
+        throw new ContractError('INVALID_INPUT', 'answer is required')
+      }
+      await kernel.request({
+        type: 'respondQuestion',
+        sessionId: input.sessionId,
+        questionId: input.questionId,
+        answer: input.answer.trim()
+      })
+    })
+  )
+
+  ipcMain.handle(IPC.stopQuestionTimer, (_e, input: { sessionId?: unknown; questionId?: unknown }) =>
+    guard(async () => {
+      if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (typeof input.questionId !== 'string' || !input.questionId) {
+        throw new ContractError('INVALID_INPUT', 'questionId is required')
+      }
+      await kernel.request({
+        type: 'stopQuestionTimer',
+        sessionId: input.sessionId,
+        questionId: input.questionId
+      })
+    })
+  )
+
+  ipcMain.handle(IPC.getMemorySettings, () =>
+    guard(() => ({ autoExtract: readMemoryAutoExtract() }))
+  )
+
+  ipcMain.handle(IPC.setMemoryAutoExtract, (_e, input: { autoExtract?: unknown }) =>
+    guard(() => {
+      if (!input || typeof input.autoExtract !== 'boolean') {
+        throw new ContractError('INVALID_INPUT', 'autoExtract must be a boolean')
+      }
+      return { autoExtract: writeMemoryAutoExtract(input.autoExtract) }
+    })
+  )
+
+  ipcMain.handle(IPC.getUsageStats, () => guard(() => collectUsageStats()))
+
+  ipcMain.handle(IPC.getQuestionSettings, () => guard(() => readQuestionSettings()))
+
+  ipcMain.handle(IPC.setQuestionAutoContinue, (_e, input: { autoContinue?: unknown }) =>
+    guard(() => {
+      if (!input || typeof input.autoContinue !== 'boolean') {
+        throw new ContractError('INVALID_INPUT', 'autoContinue must be a boolean')
+      }
+      return { ...readQuestionSettings(), autoContinue: writeQuestionAutoContinue(input.autoContinue) }
+    })
+  )
+
+  // Rename and archive are registry writes, not kernel operations: the
+  // transcript is untouched, so neither needs the worker at all — which is why
+  // they can happen while a run is in flight.
+  ipcMain.handle(
+    IPC.renameSession,
+    (_e, input: { sessionId?: unknown; title?: unknown }) =>
+      guard(() => {
+        if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+          throw new ContractError('INVALID_INPUT', 'sessionId is required')
+        }
+        if (typeof input.title !== 'string' || !input.title.trim()) {
+          throw new ContractError('INVALID_INPUT', 'title is required')
+        }
+        return registry.summary(registry.setTitle(input.sessionId, input.title).id)
+      })
+  )
+
+  ipcMain.handle(
+    IPC.setSessionArchived,
+    (_e, input: { sessionId?: unknown; archived?: unknown }) =>
+      guard(() => {
+        if (!input || typeof input.sessionId !== 'string' || !input.sessionId) {
+          throw new ContractError('INVALID_INPUT', 'sessionId is required')
+        }
+        if (typeof input.archived !== 'boolean') {
+          throw new ContractError('INVALID_INPUT', 'archived must be a boolean')
+        }
+        return registry.summary(
+          registry.setArchived(input.sessionId, input.archived).id
+        )
+      })
+  )
 
   ipcMain.handle(IPC.setSessionCwd, (_e, input: { sessionId?: unknown; cwd?: unknown }) =>
     guard(async () => {

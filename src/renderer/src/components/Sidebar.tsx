@@ -1,13 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSearchHit, SessionSummary } from '../types'
 import { codexApi } from '../api'
-import {
-  countArchivedSessions,
-  displaySessionTitle,
-  setSessionMetaArchived,
-  setSessionMetaTitle,
-  useSessionMeta
-} from '../lib/sessionMeta'
 import { formatWhen } from '../lib/formatWhen'
 import { pathBasename, pathKey } from '../lib/paths'
 import { SessionListSkeleton } from './Skeleton'
@@ -40,6 +33,14 @@ export interface SidebarProps {
    */
   scratchCwd?: string | null
   onDelete?: (sessionId: string) => void
+  /**
+   * Persisted rename. Async on the caller's side (registry write + list
+   * refresh), so the row keeps showing the old title until the refresh lands —
+   * never an optimistic title that a failed write would leave behind.
+   */
+  onRenameSession?: (sessionId: string, title: string) => void
+  /** Persisted archive toggle (true = archive, false = restore). */
+  onSetArchived?: (sessionId: string, archived: boolean) => void
   loading?: boolean
   onOpenPlugins?: () => void
   pluginsActive?: boolean
@@ -262,6 +263,8 @@ function Sidebar({
   onSelect,
   scratchCwd = null,
   onDelete,
+  onRenameSession,
+  onSetArchived,
   loading = false,
   onOpenPlugins,
   pluginsActive = false,
@@ -271,7 +274,6 @@ function Sidebar({
   memoryActive = false,
   onOpenSettings
 }: SidebarProps) {
-  const meta = useSessionMeta()
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [menuId, setMenuId] = useState<string | null>(null)
@@ -293,9 +295,9 @@ function Sidebar({
     const target = renamingId
     if (target === null) return
     const trimmed = renameDraft.trim()
-    if (trimmed.length > 0) setSessionMetaTitle(target, trimmed)
+    if (trimmed.length > 0) onRenameSession?.(target, trimmed)
     setRenamingId(null)
-  }, [renamingId, renameDraft])
+  }, [renamingId, renameDraft, onRenameSession])
 
   const handleRenameKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -321,10 +323,13 @@ function Sidebar({
     commitRename()
   }, [commitRename])
 
-  const toggleArchive = useCallback((sessionId: string, archived: boolean): void => {
-    setSessionMetaArchived(sessionId, !archived)
-    setMenuId(null)
-  }, [])
+  const toggleArchive = useCallback(
+    (sessionId: string, archived: boolean): void => {
+      onSetArchived?.(sessionId, !archived)
+      setMenuId(null)
+    },
+    [onSetArchived]
+  )
 
   const requestDelete = useCallback((sessionId: string): void => {
     setConfirmDeleteId(sessionId)
@@ -425,13 +430,16 @@ function Sidebar({
     }
   }, [normalizedQuery, query])
 
-  const archivedCount = useMemo(() => countArchivedSessions(sessions, meta), [sessions, meta])
+  const archivedCount = useMemo(
+    () => sessions.filter((session) => session.archived === true).length,
+    [sessions]
+  )
 
   const visibleSessions = useMemo<SessionRowData[]>(() => {
     const rows: SessionRowData[] = []
     for (const session of sessions) {
-      const title = displaySessionTitle(session, meta)
-      const archived = meta[session.id]?.archived === true
+      const title = session.title
+      const archived = session.archived === true
       // Pin the active row so archiving the open session never hides it (no createSession side effect).
       const inView = showArchived ? archived : !archived || session.id === activeSessionId
       if (!inView) continue
@@ -439,7 +447,7 @@ function Sidebar({
       rows.push({ session, title, archived })
     }
     return rows
-  }, [sessions, meta, normalizedQuery, showArchived, activeSessionId])
+  }, [sessions, normalizedQuery, showArchived, activeSessionId])
 
   // sessionSearch.ts also matches titles, so a title-matched chat would render
   // twice (row above + History match) without this filter; hidden rows such as
@@ -539,8 +547,7 @@ function Sidebar({
 
   return (
       <aside className="fx-fade flex h-full w-64 shrink-0 flex-col bg-[var(--surface-sidebar)]">
-      <div className="flex items-center gap-2 px-4 pb-4 pt-4">
-        <img src="/logo-64.png" alt="" className="h-6 w-6 rounded-md object-cover" />
+      <div className="flex items-center px-4 pb-4 pt-4">
         <span className="text-sm font-semibold tracking-tight text-[var(--text)]">FlexAgent</span>
       </div>
 

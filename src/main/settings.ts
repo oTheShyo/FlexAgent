@@ -54,3 +54,46 @@ export function writeDefaultPermissionMode(mode: PermissionMode): PermissionMode
   writeSettings({ permission: { defaultPermissionMode: mode } })
   return mode
 }
+
+/**
+ * Automatic memory pass (issue 15). Default off — ZCode's default too: the
+ * extraction costs a model call per turn, and a user who did not ask for it
+ * should not be paying for it.
+ */
+export function readMemoryAutoExtract(): boolean {
+  const memory = readSettings()?.memory as { autoExtract?: unknown } | undefined
+  return memory?.autoExtract === true
+}
+
+export function writeMemoryAutoExtract(enabled: boolean): boolean {
+  const current = readSettings()?.memory
+  const memory = (current !== null && typeof current === 'object' && !Array.isArray(current)
+    ? current
+    : {}) as Record<string, unknown>
+  writeSettings({ memory: { ...memory, autoExtract: enabled } })
+  return enabled
+}
+
+/** Question countdown (issue 10). Default on, 5 minutes, matching ZCode. */
+export const DEFAULT_QUESTION_TIMEOUT_MS = 5 * 60 * 1000
+
+export function readQuestionSettings(): { autoContinue: boolean; timeoutMs: number } {
+  const raw = readSettings()?.question as
+    | { autoContinue?: unknown; timeoutMs?: unknown }
+    | undefined
+  const timeoutMs = raw?.timeoutMs
+  return {
+    autoContinue: raw?.autoContinue !== false,
+    timeoutMs:
+      typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : DEFAULT_QUESTION_TIMEOUT_MS
+  }
+}
+
+export function writeQuestionAutoContinue(enabled: boolean): boolean {
+  const current = readSettings()?.question
+  const question = (current !== null && typeof current === 'object' && !Array.isArray(current)
+    ? current
+    : {}) as Record<string, unknown>
+  writeSettings({ question: { ...question, autoContinue: enabled } })
+  return enabled
+}
