@@ -4,6 +4,7 @@ import { codexApi } from '../api'
 import type { PermissionRule, PermissionRuleSet, PermissionRuleScope } from '../types'
 
 const SCOPE_LABEL: Record<PermissionRuleScope, string> = {
+  session: 'this chat, until it ends',
   project: 'this project',
   global: 'every project'
 }

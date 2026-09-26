@@ -365,7 +365,19 @@ function ruleMatchesPath(rule: PermissionRule, paths: string[]): boolean {
  * silently become "allow `npm test` everywhere". Absent or `global` matches
  * every cwd, which is what a rule file written before this field existed means.
  */
-function ruleMatchesScope(rule: PermissionRule, cwd: string): boolean {
+function ruleMatchesScope(rule: PermissionRule, cwd: string, sessionId?: string): boolean {
+  if (rule.scope === 'session') {
+    // Ticket 28. A session rule is answerable to the session it came from, so it
+    // is *matched* against the current session rather than merely deleted when
+    // that session exits. The two are not interchangeable: deletion has to be
+    // right every time — on dispose, on delete, on a crash, on a rule file
+    // written by a build that never learned to clean up — and one miss leaves a
+    // rule that grants a permission forever. Matching has no such failure mode:
+    // if the session is gone, or this is a different session, the rule simply
+    // never fires. The worst case is a dead line in a JSON file.
+    if (rule.sessionId === undefined || sessionId === undefined) return false
+    return rule.sessionId === sessionId
+  }
   if (rule.scope !== 'project' || rule.projectPath === undefined) return true
   return withinWorkspace(cwd, rule.projectPath)
 }
@@ -420,12 +432,19 @@ function classifyBashCommand(command: string): PermissionVerdict | undefined {
 
 const RULE_ORDER: readonly PermissionRuleAction[] = ['deny', 'ask', 'allow']
 
-function ruleMatches(rule: PermissionRule, toolName: string, command: string, paths: string[], cwd: string): boolean {
+function ruleMatches(
+  rule: PermissionRule,
+  toolName: string,
+  command: string,
+  paths: string[],
+  cwd: string,
+  sessionId?: string
+): boolean {
   return (
     ruleMatchesTool(rule, toolName) &&
     ruleMatchesCommand(rule, command) &&
     ruleMatchesPath(rule, paths) &&
-    ruleMatchesScope(rule, cwd)
+    ruleMatchesScope(rule, cwd, sessionId)
   )
 }
 
@@ -440,11 +459,12 @@ function collectRuleVerdict(
   toolName: string,
   command: string,
   paths: string[],
-  cwd: string
+  cwd: string,
+  sessionId?: string
 ): PermissionVerdict | undefined {
   for (const action of RULE_ORDER) {
     for (const rule of rules) {
-      if (rule.action !== action || !ruleMatches(rule, toolName, command, paths, cwd)) continue
+      if (rule.action !== action || !ruleMatches(rule, toolName, command, paths, cwd, sessionId)) continue
       return { outcome: action, via: 'rule', reason: rule.note ?? `rule "${rule.id ?? rule.action}"` }
     }
   }
@@ -523,7 +543,7 @@ export class PermissionGate {
     // expresses intent lost to whatever was written first. Order still decides
     // ties *inside* a class (the built-ins deliberately come first), but across
     // classes a refusal beats a question, and a question beats an allow.
-    const ruleVerdict = collectRuleVerdict(rules, toolName, command, paths, cwd)
+    const ruleVerdict = collectRuleVerdict(rules, toolName, command, paths, cwd, options.sessionId)
     if (ruleVerdict !== undefined) {
       return { outcome: ruleVerdict.outcome, verdict: ruleVerdict }
     }

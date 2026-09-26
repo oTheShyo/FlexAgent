@@ -322,7 +322,11 @@ export type PermissionRuleAction = 'allow' | 'deny' | 'ask'
  * project recorded in `projectPath`. Absent means `global`, so a rule file
  * written before scopes existed keeps behaving the same way.
  */
-export type PermissionRuleScope = 'global' | 'project'
+/**
+ * Reach of a rule. `session` (ticket 28) is the narrowest: it fires only inside
+ * the session that authored it, and stops the moment that session is gone.
+ */
+export type PermissionRuleScope = 'global' | 'project' | 'session'
 
 /** Who wrote a rule. Only `user` rules are removable from the settings list. */
 export type PermissionRuleOrigin = 'builtin' | 'user'
@@ -359,6 +363,12 @@ export interface PermissionRule {
    * Ignored unless `scope` is `'project'`.
    */
   projectPath?: string
+  /**
+   * Ticket 28: the session a `scope: 'session'` rule belongs to. Checked at
+   * evaluation time rather than only cleaned up on exit — see
+   * `permissionGate.ts` for why the difference matters.
+   */
+  sessionId?: string
   /** v1.19: when the rule was authored, ms epoch. Absent for pre-v1.19 files. */
   createdAt?: number
   /** v1.19: absent on purpose — the loader fills `'user'` for file rules. */

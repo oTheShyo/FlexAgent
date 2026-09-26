@@ -26,7 +26,8 @@ function expect(mods, ctx) {
         cwd: options.cwd ?? ctx.cwd,
         rules: options.rules ?? [],
         memory: new mods.gate.PermissionMemory(`perm-regress:${name}`),
-        sessionId: `perm-regress:${name}`,
+        // Ticket 28: overridable so one rule can be evaluated from two sessions.
+        sessionId: options.sessionId ?? `perm-regress:${name}`,
         ...(options.classifyBash === undefined ? {} : { classifyBash: options.classifyBash })
       })
       // `not-rule-allow` is the guarantee a scope has to give: elsewhere in the
@@ -147,6 +148,112 @@ export const RULE_CASES = [
         { toolName: 'read', args: { path: `${ctx.cwd}/.aws/credentials` } },
         { rules: [{ id: 'trust-me', tool: 'read', action: 'allow', note: 'user allow' }] },
         'credential'
+      )
+  },
+  {
+    // Ticket 28. The session scope is the narrowest reach there is, and the pair
+    // below is what proves it: one rule, two sessions, opposite answers.
+    name: 'a session rule fires in the session that made it',
+    // Positive control, like the project one below: the old code passes this too
+    // (it had no session scope at all, so every rule matched everywhere). The
+    // guarantee is proved from the other direction — by the two cases that fail.
+    oldBehaviour: 'same',
+    run: async (mods, ctx, evaluate) =>
+      evaluate(
+        'scope-session-own',
+        { toolName: 'bash', args: { command: 'npm test' } },
+        {
+          sessionId: 'chat-authored',
+          rules: [
+            {
+              id: 'session-test',
+              tool: 'bash',
+              command: 'npm test',
+              action: 'allow',
+              scope: 'session',
+              sessionId: 'chat-authored',
+              note: 'allow in this chat'
+            }
+          ]
+        },
+        'allow'
+      )
+  },
+  {
+    name: 'the same session rule does not reach another chat',
+    oldBehaviour: 'fails',
+    run: async (mods, ctx, evaluate) =>
+      evaluate(
+        'scope-session-other',
+        { toolName: 'bash', args: { command: 'npm test' } },
+        {
+          sessionId: 'chat-somebody-else',
+          rules: [
+            {
+              id: 'session-test',
+              tool: 'bash',
+              command: 'npm test',
+              action: 'allow',
+              scope: 'session',
+              sessionId: 'chat-authored',
+              note: 'allow in this chat'
+            }
+          ]
+        },
+        'not-rule-allow'
+      )
+  },
+  {
+    // A rule that lost its session — hand-edited file, older build, restored
+    // backup — must narrow, never widen. Widening here means "allow everywhere".
+    name: 'a session rule whose session is unknown never fires',
+    oldBehaviour: 'fails',
+    run: async (mods, ctx, evaluate) =>
+      evaluate(
+        'scope-session-orphan',
+        { toolName: 'bash', args: { command: 'npm test' } },
+        {
+          sessionId: 'chat-now',
+          rules: [
+            {
+              id: 'session-orphan',
+              tool: 'bash',
+              command: 'npm test',
+              action: 'allow',
+              scope: 'session',
+              note: 'no session recorded'
+            }
+          ]
+        },
+        'not-rule-allow'
+      )
+  },
+  {
+    name: 'a session rule cannot re-authorise a hard-denied command',
+    // 'fails', not 'same': the old code let a rule authorise `rm -rf`, because
+    // hard denies only moved above the rule layer in ticket 19. This is that
+    // guarantee re-asserted through the narrowest scope, which is the one most
+    // likely to be trusted by a user ("it's only for this chat").
+    oldBehaviour: 'fails',
+    run: async (mods, ctx, evaluate) =>
+      evaluate(
+        'scope-session-hard-deny',
+        { toolName: 'bash', args: { command: 'rm -rf /' } },
+        {
+          sessionId: 'chat-authored',
+          rules: [
+            {
+              id: 'session-rm',
+              tool: 'bash',
+              command: 'rm -rf',
+              action: 'allow',
+              scope: 'session',
+              sessionId: 'chat-authored',
+              note: 'allow in this chat'
+            }
+          ]
+        },
+        'deny'
       )
   },
   {
@@ -402,8 +509,18 @@ export const SOURCE_ASSERTIONS = [
   },
   {
     file: 'src/main/permissionGate.ts',
-    pattern: /^function ruleMatchesScope\(rule: PermissionRule, cwd: string\): boolean \{$/m,
+    pattern:
+      /^function ruleMatchesScope\(rule: PermissionRule, cwd: string, sessionId\?: string\): boolean \{$/m,
     why: 'the ownership dimension is matched per rule, not per call'
+  },
+  {
+    // Ticket 28. The signature alone is not the point: a session rule has to be
+    // *matched* against the current session, because deleting them on exit is
+    // only correct if the deletion never misses. Anchored to the line that
+    // returns false rather than true for a session rule in another session.
+    file: 'src/main/permissionGate.ts',
+    pattern: /if \(rule\.sessionId === undefined \|\| sessionId === undefined\) return false$/m,
+    why: 'a session rule with no matching session does not fire, rather than relying on cleanup'
   },
   {
     file: 'src/main/permissionRules.ts',

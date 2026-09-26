@@ -66,6 +66,7 @@ import { listSkillUsage } from './skills/skillUsage'
 import { RECALL_BUDGET, extractRecallQueries, searchSessionRecords } from './skills/sessionSearch'
 import { listWorkspaceFiles, invalidateWorkspaceFiles } from './workspaceFiles'
 import { renderReferences } from './promptReferences'
+import { dropRulesForSession } from './permissionRules'
 import type { SessionSearchHit } from '../shared/contract'
 
 interface IpcFailure {
@@ -280,6 +281,11 @@ export function registerIpcHandlers(
       }
       terminals.disposeSession(sessionId)
       registry.remove(sessionId)
+      // Ticket 28: the chat is gone, so its rules can never match again. Removing
+      // them is tidiness — the gate already refuses to match a session rule
+      // outside its own session — but leaving them would fill the settings list
+      // with entries that look live and are not.
+      await dropRulesForSession(sessionId)
     })
   )
 

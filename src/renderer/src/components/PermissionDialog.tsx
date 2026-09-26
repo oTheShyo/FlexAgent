@@ -165,15 +165,27 @@ function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
           {argsJson}
         </pre>
 
-        {/* Two tiers on purpose. "Allow once" and "Allow session" are forgotten
-            automatically; the second tier writes to `~/.flexagent/permissions.json`
-            and is still there after a restart, so it says so before it asks. */}
+        {/* Three tiers on purpose. "Allow once" is forgotten immediately; the
+            other two write to `~/.flexagent/permissions.json` and are still
+            there after a restart, so they say so before they ask. A session rule
+            stops applying when the chat ends, but it is on disk until then and
+            can be removed by hand — which is the point of it. */}
         <div className="mt-4 space-y-2">
           <div className="flex items-center justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => onRespond('deny')}>
               Deny
             </Button>
-            <Button type="button" variant="secondary" onClick={() => onRespond('allowSession')}>
+            {/* Ticket 28: this used to write session memory only — invisible in
+                Settings, and therefore unrevocable except by ending the chat.
+                It now writes a `session`-scoped rule: still forgotten when the
+                chat ends, but listed and removable while it lasts. */}
+            <Button
+              type="button"
+              variant="secondary"
+              data-testid="permission-allow-session"
+              title="Allow this class of call for the rest of this chat; listed under Settings › Permissions"
+              onClick={() => respond('allowOnce', 'session')}
+            >
               Allow session
             </Button>
             <Button
@@ -194,7 +206,9 @@ function PermissionDialog({ request, onRespond }: PermissionDialogProps) {
             >
               Remembering writes a rule to <code className="font-mono">permissions.json</code> that
               outlives this run — undo it under Settings › Permissions.{' '}
-              <strong className="font-medium text-[var(--text-secondary)]">This project</strong> applies
+              <strong className="font-medium text-[var(--text-secondary)]">This chat</strong> stops
+              applying when the chat ends;{' '}
+              <strong className="font-medium text-[var(--text-secondary)]">this project</strong> applies
               only while the session works inside this workspace;{' '}
               <strong className="font-medium text-[var(--text-secondary)]">any project</strong> applies to
               every workspace you open, including ones you have not created yet. Refusals are always

@@ -165,6 +165,7 @@ function derivedRule(input: PersistedRuleInput): PermissionRule {
   // user never chose for it is a rule file that teaches the reader to wonder.
   rule.scope = input.scope
   if (input.scope === 'project') rule.projectPath = input.cwd
+  if (input.scope === 'session' && input.sessionId !== undefined) rule.sessionId = input.sessionId
   return rule
 }
 
@@ -175,7 +176,10 @@ function sameRule(a: PermissionRule, b: PermissionRule): boolean {
     a.tool === b.tool &&
     a.command === b.command &&
     a.scope === b.scope &&
-    a.projectPath === b.projectPath
+    a.projectPath === b.projectPath &&
+    // Ticket 28: the same choice made in two sessions is two rules, because each
+    // only ever applies to the session that made it.
+    a.sessionId === b.sessionId
   )
 }
 
@@ -188,17 +192,25 @@ function sameRule(a: PermissionRule, b: PermissionRule): boolean {
  */
 export interface PersistedRuleInput extends Omit<SavePermissionRuleInput, 'sessionId'> {
   cwd: string
+  /** Ticket 28: carried for `scope: 'session'` rules; the gate matches on it. */
+  sessionId?: string
 }
 
 export async function addUserRule(input: PersistedRuleInput): Promise<PermissionRuleSet> {
   if (typeof input.tool !== 'string' || input.tool === '') {
     throw new ContractError('INVALID_INPUT', 'tool is required for a saved rule')
   }
-  if (input.scope !== 'global' && input.scope !== 'project') {
+  if (input.scope !== 'global' && input.scope !== 'project' && input.scope !== 'session') {
     throw new ContractError('INVALID_INPUT', `unknown rule scope: ${String(input.scope)}`)
   }
   if (input.cwd === '') {
     throw new ContractError('INVALID_INPUT', 'a rule needs the cwd it belongs to')
+  }
+  // Ticket 28: a session rule with no session is refused rather than widened.
+  // Falling back to `global` here would turn "allow in this chat" into "allow
+  // everywhere", and the user would have no way to tell that happened.
+  if (input.scope === 'session' && (input.sessionId ?? '') === '') {
+    throw new ContractError('INVALID_INPUT', 'a session rule needs the session it belongs to')
   }
   const rule = derivedRule(input)
   const rules = listUserRules()
@@ -220,6 +232,29 @@ export async function removeUserRule(id: string): Promise<PermissionRuleSet> {
   }
   const payload = writeRuleFile(next)
   return { sourcePath: PERMISSIONS_FILE, rules: [...BUILTIN_RULES, ...payload.rules] }
+}
+
+/**
+ * Ticket 28: forget the rules a session authored, once that session is gone.
+ *
+ * Housekeeping, not the safety mechanism. The gate matches session rules against
+ * the current session, so a rule left behind by a crash or an older build cannot
+ * grant anything — it is a dead line in a file. This exists so those dead lines
+ * do not accumulate for the whole time the user keeps the app, and so the
+ * settings list does not fill up with entries that can never apply again.
+ *
+ * Returns how many were dropped, which is 0 in the common case; callers are not
+ * expected to care.
+ */
+export async function dropRulesForSession(sessionId: string): Promise<number> {
+  if (sessionId === '') return 0
+  const rules = listUserRules()
+  const next = rules.filter(
+    (rule) => !(rule.scope === 'session' && rule.sessionId === sessionId)
+  )
+  if (next.length === rules.length) return 0
+  writeRuleFile(next)
+  return rules.length - next.length
 }
 
 /** Everything the gate consults, built-ins first (they win on ties). */

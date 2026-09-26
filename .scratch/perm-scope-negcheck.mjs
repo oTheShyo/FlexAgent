@@ -21,10 +21,22 @@ import { build } from 'esbuild'
 import { RULE_CASES, runRuleAssertions } from '../scripts/perm-rule-assertions.mjs'
 
 const ROOT = process.cwd()
+/**
+ * Ticket 19 landed in `1aca101`, so HEAD *is* the new implementation: pointing
+ * this at HEAD would pass every assertion and prove nothing. The baseline is
+ * pinned to the commit before it — the code these assertions were written
+ * against. Pin it rather than saying "the parent of the ticket commit": a
+ * rebase would move that and silently change what is being compared.
+ */
+const BASELINE = '1aca101^'
+// `reasoningEffort.ts` is here only because `contract/index.ts` re-exports it:
+// since ticket 08 landed, a contract snapshot without that file does not build,
+// and a build failure would be reported as if it were the answer being checked.
 const OLD_FILES = [
   'src/main/permissionGate.ts',
   'src/main/permissionRules.ts',
   'src/main/security/sensitivePaths.ts',
+  'src/shared/reasoningEffort.ts',
   'src/shared/contract/index.ts'
 ]
 // One scratch tree per run: reusing a fixed path makes the second run clean up
@@ -38,7 +50,7 @@ for (const file of OLD_FILES) {
   const target = join(OLD_ROOT, file)
   mkdirSync(dirname(target), { recursive: true })
   // Async spawn: the synchronous one trips over EBUSY on this Windows/git pair.
-  const { stdout } = await promisify(execFile)('git', ['show', `HEAD:${file}`], {
+  const { stdout } = await promisify(execFile)('git', ['show', `${BASELINE}:${file}`], {
     cwd: ROOT,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024
