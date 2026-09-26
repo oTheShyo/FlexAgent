@@ -5,6 +5,9 @@ import { MenuItem, MenuPanel } from './ui/Menu'
 import { CloseIcon } from './icons'
 import type { WebEditKind, WindowControlsApi } from '../types'
 
+// Injected at build time by electron.vite.config.ts from package.json.
+declare const __APP_VERSION__: string
+
 export interface TitleBarProps {
   sidebarOpen: boolean
   onToggleSidebar: () => void
@@ -333,6 +336,9 @@ function TitleBar({
                 <h2 className="text-sm font-semibold text-[var(--text)]">FlexAgent</h2>
                 <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
                   Your flexible desktop agent.
+                </p>
+                <p className="mt-1 font-mono text-[11px] text-[var(--text-muted)]" data-testid="about-version">
+                  Version {__APP_VERSION__}
                 </p>
               </div>
               <button

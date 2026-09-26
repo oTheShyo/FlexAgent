@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+
+// Single source of truth for the displayed app version: package.json.
+const { version: appVersion } = JSON.parse(
+  readFileSync(resolve(__dirname, 'package.json'), 'utf8')
+) as { version: string }
 
 const external = [
   'electron',
@@ -29,6 +35,9 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     build: {
       rollupOptions: {
         external: ['electron']
