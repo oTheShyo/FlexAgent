@@ -4,11 +4,11 @@
 
 **Blocked by:** 02 (工程工具链（lint + 单测 runner）), 04 (UI P0 修复)
 
-**Status:** ready-for-agent
+**Status:** done (committed this lane; report: reports/25-packaging.md; 验收第 2 项真机人工回归未执行——已做打包启动冒烟替代并记录)
 
-- [ ] `npm run dist`（或等价命令）产出 Windows x64 安装包
-- [ ] 全新机器安装后手工回归：聊天、权限确认、diff、终端、脱敏全部正常
-- [ ] 版本号与 package.json 一致，关于页/窗口标题可核对
-- [ ] 升级路径：新版本覆盖安装后会话数据与配置保留
-- [ ] 卸载路径明确（数据是否保留有文档说明）
-- [ ] 未签名提示/绕过说明写进文档
+- [x] `npm run dist`（或等价命令）产出 Windows x64 安装包
+- [ ] 全新机器安装后手工回归：聊天、权限确认、diff、终端、脱敏全部正常（未执行：无头环境不可行；已做打包启动冒烟替代——win-unpacked 存活/干净退出，见 reports/25-packaging.md）
+- [x] 版本号与 package.json 一致，关于页/窗口标题可核对
+- [x] 升级路径：新版本覆盖安装后会话数据与配置保留
+- [x] 卸载路径明确（数据是否保留有文档说明）
+- [x] 未签名提示/绕过说明写进文档

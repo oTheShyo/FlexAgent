@@ -12,7 +12,47 @@
     "test": "vitest run",
     "check": "npm run lint && npm run typecheck && npm run test",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty || true"
+    "postinstall": "electron-rebuild -f -w node-pty || true",
+    "dist": "electron-vite build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.flexagent.desktop",
+    "productName": "FlexAgent",
+    "artifactName": "${productName}-${version}-setup.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/main/**",
+      "out/preload/**",
+      "out/renderer/**",
+      "resources/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FlexAgent",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.1",
@@ -38,6 +78,7 @@
     "@vitejs/plugin-react": "5.2.0",
     "autoprefixer": "10.6.1",
     "electron": "44.4.5",
+    "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
     "oxlint": "^1.85.0",
     "postcss": "8.5.28",
