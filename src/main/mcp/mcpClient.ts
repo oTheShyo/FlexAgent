@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import type { PluginMcpServerConfig } from '../../shared/kernel-protocol'
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10000
@@ -70,7 +71,7 @@ export interface McpToolDescriptor {
 }
 
 /**
- * Handle wrapping an SDK Client (stdio or streamable-HTTP transport).
+ * Handle wrapping an SDK Client (stdio, streamable-HTTP or legacy SSE transport).
  * Opaque to callers — use connectMcpClient/listMcpTools/callMcpTool/closeMcpClient.
  */
 export interface McpClientHandle {
@@ -79,13 +80,26 @@ export interface McpClientHandle {
   closed: boolean
 }
 
+type McpTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
+
 function buildTransport(
   config: PluginMcpServerConfig
-): { transport: StdioClientTransport | StreamableHTTPClientTransport; type: 'stdio' | 'http' } {
-  if (config.type === 'http') {
+): { transport: McpTransport; type: 'stdio' | 'http' | 'sse' } {
+  if (config.type === 'http' || config.type === 'sse') {
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(config.headers ?? {})) {
       if (typeof value === 'string') headers[key] = value
+    }
+    if (config.type === 'sse') {
+      return {
+        type: 'sse',
+        transport: new SSEClientTransport(new URL(config.url), {
+          // Both channels carry the headers: the opening GET /sse stream and
+          // every POSTed message (auth tokens must ride both).
+          eventSourceInit: { fetch(url, init) { return fetch(url, { ...init, headers }) } },
+          requestInit: { headers }
+        })
+      }
     }
     return {
       type: 'http',

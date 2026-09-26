@@ -77,7 +77,18 @@ export interface PluginMcpHttpConfig extends PluginMcpServerConfigBase {
   env: Record<string, string>
 }
 
-export type PluginMcpServerConfig = PluginMcpStdioConfig | PluginMcpHttpConfig
+/** Legacy HTTP+SSE transport (GET /sse + POST messages) — what most remote MCP servers spoke before streamable HTTP. */
+export interface PluginMcpSseConfig extends PluginMcpServerConfigBase {
+  type: 'sse'
+  /** SSE endpoint URL (${user_config.*} templates resolved). */
+  url: string
+  /** Request headers, same template/sensitivity rules as http. */
+  headers?: Record<string, string>
+  /** Base plugin env overlay (kept for shape parity; headers are the only carrier). */
+  env: Record<string, string>
+}
+
+export type PluginMcpServerConfig = PluginMcpStdioConfig | PluginMcpHttpConfig | PluginMcpSseConfig
 
 /** Resource spec for enabled plugins — consumed when the worker builds its resource loader. */
 export interface PluginResourceSpec {
@@ -104,6 +115,14 @@ export interface PluginResourceSpec {
 export type WorkerRequest =
   | { requestId: string; type: 'listSessions' }
   | { requestId: string; type: 'createSession'; sessionId: SessionId; cwd: string; title?: string }
+  | {
+      requestId: string
+      type: 'forkSession'
+      sessionId: SessionId
+      newSessionId: SessionId
+      messageTs: number
+      messagePrefix: string
+    }
   | { requestId: string; type: 'openSession'; sessionId: SessionId; cwd: string; piSessionFile?: string }
   | { requestId: string; type: 'setSessionCwd'; sessionId: SessionId; cwd: string }
   /**

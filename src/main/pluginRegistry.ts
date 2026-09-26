@@ -8,6 +8,7 @@ import { enumerateComponents, findManifestPath, parseManifest } from './pluginMa
 import { resolveUserConfigValues, interpolateHookTemplate } from './userConfig'
 import { createHookEnvOverlay } from './hooks/hookRunner'
 import { collectMcpServerConfigs } from './pluginMcp'
+import { listPluginMcpServerOverrides } from './pluginMcpOverrides'
 
 export interface PluginRecord {
   id: PluginId
@@ -163,6 +164,9 @@ export class PluginRegistry {
   }
 
   collectResourceSpec(): PluginResourceSpec {
+    // Read once per spec build: the MCP panel writes overrides, then forces a
+    // reload, so the next build picks the new state up here.
+    const mcpServerOverrides = listPluginMcpServerOverrides()
     const spec: PluginResourceSpec = {
       extensionPaths: [],
       skillRoots: [],
@@ -206,7 +210,8 @@ export class PluginRegistry {
           userConfigValues: userConfig,
           sensitiveKeys,
           interpolate: interpolateHookTemplate,
-          createEnvOverlay: createHookEnvOverlay
+          createEnvOverlay: createHookEnvOverlay,
+          overrides: mcpServerOverrides
         })
         spec.mcp.push(...mcpResult.paths)
         if (spec.mcpServers === undefined) spec.mcpServers = {}

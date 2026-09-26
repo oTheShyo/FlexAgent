@@ -64,10 +64,10 @@ function AddServerForm({
     if (jsonMode) {
       try {
         const parsed = JSON.parse(jsonText) as Record<string, unknown>
-        const type = parsed.type === 'http' ? 'http' : 'stdio'
-        if (type === 'http') {
+        const type = parsed.type === 'http' ? 'http' : parsed.type === 'sse' ? 'sse' : 'stdio'
+        if (type === 'http' || type === 'sse') {
           return {
-            type: 'http',
+            type,
             url: typeof parsed.url === 'string' ? parsed.url : '',
             ...(parsed.headers !== undefined && typeof parsed.headers === 'object'
               ? { headers: parsed.headers as Record<string, string> }
@@ -90,7 +90,7 @@ function AddServerForm({
         return null
       }
     }
-    if (transport === 'http') {
+    if (transport === 'http' || transport === 'sse') {
       let headers: Record<string, string> | undefined
       if (headersText.trim().length > 0) {
         try {
@@ -101,7 +101,7 @@ function AddServerForm({
         }
       }
       return {
-        type: 'http',
+        type: transport,
         url: url.trim(),
         ...(headers !== undefined ? { headers } : {})
       }
@@ -161,6 +161,9 @@ function AddServerForm({
             </Chip>
             <Chip active={transport === 'http'} onClick={() => setTransport('http')} aria-pressed={transport === 'http'} className="h-6 px-2 text-[11px]">
               http
+            </Chip>
+            <Chip active={transport === 'sse'} onClick={() => setTransport('sse')} aria-pressed={transport === 'sse'} className="h-6 px-2 text-[11px]">
+              sse
             </Chip>
           </span>
         )}
@@ -274,13 +277,22 @@ function McpPanel({ mcp }: { mcp: UseUserMcpResult }) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
 
   const pluginRows = useMemo(() => {
+    // A flipped-off plugin server disappears from the bridge status, so the
+    // rows merge both sources: bridged servers (live status) plus any
+    // user-disabled keys that must stay visible with their toggle off.
     const rows: { key: string; label: string; type: string }[] = []
     for (const [key, entry] of mcp.status) {
       if (entry.source !== 'plugin') continue
       rows.push({ key, label: key.replace(/^plugin:/, ''), type: entry.type })
     }
+    for (const key of Object.keys(mcp.pluginOverrides)) {
+      if (!key.startsWith('plugin:')) continue
+      if (rows.some((row) => row.key === key)) continue
+      rows.push({ key, label: key.replace(/^plugin:/, ''), type: 'disabled' })
+    }
+    rows.sort((a, b) => a.key.localeCompare(b.key))
     return rows
-  }, [mcp.status])
+  }, [mcp.status, mcp.pluginOverrides])
 
   // Bridge-level notices: tool-name collisions between servers, and anything
   // else the worker wants said out loud rather than dropped silently.
@@ -427,6 +439,7 @@ function McpPanel({ mcp }: { mcp: UseUserMcpResult }) {
             <div className="mt-2 space-y-2">
               {pluginRows.map((row) => {
                 const entry = mcp.status.get(row.key)
+                const enabled = mcp.pluginOverrides[row.key]?.enabled !== false
                 return (
                   <div
                     key={row.key}
@@ -441,12 +454,19 @@ function McpPanel({ mcp }: { mcp: UseUserMcpResult }) {
                         </span>
                       </div>
                       <div className="mt-0.5">
-                        <StatusLine entry={entry} />
+                        {enabled ? (
+                          <StatusLine entry={entry} />
+                        ) : (
+                          <span className="text-[11px] text-[var(--text-subtle)]">已停用</span>
+                        )}
                       </div>
                     </div>
-                    <span className="shrink-0 text-[11px] text-[var(--text-subtle)]" title="插件自带的 MCP 服务，请在插件详情里启停">
-                      插件管理
-                    </span>
+                    <ToggleSwitch
+                      checked={enabled}
+                      label={`${enabled ? '禁用' : '启用'} ${row.label}`}
+                      testId={`mcp-toggle-${row.key}`}
+                      onClick={() => void mcp.togglePluginServer(row.key, !enabled)}
+                    />
                   </div>
                 )
               })}

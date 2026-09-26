@@ -37,6 +37,7 @@ import type { SessionRegistry } from './registry'
 import type { TerminalManager } from './pty'
 import type { PluginService } from './plugins'
 import type { UserMcpService } from './userMcp'
+import { listPluginMcpServerOverrides, setPluginMcpServerOverride } from './pluginMcpOverrides'
 import type { UserModelsService } from './userModels'
 import type { KernelSettingsService, NetworkConfig } from './kernelSettings'
 import { writeRoleBinding } from './modelRouting'
@@ -732,6 +733,24 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       const list = await userMcp.toggle(input.name, input.enabled)
       await plugins.reloadKernel()
       return list
+    })
+  )
+
+  ipcMain.handle(IPC.listPluginMcpServerOverrides, () => guard(() => listPluginMcpServerOverrides()))
+
+  ipcMain.handle(IPC.setPluginMcpServerEnabled, (_e, input: { key?: unknown; enabled?: unknown }) =>
+    guard(async () => {
+      if (
+        !input ||
+        typeof input.key !== 'string' ||
+        !input.key.startsWith('plugin:') ||
+        typeof input.enabled !== 'boolean'
+      ) {
+        throw new ContractError('INVALID_INPUT', 'key (plugin:…) and enabled are required')
+      }
+      setPluginMcpServerOverride(input.key, input.enabled)
+      await plugins.reloadKernel()
+      return listPluginMcpServerOverrides()
     })
   )
 

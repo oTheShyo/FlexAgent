@@ -5,7 +5,7 @@ import type { PluginMcpServerConfig } from '../shared/kernel-protocol'
 import type { HookTemplateContext } from './userConfig'
 import type { FlexPluginManifest } from './pluginManifest'
 
-const SUPPORTED_MCP_TYPES = new Set(['stdio', 'http'])
+const SUPPORTED_MCP_TYPES = new Set(['stdio', 'http', 'sse'])
 
 export interface McpCollectionInput {
   rootPath: string
@@ -21,6 +21,8 @@ export interface McpCollectionInput {
     plugin: { rootPath: string; dataPath: string; id: string; name: string },
     cwd: string
   ) => Record<string, string>
+  /** User-level enable/disable flips (pluginMcpOverrides), keyed by bridge key. */
+  overrides?: Record<string, { enabled: boolean }>
 }
 
 export interface McpCollectionResult {
@@ -171,9 +173,9 @@ function resolveMcpServerConfig(
   }
   env.FLEX_PLUGIN_ID = input.pluginId
   const expose = server.expose === 'direct' ? ({ expose: 'direct' } as const) : {}
-  if (type === 'http') {
+  if (type === 'http' || type === 'sse') {
     if (typeof server.url !== 'string' || server.url.length === 0) {
-      throw new Error('http MCP server requires url')
+      throw new Error(`${type} MCP server requires url`)
     }
     const headers: Record<string, string> = {}
     if (isPlainObject(server.headers)) {
@@ -182,7 +184,7 @@ function resolveMcpServerConfig(
       }
     }
     return {
-      type: 'http',
+      type,
       url: input.interpolate(server.url, cmdContext),
       ...(Object.keys(headers).length > 0 ? { headers } : {}),
       env,
@@ -234,7 +236,11 @@ export function collectMcpServerConfigs(input: McpCollectionInput): McpCollectio
       if (!isPlainObject(server)) {
         throw new Error('MCP server config must be an object')
       }
-      if (server.enabled === false) continue
+      // User override wins over the plugin author's `enabled: false` default:
+      // the user is the one running the thing.
+      const override = input.overrides?.[key]?.enabled
+      if (override === false) continue
+      if (server.enabled === false && override !== true) continue
       configs[key] = resolveMcpServerConfig(server, input, diagnostics)
       paths.push(key)
     } catch (error) {
