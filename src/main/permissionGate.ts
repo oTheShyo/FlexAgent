@@ -12,9 +12,12 @@
  *      *same parameters*. Name-only matching was the classic bug: allowing
  *      `bash` once silently authorised `rm -rf /`. See `PermissionMemory`.
  *   2. rules           — the ordered list in `permissionRules.ts` (built-ins
- *      first, then `~/.flexagent/permissions.json`). First hit wins.
+ *      first, then `~/.flexagent/permissions.json`). First hit wins *within one
+ *      action class*, and the classes are collected deny → ask → allow, so a
+ *      rule a human wrote can never be out-ranked by an earlier allow.
  *   3. heuristics      — tool-shape analysis: read tools, workspace-contained
  *      writes, destructive command patterns. Zero latency, zero model calls.
+ *      Its HARD_DENY patterns sit above the rule layer (see `hardDenyFor`).
  *   4. bash classifier — one lightweight model call for genuinely ambiguous
  *      commands, cached per command string. Never the first line of defence.
  *   5. mode rails      — `plan` hard-blocks anything non-read; `bypass` ends
@@ -27,7 +30,7 @@
  */
 import { homedir } from 'os'
 import { isAbsolute, resolve, sep } from 'path'
-import type { PermissionMode, PermissionRule, PermissionVerdict } from '../shared/contract'
+import type { PermissionMode, PermissionRule, PermissionRuleAction, PermissionVerdict } from '../shared/contract'
 import { commandTouchesSensitivePath, firstSensitivePath, type SensitiveTarget } from './security/sensitivePaths'
 
 /** Injected by the worker, which owns the ModelRuntime. Optional by design. */
@@ -171,6 +174,24 @@ const HARD_DENY: readonly [RegExp, string][] = [
   [/\bdd\b[^|]*\bof=\/dev\//, 'writing to a block device with dd']
 ]
 
+/**
+ * The reason a command shape is refused outright, or `undefined`.
+ *
+ * Deliberately above the rule layer: `rm -rf` on a credential path is a
+ * capability limit, and a limit the user can lift by adding a JSON line is a
+ * default. The rules below it have no say here; session memory (layer 1) still
+ * does, because that is an explicit human approval of this exact call.
+ */
+export function hardDenyFor(command: string): string | undefined {
+  const normalized = normalizeCommand(command)
+  if (normalized === '') return undefined
+  const lowered = normalized.toLowerCase()
+  for (const [pattern, reason] of HARD_DENY) {
+    if (pattern.test(lowered)) return reason
+  }
+  return undefined
+}
+
 const ALLOW = (reason: string): PermissionVerdict => ({ outcome: 'allow', via: 'heuristic', reason })
 const DENY = (reason: string): PermissionVerdict => ({ outcome: 'deny', via: 'heuristic', reason })
 const ASK = (reason: string): PermissionVerdict => ({ outcome: 'ask', via: 'heuristic', reason })
@@ -240,7 +261,12 @@ export function normalizeCommand(command: unknown): string {
  * `rm -rf` was judged as a destructive command, and a file path was parsed as
  * if it were a shell line. Paths have their own matcher (`ruleMatchesPath`).
  */
-function argsForCommand(args: Record<string, unknown> | undefined): string {
+/**
+ * Exported so `permissionRules.ts` can derive a rule's matchers from the same
+ * call the gate matched on — a rule built from a re-implementation of this
+ * would drift the moment a tool gained a new argument name.
+ */
+export function commandForArgs(args: Record<string, unknown> | undefined): string {
   if (!args) return ''
   for (const key of ['command', 'cmd', 'script', 'code', 'input']) {
     const value = args[key]
@@ -285,7 +311,8 @@ function classifyMcpTool(toolName: string, args: Record<string, unknown>): Permi
   return undefined
 }
 
-function extractPaths(args: Record<string, unknown> | undefined): string[] {
+/** Exported for the same reason as `commandForArgs`: rule derivation must agree. */
+export function pathsForArgs(args: Record<string, unknown> | undefined): string[] {
   if (!args) return []
   const out: string[] = []
   for (const key of PATH_ARG_KEYS) {
@@ -330,6 +357,19 @@ function ruleMatchesPath(rule: PermissionRule, paths: string[]): boolean {
   return paths.some((value) => value.replace(/\\/gu, '/').includes(rule.path!.replace(/\\/gu, '/')))
 }
 
+/**
+ * The ownership dimension rules were missing before scopes existed.
+ *
+ * A `project` rule carries the cwd it was authored in, and only ever fires for
+ * calls made from inside that tree — so "allow `npm test` in this repo" does not
+ * silently become "allow `npm test` everywhere". Absent or `global` matches
+ * every cwd, which is what a rule file written before this field existed means.
+ */
+function ruleMatchesScope(rule: PermissionRule, cwd: string): boolean {
+  if (rule.scope !== 'project' || rule.projectPath === undefined) return true
+  return withinWorkspace(cwd, rule.projectPath)
+}
+
 function withinWorkspace(target: string, cwd: string): boolean {
   try {
     const resolved = isAbsolute(target) ? resolve(target) : resolve(cwd, target)
@@ -354,9 +394,8 @@ function classifyBashCommand(command: string): PermissionVerdict | undefined {
   if (!normalized) return undefined
   const lowered = normalized.toLowerCase()
 
-  for (const [pattern, reason] of HARD_DENY) {
-    if (pattern.test(lowered)) return DENY(`blocked pattern: ${reason}`)
-  }
+  const hardDeny = hardDenyFor(command)
+  if (hardDeny !== undefined) return DENY(`blocked pattern: ${hardDeny}`)
 
   // Redirects and pipes rewrite something. `echo x > note.md` starts with a
   // harmless verb but does not stay harmless, so it must not reach the allow list.
@@ -376,6 +415,39 @@ function classifyBashCommand(command: string): PermissionVerdict | undefined {
     return ASK(`command mutates state: ${normalized.slice(0, 48)}`)
   }
 
+  return undefined
+}
+
+const RULE_ORDER: readonly PermissionRuleAction[] = ['deny', 'ask', 'allow']
+
+function ruleMatches(rule: PermissionRule, toolName: string, command: string, paths: string[], cwd: string): boolean {
+  return (
+    ruleMatchesTool(rule, toolName) &&
+    ruleMatchesCommand(rule, command) &&
+    ruleMatchesPath(rule, paths) &&
+    ruleMatchesScope(rule, cwd)
+  )
+}
+
+/**
+ * The first rule that matches, searched one outcome class at a time.
+ *
+ * `undefined` means no rule matched, and the caller then falls through to the
+ * heuristics — exactly what the single-pass loop used to do.
+ */
+function collectRuleVerdict(
+  rules: readonly PermissionRule[],
+  toolName: string,
+  command: string,
+  paths: string[],
+  cwd: string
+): PermissionVerdict | undefined {
+  for (const action of RULE_ORDER) {
+    for (const rule of rules) {
+      if (rule.action !== action || !ruleMatches(rule, toolName, command, paths, cwd)) continue
+      return { outcome: action, via: 'rule', reason: rule.note ?? `rule "${rule.id ?? rule.action}"` }
+    }
+  }
   return undefined
 }
 
@@ -416,8 +488,8 @@ export class PermissionGate {
     const toolName = request.toolName
     const args = request.args ?? {}
     const fingerprint = PermissionMemory.fingerprintArgs(args)
-    const paths = extractPaths(args)
-    const command = argsForCommand(args)
+    const paths = pathsForArgs(args)
+    const command = commandForArgs(args)
 
     // Layer 1 — session memory (name AND parameters).
     if (memory.has(toolName, fingerprint)) {
@@ -433,19 +505,27 @@ export class PermissionGate {
     const credential = credentialGuardFor(toolName, paths, command)
     if (credential !== undefined) return credential
 
-    // Layer 2 — ordered rules.
-    for (const rule of rules) {
-      if (!ruleMatchesTool(rule, toolName)) continue
-      if (!ruleMatchesCommand(rule, command)) continue
-      if (!ruleMatchesPath(rule, paths)) continue
-      const verdict: PermissionVerdict = {
-        outcome: rule.action,
-        via: 'rule',
-        reason: rule.note ?? `rule "${rule.id ?? rule.action}"`
-      }
-      const outcome: GateOutcome = rule.action
-      if (outcome !== 'ask') return { outcome, verdict }
-      break // an explicit "ask" rule stops the chain here and prompts.
+    // Layer 1.75 — hard-refused command shapes.
+    //
+    // Above the rule layer on purpose: an "always allow" the user handed us must
+    // not be able to re-authorise `rm -rf`. The patterns live with the rest of
+    // the bash heuristics (`hardDenyFor`) so there is still one list of them.
+    const hardDeny = command === '' ? undefined : hardDenyFor(command)
+    if (hardDeny !== undefined) {
+      return { outcome: 'deny', verdict: DENY(`blocked pattern: ${hardDeny} — no rule can allow this`) }
+    }
+
+    // Layer 2 — ordered rules, collected by outcome.
+    //
+    // Three passes over the same ordered list rather than one. Under plain
+    // first-hit-wins, a user's deny rule was shadowed by any built-in or
+    // earlier allow that happened to match first — the rule that best
+    // expresses intent lost to whatever was written first. Order still decides
+    // ties *inside* a class (the built-ins deliberately come first), but across
+    // classes a refusal beats a question, and a question beats an allow.
+    const ruleVerdict = collectRuleVerdict(rules, toolName, command, paths, cwd)
+    if (ruleVerdict !== undefined) {
+      return { outcome: ruleVerdict.outcome, verdict: ruleVerdict }
     }
 
     // Layer 3 — heuristics (fast path, no model call).

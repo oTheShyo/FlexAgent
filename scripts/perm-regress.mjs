@@ -6,26 +6,49 @@
  *
  * Covers the MCP semantics (discovery allow / call ask) plus the bash and
  * file-tool behaviour that the classifier work already established, so a change
- * to one layer cannot silently regress another.
+ * to one layer cannot silently regress another, then the scope-aware rule layer
+ * (see `perm-rule-assertions.mjs`) — including the two boundaries no rule may
+ * cross.
  */
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
+import { RULE_CASES, runRuleAssertions, runSourceAssertions, SOURCE_ASSERTIONS } from './perm-rule-assertions.mjs'
 
 const OUT = join(process.cwd(), 'out', 'probe')
 mkdirSync(OUT, { recursive: true })
-const bundle = join(OUT, 'permissionGate.mjs')
+
+const gateBundle = join(OUT, 'permissionGate.mjs')
+const rulesBundle = join(OUT, 'permissionRules.mjs')
+export const PERM_HOME = mkdtempSync(join(tmpdir(), 'flexagent-perm-regress-'))
 await build({
   entryPoints: ['src/main/permissionGate.ts'],
-  outfile: bundle,
+  outfile: gateBundle,
   bundle: true,
   format: 'esm',
   platform: 'node',
   target: 'node20',
   logLevel: 'error'
 })
-const { PermissionGate, PermissionMemory } = await import(pathToFileURL(bundle).href)
+await build({
+  entryPoints: ['src/main/permissionRules.ts'],
+  outfile: rulesBundle,
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'node20',
+  logLevel: 'error'
+})
+
+// Both modules derive their file locations from `os.homedir()` at import time,
+// so the rules are written under a throwaway home instead of the real one.
+process.env.USERPROFILE = PERM_HOME
+process.env.HOME = PERM_HOME
+
+const { PermissionGate, PermissionMemory } = await import(pathToFileURL(gateBundle).href)
+const rulesModule = await import(pathToFileURL(rulesBundle).href)
 
 const CWD = process.cwd()
 const BUILTIN = [
@@ -84,5 +107,27 @@ console.log(
   `${leakOk ? 'PASS' : 'FAIL'}  ${'session memory is parameter-scoped'.padEnd(28)} ${replay.outcome.padEnd(5)} (want ask)  ${replay.verdict?.via}: ${replay.verdict?.reason}`
 )
 
-console.log(`\n${cases.length + 1 - failed}/${cases.length + 1} PASS`)
+console.log(`\nchain: ${cases.length + 1 - failed}/${cases.length + 1} PASS`)
+
+// Structure first: these fail if the layering this work rests on is refactored
+// away, which the behavioural cases below cannot see.
+console.log(`\ngate structure (${SOURCE_ASSERTIONS.length} anchors):`)
+const structureFailures = runSourceAssertions(process.cwd(), (line) => console.log(`  ${line}`))
+failed += structureFailures
+console.log(`structure: ${SOURCE_ASSERTIONS.length - structureFailures}/${SOURCE_ASSERTIONS.length} PASS`)
+
+// Issue #19: scope, refusal priority, and the two boundaries that must not be
+// configurable away. The same assertions run against the pre-#19 sources in
+// `.scratch/perm-scope-negcheck.mjs`, where every case marked `oldBehaviour:
+// 'fails'` has to fail — that is what makes them tests rather than descriptions.
+console.log(`\nscope-aware rules (${RULE_CASES.length} cases):`)
+const ruleFailures = await runRuleAssertions(
+  { gate: { PermissionGate, PermissionMemory }, rules: rulesModule },
+  { cwd: join(PERM_HOME, 'project-a'), otherCwd: join(PERM_HOME, 'project-b') },
+  (line) => console.log(`  ${line}`)
+)
+failed += ruleFailures
+
+const total = cases.length + 1 + SOURCE_ASSERTIONS.length + RULE_CASES.length
+console.log(`\n${total - failed}/${total} PASS`)
 process.exit(failed === 0 ? 0 : 1)
