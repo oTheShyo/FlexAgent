@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 674 674"><g transform="translate(0.35,10.80)">
+  <path id="page" d="M 10,115 Q 10,10 115,10 L 504,10 L 648,154 L 648,538 Q 648,643 543,643 L 115,643 Q 10,643 10,538 Z" fill="#EDE9DA"/>
+  <path id="fold-flap" d="M 504,10 L 660,166 Q 666,172 661,173 L 507,158 Z" fill="#2E9E84"/>
+  <path id="fold-crease" d="M 504,20 L 505,146 Q 507,159 519,160 L 645,170" fill="none" stroke="#23281F" stroke-width="10" stroke-linecap="round"/>
+  <g id="letter-f" fill="none" stroke="#2E9E84" stroke-linecap="round"><path id="f-stem" d="M 250,244 L 250,496" stroke-width="104"/><path id="f-arm-top" d="M 250,272 Q 328,199 398,234" stroke-width="103"/><path id="f-arm-mid" d="M 250,384 Q 318,340 371,367" stroke-width="103"/></g>
+  <path id="smile" d="M 390,487 Q 442,565 498,472" fill="none" stroke="#3A414A" stroke-width="30" stroke-linecap="round"/>
+</g></svg>
