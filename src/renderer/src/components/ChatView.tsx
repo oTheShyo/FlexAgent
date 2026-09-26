@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { ChatItem, ModelRetryState } from '../hooks/useChat'
+import type { ChatMessage } from '../types'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
-import { CheckIcon, CopyIcon, RegenerateIcon } from './icons'
+import { CheckIcon, CopyIcon, ForkIcon, RegenerateIcon } from './icons'
 import SelectionToolbar from './SelectionToolbar'
 import { useChatSelection } from '../hooks/useChatSelection'
 import type { SelectionSnapshot, SelectionSource } from '../hooks/useChatSelection'
@@ -24,6 +25,11 @@ export interface ChatViewProps {
    * afterwards, so a delta landing mid-selection cannot change what is sent.
    */
   onAddReference?: (payload: { text: string; source: SelectionSource }) => void
+  /**
+   * Fork (ticket 17): called with the stable completed assistant message the
+   * user picked. Only wired on non-failed assistant rows.
+   */
+  onFork?: (message: ChatMessage) => void
 }
 
 const AssistantContent = memo(function AssistantContent({
@@ -120,6 +126,28 @@ function RegenerateButton({ onClick }: { onClick: () => void }): ReactElement {
     >
       <RegenerateIcon className="h-3.5 w-3.5" />
       Regenerate
+    </button>
+  )
+}
+
+function ForkButton({
+  message,
+  onClick
+}: {
+  message: ChatMessage
+  onClick: (message: ChatMessage) => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      data-testid="message-actions-fork"
+      onClick={() => onClick(message)}
+      aria-label="Fork from this message"
+      title="Fork from here — a new session inherits the history and config up to this message. Disk files are not touched."
+      className="inline-flex h-6 items-center gap-1 rounded-md border border-transparent px-1.5 text-xs font-medium text-[var(--text-subtle)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+    >
+      <ForkIcon className="h-3.5 w-3.5" />
+      Fork
     </button>
   )
 }
@@ -306,14 +334,18 @@ const ChatRow = memo(function ChatRow({
   item,
   running,
   isLatestAssistant = false,
+  isForkable = false,
   onRegenerate,
-  onErrorRetry
+  onErrorRetry,
+  onFork
 }: {
   item: ChatItem
   running?: boolean
   isLatestAssistant?: boolean
+  isForkable?: boolean
   onRegenerate?: () => void
   onErrorRetry?: () => void
+  onFork?: (message: ChatMessage) => void
 }): ReactElement {
   switch (item.kind) {
     case 'message': {
@@ -335,10 +367,11 @@ const ChatRow = memo(function ChatRow({
           <div className="w-full min-w-0 max-w-[92%]">
             <div className="group">
               <AssistantContent content={message.content} />
-              {isLatestAssistant && (
+              {(isLatestAssistant || isForkable) && (
                 <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
                   <CopyButton text={message.content} />
-                  {onRegenerate && <RegenerateButton onClick={onRegenerate} />}
+                  {isLatestAssistant && onRegenerate && <RegenerateButton onClick={onRegenerate} />}
+                  {isForkable && onFork && <ForkButton message={message} onClick={onFork} />}
                 </div>
               )}
             </div>
@@ -392,7 +425,8 @@ export function ChatView({
   modelRetry = null,
   onRegenerate,
   onErrorRetry,
-  onAddReference
+  onAddReference,
+  onFork
 }: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
@@ -436,16 +470,26 @@ export function ChatView({
     return items.map((item, index) => {
       const isLatestAssistant = index === lastAssistantIndex
       const isTrailingError = item.kind === 'error' && index === items.length - 1
+      // Fork entry (ticket 17): only on a stable completed assistant message —
+      // never on a failed half-answer (the error row follows it), a user
+      // message, or a tool result.
+      const isForkable =
+        item.kind === 'message' &&
+        item.message.role === 'assistant' &&
+        items[index + 1]?.kind !== 'error' &&
+        onFork !== undefined
       return (
         <ChatRow
           key={chatRowKey(item, index)}
           item={item}
           running={item.kind === 'partial' ? running : undefined}
           isLatestAssistant={isLatestAssistant}
+          isForkable={isForkable}
           onRegenerate={
             (isLatestAssistant || isTrailingError) && onRegenerate ? onRegenerate : undefined
           }
           onErrorRetry={isTrailingError && onErrorRetry ? onErrorRetry : undefined}
+          onFork={isForkable ? onFork : undefined}
         />
       )
     })

@@ -9,6 +9,7 @@ import {
   type CreateSessionInput,
   type CustomAgentDefinitionInput,
   type CustomAgentsSnapshot,
+  type ForkSessionInput,
   type CustomModelEntry,
   type CustomModelRef,
   type CustomModelSaveInput,
@@ -888,6 +889,10 @@ export class MockCodexApi implements CodexApi {
 
   async setCustomAgentEnabled(_input: { name: string; enabled: boolean }): Promise<CustomAgentsSnapshot> {
     throw new ContractError('INVALID_INPUT', 'mock api has no subagent definitions')
+  }
+
+  async forkSession(_input: ForkSessionInput): Promise<SessionSummary> {
+    throw new ContractError('INVALID_INPUT', 'mock api cannot fork sessions')
   }
 
   async pickDirectory(): Promise<string | null> {

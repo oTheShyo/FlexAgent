@@ -17,6 +17,8 @@ export interface RegistryRecord {
   archived?: boolean
   /** When the title last stopped being the cwd-derived default. */
   renamedAt?: number
+  /** Session this one forked from (ticket 17); absent = not a fork. */
+  derivedFrom?: string
 }
 
 interface PersistShape {
@@ -217,6 +219,28 @@ export class SessionRegistry {
     this.persist()
   }
 
+  /**
+   * Register a fork (ticket 17): same workspace as the source, a derived
+   * title, and the lineage marker. The transcript prefix itself is the
+   * forked session's history; nothing else is copied.
+   */
+  fork(id: SessionId, sourceId: SessionId, title: string): RegistryRecord {
+    const source = this.require(sourceId)
+    const now = Date.now()
+    const rec: RegistryRecord = {
+      id,
+      title: title.slice(0, MAX_TITLE),
+      cwd: source.cwd,
+      createdAt: now,
+      updatedAt: now,
+      runState: 'idle',
+      derivedFrom: sourceId
+    }
+    this.records.set(id, rec)
+    this.persist()
+    return rec
+  }
+
   /** Rollback a create() that failed before the worker attached a PI session. */
   remove(id: SessionId): void {
     if (this.records.delete(id)) this.persist()
@@ -246,6 +270,7 @@ function toSummary(rec: RegistryRecord): SessionSummary {
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
     runState: rec.runState,
-    archived: rec.archived === true
+    archived: rec.archived === true,
+    ...(rec.derivedFrom !== undefined ? { derivedFrom: rec.derivedFrom } : {})
   }
 }

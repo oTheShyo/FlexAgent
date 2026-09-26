@@ -189,6 +189,15 @@ function SessionRow({
           >
             <ChatDotIcon />
             <span className="min-w-0 flex-1 truncate">{title}</span>
+            {session.derivedFrom !== undefined && (
+              <span
+                className="shrink-0 rounded bg-[var(--surface-sunken)] px-1 py-0.5 text-[10px] text-[var(--text-muted)]"
+                title="Derived from another conversation"
+                data-testid="session-derived-badge"
+              >
+                fork
+              </span>
+            )}
             <span
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                 running ? 'bg-[var(--warning)]' : 'bg-[var(--status-idle)]'

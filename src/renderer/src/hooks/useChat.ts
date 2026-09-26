@@ -100,6 +100,7 @@ export interface UseChatResult {
   renameSession: (sessionId: string, title: string) => Promise<boolean>
   /** Persist archive/restore; resolves false when the write was rejected. */
   setSessionArchived: (sessionId: string, archived: boolean) => Promise<boolean>
+  forkSession: (message: { createdAt: number; content: string }) => Promise<SessionSummary | null>
   /**
    * Start a chat that has no project yet — it runs in the scratch workspace, so
    * New chat never interrupts with a folder picker. Pass a cwd to skip that and
@@ -658,6 +659,30 @@ export function useChat(): UseChatResult {
     [refreshSessions]
   )
 
+  /**
+   * Fork from a stable completed assistant message (ticket 17). The parent is
+   * untouched; the new session is opened so the user lands on the copy.
+   */
+  const forkSession = useCallback(
+    async (message: { createdAt: number; content: string }): Promise<SessionSummary | null> => {
+      if (activeSessionId === null) return null
+      try {
+        const forked = await codexApi.forkSession({
+          sessionId: activeSessionId,
+          messageTs: message.createdAt,
+          messagePrefix: message.content.slice(0, 64)
+        })
+        await refreshSessions()
+        await openSession(forked.id)
+        return forked
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+        return null
+      }
+    },
+    [activeSessionId, refreshSessions, openSession]
+  )
+
   const newChat = useCallback(
     (cwd?: string): Promise<SessionSummary | null> => createSession(cwd),
     [createSession]
@@ -983,6 +1008,7 @@ export function useChat(): UseChatResult {
     deleteSession,
     renameSession,
     setSessionArchived,
+    forkSession,
     newChat,
     chooseProject,
     bindingProject,

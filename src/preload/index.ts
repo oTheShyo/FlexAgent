@@ -52,6 +52,7 @@ import {
   type PermissionRuleSet,
   type CustomAgentDefinitionInput,
   type CustomAgentsSnapshot,
+  type ForkSessionInput,
   type RemovePermissionRuleInput,
   type SavePermissionRuleInput,
   type PromptInput,
@@ -182,6 +183,8 @@ const codex: CodexApi = {
 
   setSessionArchived: (input: SetSessionArchivedInput) =>
     invoke<SessionSummary>(IPC.setSessionArchived, input),
+
+  forkSession: (input: ForkSessionInput) => invoke<SessionSummary>(IPC.forkSession, input),
 
   prompt: (input: PromptInput) => invoke(IPC.prompt, input),
 

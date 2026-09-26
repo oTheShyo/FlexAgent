@@ -247,6 +247,51 @@ export function registerIpcHandlers(
     })
   )
 
+  ipcMain.handle(IPC.forkSession, (_e, input: { sessionId?: unknown; messageTs?: unknown; messagePrefix?: unknown }) =>
+    guard(async () => {
+      if (input === null || typeof input !== 'object') {
+        throw new ContractError('INVALID_INPUT', 'expected { sessionId, messageTs, messagePrefix }')
+      }
+      if (typeof input.sessionId !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'sessionId must be a string')
+      }
+      if (typeof input.messageTs !== 'number' || !Number.isFinite(input.messageTs)) {
+        throw new ContractError('INVALID_INPUT', 'messageTs must be a number')
+      }
+      if (typeof input.messagePrefix !== 'string' || input.messagePrefix.trim() === '') {
+        throw new ContractError('INVALID_INPUT', 'messagePrefix must be a non-empty string')
+      }
+      const source = registry.require(input.sessionId)
+      // The parent keeps running: forking never touches its host or transcript.
+      const newId = randomUUID()
+      const title = `${source.title} · fork`
+      const rec = registry.fork(newId, source.id, title)
+      try {
+        const result = (await kernel.request({
+          type: 'forkSession',
+          sessionId: source.id,
+          newSessionId: newId,
+          messageTs: input.messageTs,
+          messagePrefix: input.messagePrefix
+        })) as { piSessionFile?: string } | undefined
+        if (result?.piSessionFile) registry.attachPiSession(newId, result.piSessionFile)
+        const stored = registry.require(newId)
+        return {
+          id: stored.id,
+          title: stored.title,
+          cwd: stored.cwd,
+          createdAt: stored.createdAt,
+          updatedAt: stored.updatedAt,
+          runState: stored.runState,
+          derivedFrom: stored.derivedFrom
+        }
+      } catch (err) {
+        registry.remove(newId)
+        throw err
+      }
+    })
+  )
+
   ipcMain.handle(IPC.openSession, (_e, sessionId: unknown) =>
     guard(async () => {
       const perf = perfStart()

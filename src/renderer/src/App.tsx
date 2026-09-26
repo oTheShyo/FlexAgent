@@ -97,6 +97,7 @@ export default function App({ children }: AppProps) {
     deleteSession,
     renameSession,
     setSessionArchived,
+    forkSession,
     newChat,
     chooseProject,
     bindingProject,
@@ -427,6 +428,15 @@ export default function App({ children }: AppProps) {
     [openSession, closeDetail]
   )
 
+  // Ticket 17: fork from a stable completed assistant message — the new
+  // session inherits the transcript prefix; disk files are never touched.
+  const handleForkSession = useCallback(
+    (message: { createdAt: number; content: string }): void => {
+      void forkSession(message)
+    },
+    [forkSession]
+  )
+
   const navigateHistory = useCallback(
     (step: -1 | 1): void => {
       const next = history.index + step
@@ -706,6 +716,7 @@ export default function App({ children }: AppProps) {
         onRegenerate={onRegenerate}
         onAddReference={handleAddReference}
         onErrorRetry={onErrorRetry}
+        onFork={handleForkSession}
       />
     ) : historyLoading === true ? (
       <ChatSkeleton />

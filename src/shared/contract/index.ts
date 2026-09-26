@@ -52,6 +52,23 @@ export interface SessionSummary {
    * missing value as `false` rather than as a third state.
    */
   archived?: boolean
+  /**
+   * Session this one forked from (ticket 17). Optional so a pre-fork
+   * sessions.json still loads; the sidebar shows a derived badge from it.
+   */
+  derivedFrom?: string
+}
+
+/**
+ * Fork a session from one stable completed assistant message (ticket 17).
+ * The fork point is addressed the way the renderer sees it: the message's
+ * timestamp and the leading 64 characters of its text — the same pair the
+ * synthetic chat-message id embeds. Main matches them against the transcript.
+ */
+export interface ForkSessionInput {
+  sessionId: SessionId
+  messageTs: number
+  messagePrefix: string
 }
 
 export interface SessionDetail {
@@ -1539,6 +1556,8 @@ export interface CodexApi {
   renameSession(input: RenameSessionInput): Promise<SessionSummary>
   /** Archive or restore a session. Both are persisted, neither deletes. */
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
+  /** Fork from one stable assistant message (ticket 17). History to the fork point; disk files untouched. */
+  forkSession(input: ForkSessionInput): Promise<SessionSummary>
 
   /**
    * Submit user text. Resolves when accepted (not when the run finishes).
@@ -1754,6 +1773,7 @@ export const IPC = {
   setSessionCwd: 'codex:setSessionCwd',
   renameSession: 'codex:renameSession',
   setSessionArchived: 'codex:setSessionArchived',
+  forkSession: 'codex:forkSession',
   prompt: 'codex:prompt',
   abort: 'codex:abort',
   respondPermission: 'codex:respondPermission',

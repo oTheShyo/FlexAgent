@@ -146,6 +146,18 @@ export function CheckIcon({ className }: IconProps) {
   )
 }
 
+export function ForkIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <circle cx="6" cy="5" r="2.2" />
+      <circle cx="6" cy="19" r="2.2" />
+      <circle cx="18" cy="9" r="2.2" />
+      <path d="M6 7.2v9.6" />
+      <path d="M6 12c0-2 2-3 4-3h4" />
+    </svg>
+  )
+}
+
 export function SendIcon({ className }: IconProps) {
   return (
     <svg {...baseProps(className)} strokeWidth={1.75}>

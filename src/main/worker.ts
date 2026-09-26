@@ -50,6 +50,7 @@ import {
   SKILLS_HOME
 } from './skills/selfEvolution'
 import { createMultiAgentExtension } from './agents/multiAgent'
+import { forkSessionFile } from './sessionFork'
 import { resolveByAnySessionId } from './agents/parentLookup'
 import { createSecurityExtension } from './security/securityExtension'
 import { hashArgs, recordAudit } from './security/auditLog'
@@ -2031,6 +2032,11 @@ async function acquireResourceLoader(
           loadPi,
           getModelRuntime,
           forwardPermission: forwardChildPermission,
+          // Ticket 16: a custom role without an explicit model follows the
+          // session that dispatched it — the parent's CURRENT model, not the
+          // settings default.
+          getParentModel: async (parentSessionId) =>
+            resolveParentHost(parentSessionId)?.session.model ?? undefined,
           // A child's tokens land under the parent's sessionId: the child
           // session is in-memory and gone before the parent hears back, so it
           // has no id of its own to report. `role` is what keeps the row
@@ -2214,6 +2220,29 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
   switch (req.type) {
     case 'listSessions': {
       return [...sessions.keys()]
+    }
+    case 'forkSession': {
+      // Ticket 17: seed a new session from one stable assistant message. The
+      // parent keeps its host, its transcript, and its run — the fork only
+      // copies transcript entries up to the fork point into a fresh PI file.
+      const host = requireSession(req.sessionId)
+      const sourceFile = host.session.sessionFile
+      if (sourceFile === undefined) {
+        throw new ContractError('INVALID_INPUT', 'session has no transcript file to fork from')
+      }
+      const newPiId = randomUUID()
+      const forked = forkSessionFile(
+        sourceFile,
+        { ts: req.messageTs, prefix: req.messagePrefix },
+        newPiId
+      )
+      const { SessionManager } = await loadPi()
+      const sessionManager = SessionManager.open(forked.file, undefined, host.cwd)
+      const newHost = await attachSession(req.newSessionId, host.cwd, sessionManager)
+      // Config as of the fork point rides the transcript replay
+      // (model_change / thinking_level_change entries before the fork line);
+      // nothing here re-derives it from the parent's current state.
+      return { piSessionFile: newHost.session.sessionFile, entriesKept: forked.entriesKept }
     }
     case 'createSession': {
       const perf = perfStart()
