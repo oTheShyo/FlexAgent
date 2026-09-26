@@ -10,6 +10,7 @@ import {
   type ModelOption,
   type PermissionDecision,
   type PromptMode,
+  type PromptReference,
   type RunState,
   type SessionSummary,
   type SlashCommandSummary,
@@ -53,7 +54,9 @@ export interface UseChatResult {
   pendingPermission: PermissionRequest | null
   /** Live "model call failed, retrying" notice, or null. */
   modelRetry: ModelRetryState | null
-  send: (text: string, mode?: PromptMode) => Promise<void>
+  send: (text: string, mode?: PromptMode, references?: PromptReference[]) => Promise<void>
+  /** Ticket 27: files offered by the Composer `@` popup, for this session. */
+  listWorkspaceFiles: (sessionId: string, query: string) => Promise<string[]>
   stop: () => Promise<void>
   respond: (decision: PermissionDecision) => Promise<void>
   applyFiles: (files: FileChange[]) => Promise<ApplyFileChangesResult | null>
@@ -699,16 +702,42 @@ export function useChat(): UseChatResult {
     }
   }, [])
 
-  const send = useCallback(async (text: string, mode?: PromptMode): Promise<void> => {
-    const sessionId = activeIdRef.current
-    const trimmed = text.trim()
-    if (!sessionId || trimmed.length === 0) return
-    try {
-      await codexApi.prompt({ sessionId, text: trimmed, mode })
-    } catch (err) {
-      setItems((prev) => [...prev, errorItemFrom(err)])
-    }
-  }, [])
+  const send = useCallback(
+    async (text: string, mode?: PromptMode, references?: PromptReference[]): Promise<void> => {
+      const sessionId = activeIdRef.current
+      const trimmed = text.trim()
+      if (!sessionId || trimmed.length === 0) return
+      try {
+        // Ticket 27: references ride as their own field. The main process opens
+        // any file they point at, so what arrives here is a path and what the
+        // model reads is the file.
+        await codexApi.prompt({
+          sessionId,
+          text: trimmed,
+          mode,
+          ...(references !== undefined && references.length > 0 ? { references } : {})
+        })
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+      }
+    },
+    []
+  )
+
+  /**
+   * Ticket 27. Never throws: a popup with nothing in it is a popup to close,
+   * not an error to interrupt the draft with.
+   */
+  const listWorkspaceFiles = useCallback(
+    async (sessionId: string, query: string): Promise<string[]> => {
+      try {
+        return await codexApi.listWorkspaceFiles({ sessionId, query })
+      } catch {
+        return []
+      }
+    },
+    []
+  )
 
   const stop = useCallback(async (): Promise<void> => {
     const sessionId = activeIdRef.current
@@ -788,6 +817,7 @@ export function useChat(): UseChatResult {
     files,
     pendingPermission,
     send,
+    listWorkspaceFiles,
     stop,
     respond,
     applyFiles,

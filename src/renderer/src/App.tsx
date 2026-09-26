@@ -1,6 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { PermissionDecision, PromptMode, ThinkingLevel } from './types'
+import type {
+  PermissionDecision,
+  PromptMode,
+  PromptReference,
+  ThinkingLevel
+} from './types'
 import Sidebar from './components/Sidebar'
 import TitleBar from './components/TitleBar'
 import TopBar from './components/TopBar'
@@ -82,6 +87,7 @@ export default function App({ children }: AppProps) {
     respondQuestion,
     stopQuestionTimer,
     send,
+    listWorkspaceFiles,
     stop,
     respond,
     applyFiles,
@@ -168,7 +174,7 @@ export default function App({ children }: AppProps) {
   const [queuedBySession, setQueuedBySession] = useState<Record<string, string[]>>({})
 
   const handleSend = useCallback(
-    (text: string, mode?: PromptMode): void => {
+    (text: string, mode?: PromptMode, references?: PromptReference[]): void => {
       const sessionId = activeSessionId
       // An explicit mode is a caller that already chose steer vs followUp, so
       // only the plain send path is eligible to wait for the run to finish.
@@ -179,7 +185,7 @@ export default function App({ children }: AppProps) {
         }))
         return
       }
-      void send(text, mode)
+      void send(text, mode, references)
     },
     [send, activeSessionId, isStreaming]
   )
@@ -809,7 +815,12 @@ export default function App({ children }: AppProps) {
 
           {activePageName === null && (
             <Composer
-              onSend={handleSend}
+              onSend={(text, references) => handleSend(text, undefined, references)}
+              listWorkspaceFiles={
+                activeSessionId === null
+                  ? undefined
+                  : (query: string) => listWorkspaceFiles(activeSessionId, query)
+              }
               onStop={handleStop}
               disabled={!activeSessionId}
               running={isStreaming}

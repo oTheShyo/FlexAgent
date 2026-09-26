@@ -15,6 +15,7 @@ import {
   type PermissionMode,
   type PermissionRuleSet,
   type PromptInput,
+  type WorkspaceFileQuery,
   type RespondPermissionInput,
   type NetworkSettings,
   type SetModelInput,
@@ -61,6 +62,8 @@ import type { InstallSkillSource } from '../shared/contract'
 import { addMemoryCard, listMemoryCards, removeMemoryCard } from './skills/memoryStore'
 import { listSkillUsage } from './skills/skillUsage'
 import { RECALL_BUDGET, extractRecallQueries, searchSessionRecords } from './skills/sessionSearch'
+import { listWorkspaceFiles, invalidateWorkspaceFiles } from './workspaceFiles'
+import { renderReferences } from './promptReferences'
 import type { SessionSearchHit } from '../shared/contract'
 
 interface IpcFailure {
@@ -309,6 +312,8 @@ export function registerIpcHandlers(
         // open() may rewrite the session file; keep the registry pointing at it.
         if (result?.piSessionFile) registry.attachPiSession(input.sessionId, result.piSessionFile)
         registry.setCwd(input.sessionId, cwd)
+        // Ticket 27: the cached file list is now the previous project's list.
+        invalidateWorkspaceFiles(rec.cwd)
         perf.mark('registry.setCwd')
       }
       perf.done('ipc.setSessionCwd', { sessionId: input.sessionId, cwd })
@@ -369,15 +374,39 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       } catch {
         recall = undefined
       }
+      // Ticket 27: the references travel as their own field and are rendered to
+      // text here — main is where the registry (and so the session's cwd) lives,
+      // and opening a file is work the agent's thread should not wait for. What
+      // could not be attached comes back as notices rather than being dropped,
+      // because a mention that contributes nothing is otherwise invisible.
+      let promptContext: string | undefined
+      let notices: string[] | undefined
+      if (input.references !== undefined && input.references.length > 0) {
+        try {
+          const rendered = await renderReferences(rec.cwd, input.references)
+          if (rendered.block.length > 0) promptContext = rendered.block
+          if (rendered.notices.length > 0) notices = rendered.notices
+        } catch (err) {
+          // Rendering must never cost the user their turn. The references are
+          // the part that fails; the prompt they typed still goes through.
+          notices = [
+            `The attached context could not be prepared: ${err instanceof Error ? err.message : String(err)}`
+          ]
+        }
+      }
       const ack = (await kernel.request({
         type: 'prompt',
         sessionId: input.sessionId,
         text: input.text,
         disposition,
-        ...(recall !== undefined ? { recall } : {})
+        ...(recall !== undefined ? { recall } : {}),
+        ...(promptContext !== undefined ? { promptContext } : {})
       })) as { disposition?: string } | undefined
       registry.touch(input.sessionId)
-      return { disposition: ack?.disposition ?? disposition }
+      return {
+        disposition: ack?.disposition ?? disposition,
+        ...(notices !== undefined ? { notices } : {})
+      }
     })
   )
 
@@ -900,6 +929,18 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
         .map((summary) => registry.get(summary.id))
         .filter((record): record is NonNullable<typeof record> => record !== undefined)
       return searchSessionRecords(records, query)
+    })
+  )
+
+  ipcMain.handle(IPC.listWorkspaceFiles, (_e, input: unknown) =>
+    guard(async () => {
+      const query = input as WorkspaceFileQuery | undefined
+      if (query === undefined || typeof query.sessionId !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      // Scanned here rather than in the worker: walking a tree while the agent
+      // is mid-run would stall the run, and the cwd is already on the record.
+      return listWorkspaceFiles(registry.require(query.sessionId).cwd, query.query ?? '')
     })
   )
 

@@ -43,6 +43,7 @@ import {
   type SessionDetail,
   type SessionId,
   type SessionSearchHit,
+  type WorkspaceFileQuery,
   type SessionSummary,
   type SetModelInput,
   type SetModelRoleInput,
@@ -1535,6 +1536,24 @@ export class MockCodexApi implements CodexApi {
     for (const card of this.memoryCards) {
       if (card.file === file) card.index = next++
     }
+  }
+
+  /**
+   * Fixture paths — the mock has no filesystem. Marked as such because a list
+   * that looks real but is not is the exact failure ticket 27 exists to fix.
+   */
+  async listWorkspaceFiles(input: WorkspaceFileQuery): Promise<string[]> {
+    const needle = (input.query ?? '').trim().toLowerCase()
+    const fixtures = [
+      'src/renderer/src/App.tsx',
+      'src/renderer/src/components/Composer.tsx',
+      'src/renderer/src/hooks/useChat.ts',
+      'src/main/worker.ts',
+      'src/shared/contract/index.ts',
+      'package.json'
+    ]
+    if (needle.length === 0) return fixtures.slice(0, 4)
+    return fixtures.filter((path) => path.toLowerCase().includes(needle))
   }
 
   async searchSessions(query: string): Promise<SessionSearchHit[]> {    const needle = query.trim().toLowerCase()

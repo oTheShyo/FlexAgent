@@ -68,6 +68,7 @@ import {
   type SetSessionCwdInput,
   type SetThinkingLevelInput,
   type SessionSearchHit,
+  type WorkspaceFileQuery,
   type SkillPendingWrite,
   type SkillUndoEntry,
   type SkillUsageEntry,
@@ -354,6 +355,9 @@ const codex: CodexApi = {
   listSkillUsage: () => invoke<SkillUsageEntry[]>(IPC.listSkillUsage),
 
   searchSessions: (query: string) => invoke<SessionSearchHit[]>(IPC.searchSessions, query),
+
+  listWorkspaceFiles: (input: WorkspaceFileQuery) =>
+    invoke<string[]>(IPC.listWorkspaceFiles, input),
 
   listSkillHubs: () => invoke<SkillHubInfo[]>(IPC.listSkillHubs),
 

@@ -9,6 +9,7 @@ import type {
   ModelConfig,
   ModelOption,
   PermissionMode,
+  PromptReference,
   SessionSearchHit,
   SessionSummary,
   SlashCommandSummary,
@@ -17,7 +18,6 @@ import type {
 import { codexApi } from '../api'
 import { pathBasename } from '../lib/paths'
 import { ModeSwitcher } from './ModeSwitcher'
-import { createComposerFileIndex } from './composerFiles'
 import {
   composePrompt,
   describeRejections,
@@ -29,7 +29,8 @@ import {
   addReference,
   createSelectionReference,
   createSessionReference,
-  formatReferencesBlock,
+  createFileReference,
+  toPromptReferences,
   MAX_REFERENCES,
   MAX_TOTAL_REFERENCE_CHARS,
   countReferenceChars,
@@ -66,7 +67,12 @@ import {
 } from './icons'
 
 export interface ComposerProps {
-  onSend: (text: string) => void
+  /**
+   * Ticket 27: the draft and its references travel apart. The text is what the
+   * user typed; the references are opened on the main process, where a file
+   * mention can be turned into the file's contents.
+   */
+  onSend: (text: string, references: PromptReference[]) => void
   /** Aborts the run in progress; wired into the send-button slot while running. */
   onStop: () => void
   disabled?: boolean
@@ -110,6 +116,12 @@ export interface ComposerProps {
   /** Chats offered by `#`; the open one is excluded — a chat cannot reference itself. */
   sessions?: readonly SessionSummary[]
   activeSessionId?: string | null
+  /**
+   * Ticket 27: real files from the session's working directory, queried as the
+   * user types. Absent means there is no session yet, and the popup stays shut
+   * rather than offering paths from a project the user is not in.
+   */
+  listWorkspaceFiles?: (query: string) => Promise<string[]>
 }
 
 const MENTION_BEFORE_CARET = /@[\w./-]*$/
@@ -450,7 +462,8 @@ function Composer({
   selectionPick = null,
   onSelectionPickConsumed,
   sessions = [],
-  activeSessionId = null
+  activeSessionId = null,
+  listWorkspaceFiles
 }: ComposerProps) {
   const [text, setText] = useState('')
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -478,7 +491,6 @@ function Composer({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const referencesRef = useRef<readonly ContextReference[]>(references)
   referencesRef.current = references
-  const fileIndexRef = useRef(createComposerFileIndex())
 
   const canSend =
     !disabled &&
@@ -515,15 +527,31 @@ function Composer({
     }
   }, [openMenu, closeMenus])
 
-  // The query is debounced before it reaches the list source, and the source
-  // caches per query: an identical query never recomputes. Today the source is a
-  // static fixture, so this only avoids re-rendering the popup; when a real
-  // `listFiles` lands it is the one place that has to change.
+  // The query is debounced before it reaches the list source, so a fast typist
+  // costs one lookup and not one per keystroke. The source itself is the main
+  // process, which scans the session's own directory and caches the walk —
+  // this side only has to not ask more often than it needs to, and to ignore a
+  // reply that arrives after the query it answers has already been replaced.
   const mentionListQuery = useDebouncedValue(mentionQuery, MENTION_DEBOUNCE_MS)
-  const mentionFiles = useMemo(
-    () => (mentionListQuery === null ? [] : fileIndexRef.current.query(mentionListQuery)),
-    [mentionListQuery]
-  )
+  const [mentionFiles, setMentionFiles] = useState<string[]>([])
+  useEffect(() => {
+    if (mentionListQuery === null || listWorkspaceFiles === undefined) {
+      setMentionFiles([])
+      return
+    }
+    let live = true
+    void listWorkspaceFiles(mentionListQuery).then(
+      (paths) => {
+        if (live) setMentionFiles(paths)
+      },
+      () => {
+        if (live) setMentionFiles([])
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [mentionListQuery, listWorkspaceFiles])
 
   const mentionItems = useMemo<CompletionItem[]>(
     () =>
@@ -736,9 +764,20 @@ function Composer({
       const snippet = `@${path} `
       setText(`${el.value.slice(0, start)}${snippet}${el.value.slice(caret)}`)
       pendingCaretRef.current = start + snippet.length
+      // The path stays in the draft because that is what the user typed, but on
+      // its own it is a string the model cannot read. Staging the file as a
+      // reference is what sends the contents: the main process opens it when the
+      // prompt goes out.
+      const result = addReference(referencesRef.current, createFileReference(path))
+      if (result.ok) {
+        setReferenceNotice(null)
+        onReferencesChange?.(result.references)
+      } else {
+        setReferenceNotice(result.reason)
+      }
       closeMention()
     },
-    [closeMention]
+    [closeMention, onReferencesChange]
   )
 
   const pickSlashCommand = useCallback(
@@ -899,14 +938,12 @@ function Composer({
 
   const submit = (): void => {
     if (!canSend) return
-    // The references travel inside the same string the kernel already receives;
-    // the contract has no field of their own yet (see the ticket's Blocked by).
-    const prompt = composePrompt(
-      text.trim(),
-      attachments,
-      formatReferencesBlock(references)
-    )
-    onSend(prompt)
+    // Ticket 27: references go as their own argument rather than being formatted
+    // into the text. The kernel only takes a string either way, but opening the
+    // file a mention points at has to happen where the filesystem is — so the
+    // block is built there, and what is sent here is still the user's draft.
+    const prompt = composePrompt(text.trim(), attachments)
+    onSend(prompt, toPromptReferences(references))
     setText('')
     setAttachments([])
     setAttachmentNotice(null)

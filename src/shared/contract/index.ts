@@ -206,16 +206,47 @@ export interface SetSessionArchivedInput {
  */
 export type PromptMode = 'steer' | 'followUp'
 
+/**
+ * Something the user pulled into a prompt — a quoted selection, a file, a
+ * session. Ticket 27.
+ *
+ * Carried as its own field rather than folded into `text` so the two sides
+ * agree on what is a reference and what the user actually typed. The kernel
+ * still only accepts a string, so these are rendered into the prompt on the
+ * worker side; what the field buys is that the rendering happens once, in one
+ * place, with the file contents available and the size limits enforced where
+ * they cannot be bypassed.
+ */
+export interface PromptReference {
+  /** `selection` carries `text`; `file` carries `path`; `session` carries both. */
+  kind: 'selection' | 'file' | 'session'
+  /** Shown to the user on the chip, and to the model as the block's heading. */
+  label: string
+  /** The quoted text. Present for `selection` and `session`. */
+  text?: string
+  /** Path relative to the session's working directory. Present for `file`. */
+  path?: string
+}
+
 export interface PromptInput {
   sessionId: SessionId
   text: string
   mode?: PromptMode
+  /** Ticket 27. Additive; a caller that omits it behaves exactly as before. */
+  references?: PromptReference[]
 }
 
 export type PromptDisposition = 'started' | 'steering' | 'queued'
 
 export interface PromptAck {
   disposition: PromptDisposition
+  /**
+   * Ticket 27 (additive). What could not be attached to this prompt — an
+   * unreadable file, a reference over the size limit. Reported rather than
+   * dropped because a mention that silently contributes nothing looks exactly
+   * like one that worked.
+   */
+  notices?: string[]
 }
 
 export type PermissionDecision =
@@ -1232,6 +1263,13 @@ export interface SessionSearchHit {
   updatedAt: number
 }
 
+/** Ticket 27: what the Composer `@` popup asks for. */
+export interface WorkspaceFileQuery {
+  sessionId: SessionId
+  /** Empty or omitted returns the first few paths, ranked by nothing but order. */
+  query?: string
+}
+
 // ─── Skill Hub (v1.8, additive) ──────────────────────────────────────────────
 
 /** A browsable skill catalog: the built-in one plus user-registered ones. */
@@ -1645,6 +1683,13 @@ export interface CodexApi {
   listSkillUsage(): Promise<SkillUsageEntry[]>
   /** Substring search across stored session transcripts (titles + messages). */
   searchSessions(query: string): Promise<SessionSearchHit[]>
+  /**
+   * Ticket 27: files in the session's working directory matching `query`.
+   *
+   * Bounded and cached on the worker — this is called while the user types, so
+   * it returns at most a popup's worth of paths and never the whole tree.
+   */
+  listWorkspaceFiles(input: WorkspaceFileQuery): Promise<string[]>
 
   // ── Skill Hub (v1.8) ──
   /** Built-in hub + user-registered hubs (~/.flexagent/skillhubs.json). */
@@ -1745,6 +1790,7 @@ export const IPC = {
   removeMemoryCard: 'codex:removeMemoryCard',
   listSkillUsage: 'codex:listSkillUsage',
   searchSessions: 'codex:searchSessions',
+  listWorkspaceFiles: 'codex:listWorkspaceFiles',
   listUserMcpServers: 'codex:listUserMcpServers',
   saveUserMcpServer: 'codex:saveUserMcpServer',
   removeUserMcpServer: 'codex:removeUserMcpServer',

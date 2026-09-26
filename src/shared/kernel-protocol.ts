@@ -119,9 +119,21 @@ export type WorkerRequest =
        * prompt text — so this ships alongside rather than being fetched.
        */
       recall?: SessionSearchHit[]
+      /**
+       * Ticket 27 (additive): attached context, already rendered to text.
+       *
+       * Rendered in main rather than here because opening the file a mention
+       * points at is filesystem work, and this thread is the one the agent runs
+       * on — a slow mention must not stall an in-flight run. It stays a separate
+       * field so it can be appended *after* UserPromptSubmit hooks have seen the
+       * prompt: a hook should judge what the user typed, not what we added.
+       */
+      promptContext?: string
     }
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }
+  | { requestId: string; type: 'respondQuestion'; sessionId: SessionId; questionId: string; answer: string }
+  | { requestId: string; type: 'stopQuestionTimer'; sessionId: SessionId; questionId: string }
   | { requestId: string; type: 'getPermissionMode'; sessionId: SessionId }
   | { requestId: string; type: 'setPermissionMode'; sessionId: SessionId; mode: PermissionMode }
   | { requestId: string; type: 'listPermissionRules' }

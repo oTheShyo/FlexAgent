@@ -13,7 +13,14 @@
  * would hide the fact that the user picked something too big — a reference that
  * is silently shortened is worse than one that is refused, because the refusal
  * is visible and the truncation is not.
+ *
+ * A `file` reference holds its path and nothing else. Its contents are read on
+ * the main process when the prompt is sent, not here: the renderer has no
+ * filesystem, and staging a file's text into the draft would mean the user's
+ * draft holds a copy of a file that has since changed.
  */
+
+import type { PromptReference } from '../../../shared/contract'
 
 /** Distinct pieces of context per message. Eight is already a lot of context. */
 export const MAX_REFERENCES = 8
@@ -26,15 +33,20 @@ export const MAX_REFERENCE_CHARS = 8_000
  */
 export const MAX_TOTAL_REFERENCE_CHARS = 24_000
 
-export type ContextReferenceKind = 'selection' | 'session'
+export type ContextReferenceKind = 'selection' | 'session' | 'file'
 
 export interface ContextReference {
   id: string
   kind: ContextReferenceKind
   /** Short label for the chip: "Assistant reply", "Tool output", the chat title. */
   label: string
-  /** Exactly what the model will read. Never shortened — see the header. */
+  /**
+   * Exactly what the model will read, except for a `file`: there this is the
+   * path, and the contents are read when the prompt is sent.
+   */
   text: string
+  /** For an `@` pick: the path, relative to the session's working directory. */
+  path?: string
   /** For a `#` pick: which chat this excerpt came from. */
   sessionId?: string
   /** For a `#` pick: when that chat was last touched, so the block can say. */
@@ -64,6 +76,7 @@ function nextId(kind: ContextReferenceKind): string {
  * same chat is a no-op the user can see, not a stack of copies.
  */
 function referenceKey(reference: ContextReference): string {
+  if (reference.kind === 'file') return `file:${reference.path ?? reference.text.trim()}`
   return reference.sessionId !== undefined
     ? `session:${reference.sessionId}`
     : `selection:${reference.text.trim()}`
@@ -80,9 +93,22 @@ export function truncateLabel(label: string, max = 42): string {
   return label.length <= max ? label : `${label.slice(0, max - 1)}…`
 }
 
-function shortDate(ts: number): string {
-  if (!Number.isFinite(ts) || ts <= 0) return 'unknown date'
-  return new Date(ts).toISOString().slice(0, 10)
+/**
+ * One file, picked with `@`.
+ *
+ * The chip shows the path and the prompt block carries the contents, so `text`
+ * is deliberately the path: it is the only part of this reference the renderer
+ * can prove, and it is what the counter and the duplicate check act on.
+ */
+export function createFileReference(path: string): ContextReference {
+  return {
+    id: nextId('file'),
+    kind: 'file',
+    label: path,
+    text: path,
+    path,
+    createdAt: Date.now()
+  }
 }
 
 export function createSelectionReference(text: string, label: string): ContextReference {
@@ -169,26 +195,32 @@ export function addReference(
 }
 
 /**
- * The prompt block for one message.
+ * Ticket 27: these references as the contract carries them.
  *
- * Delimiters are plain ASCII on their own lines so a quote containing markdown
- * or `---` cannot be mistaken for a boundary, and so the block survives any
- * rendering the agent does with the text afterwards.
+ * Replaces formatting them into the prompt text. A `file` reference goes over as
+ * a path and is opened on the main process; a `selection` or `session` goes over
+ * as the text that was picked. Nothing here is a rendering of the prompt any
+ * more — the block is built where the file can actually be read.
  */
-export function formatReferencesBlock(references: readonly ContextReference[]): string {
-  const parts: string[] = []
+export function toPromptReferences(
+  references: readonly ContextReference[]
+): PromptReference[] {
+  const out: PromptReference[] = []
   for (const reference of references) {
     const text = reference.text.replace(/^\s+|\s+$/g, '')
-    if (text.length === 0) continue
-    if (reference.kind === 'session') {
-      const header = `referenced chat: “${reference.label}” · ${shortDate(
-        reference.sourceUpdatedAt ?? reference.createdAt
-      )}`
-      parts.push(`--- ${header} ---\n${text}\n--- end ${header} ---`)
-    } else {
-      const header = `referenced: ${reference.label}`
-      parts.push(`--- ${header} ---\n${text}\n--- end ${header} ---`)
+    if (reference.kind === 'file') {
+      const path = reference.path ?? text
+      if (path.length === 0) continue
+      out.push({ kind: 'file', label: reference.label, path })
+      continue
     }
+    if (text.length === 0) continue
+    out.push({
+      kind: reference.kind === 'session' ? 'session' : 'selection',
+      label: reference.label,
+      text
+    })
   }
-  return parts.join('\n')
+  return out
 }
+

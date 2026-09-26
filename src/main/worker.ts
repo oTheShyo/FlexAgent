@@ -67,6 +67,7 @@ import { observeEvent, observeLlmCall } from './observability'
 import { PermissionGate, PermissionMemory, describeDenials } from './permissionGate'
 import { effectiveRuleSet } from './permissionRules'
 import { readDefaultPermissionMode, writeDefaultPermissionMode } from './settings'
+import { invalidateWorkspaceFiles } from './workspaceFiles'
 import {
   connectMcpClient,
   listMcpTools,
@@ -2282,6 +2283,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       perf.mark('sessionManager.open')
       const host = await attachSession(req.sessionId, req.cwd, sessionManager)
       perf.mark('attachSession')
+      // Ticket 27: the file list cached for the old cwd is now the wrong
+      // project's list. Dropping it is cheap; offering it would not be.
+      invalidateWorkspaceFiles(previous.cwd)
       perf.done('setSessionCwd', { sessionId: req.sessionId, cwd: req.cwd })
       return { piSessionFile: host.session.sessionFile }
     }
@@ -2344,6 +2348,15 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
           })
         }
       }
+
+      // Ticket 27: context the user attached, already rendered in main. Appended
+      // *after* the hooks so a UserPromptSubmit hook still sees exactly what the
+      // user typed and not the file contents added on their behalf.
+      const appendedContext =
+        req.promptContext === undefined || req.promptContext.length === 0
+          ? ''
+          : `\n\n---\n\n${req.promptContext}`
+      if (appendedContext.length > 0) outgoing = `${outgoing}${appendedContext}`
 
       // Contract §3.1.1: resolve when accepted (preflightResult), not when the run ends.
       // PI prompt() awaits the full run after preflight(true) on the started path.
