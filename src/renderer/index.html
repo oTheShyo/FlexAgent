@@ -2,6 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      CSP (issue 21): default-deny, every allow-listed directive carries a reason.
+      The renderer has zero cross-origin needs — all backend calls go through the
+      preload IPC bridge, which CSP does not govern.
+
+      - default-src 'self'      : deny-all fallback; only app-bundled resources.
+      - script-src 'self'       : vite module bundles; deliberately NO
+                                  'unsafe-inline'/'unsafe-eval' (React prod never
+                                  evals; if dev tooling ever needs it, that is a
+                                  reviewed exception, not a blanket grant).
+      - style-src 'unsafe-inline': EXEMPTION — React style={{…}} props and Tailwind
+                                  arbitrary values compile to inline style
+                                  attributes, which CSP treats as inline style.
+                                  Style injection has no execution semantics, a
+                                  materially lower risk tier than script.
+      - img-src 'self' data: blob: : logo/theme previews are bundled assets;
+                                  data:/blob: cover paste & drag previews, no
+                                  script-execution surface.
+      - font-src 'self' data:   : bundled woff2.
+      - connect-src 'self' ws://localhost:* ws://127.0.0.1:* :
+                                  the ws entries serve dev-mode vite HMR only;
+                                  packaged builds hold no ws connections and the
+                                  allow-list is loopback-scoped regardless.
+      - frame-src 'none'        : no iframes, ever — pairs with the ipcGuard
+                                  sender validation (a frame that cannot load
+                                  also cannot call IPC).
+      - object-src 'none', base-uri 'none', form-action 'none' : standard hardening.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    />
     <link rel="icon" type="image/png" href="/favicon-64.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FlexAgent</title>
