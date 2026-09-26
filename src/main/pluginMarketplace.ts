@@ -48,6 +48,8 @@ import {
   type ResolvedZipPluginSourceRoot
 } from './marketplaceZip'
 import { comparePluginUpdate } from './marketplaceVersionCompare'
+import { resolveNpmPackageSource } from './marketplaceNpm'
+import { observePipeline } from './observability'
 import { countComponents, enumerateComponents, findManifestPath, parseManifest } from './pluginManifest'
 import type { PluginRecord, PluginRegistry } from './pluginRegistry'
 
@@ -134,6 +136,33 @@ function throwIfPluginOperationAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     const error = new Error('Plugin operation cancelled')
     error.name = 'AbortError'
+    throw error
+  }
+}
+
+/** Atomic directory swap with a pipeline event (docs/observability.md §5). */
+async function activateAtomicallyObserved(
+  stage: string,
+  input: Parameters<typeof activateDirectoryAtomically>[0]
+): Promise<AtomicDirectoryActivation> {
+  const started = Date.now()
+  try {
+    const activation = await activateDirectoryAtomically(input)
+    observePipeline({
+      kind: 'marketplace',
+      stage,
+      ok: true,
+      durationMs: Date.now() - started
+    })
+    return activation
+  } catch (error) {
+    observePipeline({
+      kind: 'marketplace',
+      stage,
+      ok: false,
+      durationMs: Date.now() - started,
+      note: error instanceof Error ? error.message : String(error)
+    })
     throw error
   }
 }
@@ -626,7 +655,7 @@ async function stageMarketplaceDirectoryPlugins(
 ): Promise<AtomicDirectoryActivation> {
   throwIfPluginOperationAborted(signal)
   const targetDir = dirname(getMarketplaceManifestPath(storageRoot, marketplace))
-  return activateDirectoryAtomically({
+  return activateAtomicallyObserved("stage marketplace", {
     authorityPath: join(storageRoot, KNOWN_MARKETPLACES_FILE),
     prepare: async (stagedPath) => {
       await writeJsonFile(join(stagedPath, MARKETPLACE_FILE), manifest)
@@ -644,7 +673,7 @@ async function stageMarketplaceManifest(
   signal?: AbortSignal
 ): Promise<AtomicDirectoryActivation> {
   const targetDir = dirname(getMarketplaceManifestPath(storageRoot, marketplace))
-  return activateDirectoryAtomically({
+  return activateAtomicallyObserved("stage marketplace", {
     authorityPath: join(storageRoot, KNOWN_MARKETPLACES_FILE),
     prepare: async (stagedPath) => {
       await writeJsonFile(join(stagedPath, MARKETPLACE_FILE), manifest)
@@ -753,7 +782,10 @@ export function parseMarketplaceManifest(value: unknown): PluginMarketplaceManif
   return normalizeMarketplaceManifest({
     ...value,
     name,
-    plugins: pluginEntries
+    plugins: pluginEntries,
+    // A marketplace manifest on disk may carry a stray "raw" field; force it to
+    // the parsed JSON so downstream staging never persists a bogus object.
+    raw: value
   })
 }
 
@@ -1254,7 +1286,35 @@ async function resolvePluginSourceRoot(input: {
         url: normalizeGitUrl(readRequiredPluginSourceString(source, 'url', 'git-subdir URL'))
       })
     }
-    if (sourceKind === 'npm' || sourceKind === 'pip') {
+    if (sourceKind === 'npm' || sourceKind === 'npx') {
+      // npx is an alias: both resolve a registry package to a directory and
+      // hand it to the same atomic staging as every other source kind.
+      const pkg = readRequiredPluginSourceString(source, 'package', 'npm package name')
+      const resolved = await resolveNpmPackageSource({
+        package: pkg,
+        signal: input.signal,
+        ...(typeof source.path === 'string' && source.path.length > 0
+          ? { path: source.path }
+          : {}),
+        ...(typeof source.version === 'string' && source.version.length > 0
+          ? { version: source.version }
+          : {})
+      })
+      try {
+        const root = resolved.path
+        if (!directoryExists(root)) {
+          throw new ContractError(
+            'PLUGIN_SOURCE_INVALID',
+            `npm package did not yield a usable directory: ${pkg}@${resolved.version}`
+          )
+        }
+        return { cleanup: resolved.cleanup, path: root }
+      } catch (error) {
+        await resolved.cleanup?.()
+        throw error
+      }
+    }
+    if (sourceKind === 'pip') {
       throw new ContractError('PLUGIN_SOURCE_INVALID', `Unsupported plugin source: ${sourceKind}`)
     }
     throw new ContractError(
@@ -1378,7 +1438,7 @@ async function cacheMarketplacePlugin(input: {
     target = getPluginCacheDir(input.storageRoot, input.marketplace, input.entry.name, version)
     if (resolve(sourceRoot.path) !== resolve(target)) {
       throwIfPluginOperationAborted(input.signal)
-      activation = await activateDirectoryAtomically({
+      activation = await activateAtomicallyObserved("activate plugin", {
         prepare: async (stagedPath) => {
           await ensureMarketplaceEntryManifest({ entry: input.entry, target: stagedPath })
         },
@@ -1516,6 +1576,34 @@ export class MarketplaceService {
   }
 
   async installFromMarketplace(input: InstallFromMarketplaceInput): Promise<PluginSummary> {
+    // Whole-run pipeline event (docs/observability.md): per-stage events come
+    // from the resolvers and the observed atomic activations underneath.
+    const started = Date.now()
+    try {
+      const summary = await this.installFromMarketplaceInner(input)
+      observePipeline({
+        kind: 'marketplace',
+        stage: 'install',
+        ok: true,
+        durationMs: Date.now() - started,
+        note: summary.id
+      })
+      return summary
+    } catch (error) {
+      observePipeline({
+        kind: 'marketplace',
+        stage: 'install',
+        ok: false,
+        durationMs: Date.now() - started,
+        note: error instanceof Error ? error.message : String(error)
+      })
+      throw error
+    }
+  }
+
+  private async installFromMarketplaceInner(
+    input: InstallFromMarketplaceInput
+  ): Promise<PluginSummary> {
     const source = input.source
     const overwrite = input.overwrite === true
     if (source.kind === 'entry') {
@@ -1644,7 +1732,7 @@ export class MarketplaceService {
       })
       let activation: AtomicDirectoryActivation | undefined
       if (resolve(rootPath) !== resolve(target)) {
-        activation = await activateDirectoryAtomically({
+        activation = await activateAtomicallyObserved("activate plugin", {
           prepare: async (stagedPath) => {
             await ensureMarketplaceEntryManifest({
               entry: {

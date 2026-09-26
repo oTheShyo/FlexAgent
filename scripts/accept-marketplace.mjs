@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { crc32 } from 'zlib'
+import { create as createTar } from 'tar'
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
 const SRC = join(ROOT, 'src', 'main')
@@ -394,6 +395,121 @@ async function main() {
       )
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  }
+
+  {
+    // npm/npx source (issue 24): a local registry server hands out a real tgz
+    // built from a plugin fixture, so resolve → download → verify → extract →
+    // atomic activation all run against realistic bytes.
+    const npmPlugin = join(fixtures, 'npm-demo')
+    writePlugin(npmPlugin, 'npm-demo', '2.5.0')
+    const pkgStage = join(fixtures, 'npm-stage', 'package')
+    mkdirSync(join(pkgStage, 'commands'), { recursive: true })
+    writeJson(join(pkgStage, 'plugin.json'), {
+      name: 'npm-demo',
+      version: '2.5.0',
+      description: 'npm source accept fixture'
+    })
+    writeFileSync(join(pkgStage, 'commands', 'hello.md'), '# hello\n', 'utf8')
+    const tgzPath = join(fixtures, 'npm-demo-2.5.0.tgz')
+    await createTar({ cwd: join(fixtures, 'npm-stage'), file: tgzPath, gzip: true, portable: true }, [
+      'package'
+    ])
+    const tgzBytes = readFileSync(tgzPath)
+    const npmIntegrity = `sha512-${createHash('sha512').update(tgzBytes).digest('base64')}`
+    const badIntegrity = `sha512-${createHash('sha512').update(Buffer.from('not-the-tarball')).digest('base64')}`
+
+    let npmPort = 0
+    const npmServer = createServer((req, res) => {
+      const pathOnly = (req.url ?? '').split('?')[0]
+      if (pathOnly === '/npm-demo') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            'dist-tags': { latest: '2.5.0' },
+            versions: {
+              '2.5.0': {
+                dist: {
+                  tarball: `http://127.0.0.1:${npmPort}/npm-demo-2.5.0.tgz`,
+                  integrity: npmIntegrity
+                }
+              },
+              '9.9.9': {
+                dist: {
+                  tarball: `http://127.0.0.1:${npmPort}/npm-demo-2.5.0.tgz`,
+                  integrity: badIntegrity
+                }
+              }
+            }
+          })
+        )
+        return
+      }
+      if (pathOnly === '/npm-demo-2.5.0.tgz') {
+        res.writeHead(200, { 'Content-Type': 'application/x-tar' })
+        res.end(tgzBytes)
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    await new Promise((resolveListen) => npmServer.listen(0, '127.0.0.1', resolveListen))
+    npmPort = npmServer.address().port
+    const previousRegistry = process.env.FLEXAGENT_NPM_REGISTRY
+    process.env.FLEXAGENT_NPM_REGISTRY = `http://127.0.0.1:${npmPort}`
+
+    const npmMktRoot = join(fixtures, 'npm-marketplace')
+    writeJson(join(npmMktRoot, '.flex-plugin', 'marketplace.json'), {
+      name: 'npmmkt',
+      plugins: [
+        { name: 'npm-demo', source: { source: 'npm', package: 'npm-demo' } },
+        { name: 'npm-demo-pinned', source: { source: 'npx', package: 'npm-demo@2.5.0' } },
+        { name: 'npm-demo-bad', source: { source: 'npm', package: 'npm-demo', version: '9.9.9' } },
+        { name: 'npm-missing', source: { source: 'npm', package: 'no-such-pkg-here' } }
+      ],
+      raw: {}
+    })
+
+    const s2 = createService(mod, storageRoot)
+    try {
+      await s2.service.addMarketplace({ source: npmMktRoot })
+      const summary = await s2.service.installFromMarketplace({
+        source: { kind: 'entry', marketplace: 'npmmkt', name: 'npm-demo' }
+      })
+      eq('npm install id', summary.id, 'npm-demo@npmmkt')
+      eq('npm install version', summary.version, '2.5.0')
+      ok(
+        'npm install registry record',
+        Boolean(s2.registry.get('npm-demo@npmmkt')?.rootPath)
+      )
+
+      const pinned = await s2.service.installFromMarketplace({
+        source: { kind: 'entry', marketplace: 'npmmkt', name: 'npm-demo-pinned' },
+        overwrite: true
+      })
+      eq('npx alias install id', pinned.id, 'npm-demo-pinned@npmmkt')
+
+      await expectCode(
+        'npm integrity mismatch rejects',
+        () =>
+          s2.service.installFromMarketplace({
+            source: { kind: 'entry', marketplace: 'npmmkt', name: 'npm-demo-bad' }
+          }),
+        'PLUGIN_DOWNLOAD_FAILED'
+      )
+      await expectCode(
+        'npm package 404 rejects',
+        () =>
+          s2.service.installFromMarketplace({
+            source: { kind: 'entry', marketplace: 'npmmkt', name: 'npm-missing' }
+          }),
+        'PLUGIN_NOT_FOUND'
+      )
+    } finally {
+      if (previousRegistry === undefined) delete process.env.FLEXAGENT_NPM_REGISTRY
+      else process.env.FLEXAGENT_NPM_REGISTRY = previousRegistry
+      await new Promise((resolveClose) => npmServer.close(resolveClose))
     }
   }
 
