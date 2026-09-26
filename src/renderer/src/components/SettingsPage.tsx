@@ -10,18 +10,26 @@ import type { ThemeOption } from '../lib/themes'
 import { pathBasename } from '../lib/paths'
 import { useCustomModels } from '../hooks/useCustomModels'
 import { useModelRouting } from '../hooks/useModelRouting'
+import { useMemorySettings } from '../hooks/useMemorySettings'
 import { useNetworkSettings } from '../hooks/useNetworkSettings'
+import { useQuestionSettings } from '../hooks/useQuestionSettings'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import ModelsSettings from './ModelsSettings'
 import RoutingSettings from './RoutingSettings'
 import NetworkSettings from './NetworkSettings'
+import PermissionRulesPanel from './PermissionRulesPanel'
+import ToggleSwitch from './ToggleSwitch'
+import UsageStatsPanel from './UsageStatsPanel'
+import CustomAgentsPanel from './CustomAgentsPanel'
 import {
   CloseIcon,
   InfoIcon,
   KeyboardIcon,
   ModelIcon,
+  ShieldIcon,
   NetworkIcon,
   PaletteIcon,
+  QueueIcon,
   RoutingIcon,
   SettingsIcon
 } from './icons'
@@ -32,8 +40,11 @@ export type SettingsSectionId =
   | 'general'
   | 'appearance'
   | 'shortcuts'
+  | 'permissions'
   | 'models'
   | 'routing'
+  | 'agents'
+  | 'usage'
   | 'network'
   | 'about'
 
@@ -58,6 +69,10 @@ const NAV_GROUPS: { title?: string; entries: SettingsNavEntry[] }[] = [
     ]
   },
   {
+    title: 'Security',
+    entries: [{ id: 'permissions', label: 'Permissions', Icon: ShieldIcon }]
+  },
+  {
     title: 'Models',
     entries: [
       { id: 'models', label: 'Custom models', Icon: ModelIcon },
@@ -65,8 +80,16 @@ const NAV_GROUPS: { title?: string; entries: SettingsNavEntry[] }[] = [
     ]
   },
   {
+    title: 'Agents',
+    entries: [{ id: 'agents', label: 'Subagents', Icon: QueueIcon }]
+  },
+  {
     title: 'Network',
     entries: [{ id: 'network', label: 'Proxy & timeouts', Icon: NetworkIcon }]
+  },
+  {
+    title: 'Usage',
+    entries: [{ id: 'usage', label: 'Usage', Icon: QueueIcon }]
   },
   {
     title: 'About',
@@ -78,8 +101,11 @@ const SECTION_TITLE: Record<SettingsSectionId, string> = {
   general: 'General',
   appearance: 'Appearance',
   shortcuts: 'Shortcuts',
+  permissions: 'Permissions',
   models: 'Custom models',
   routing: 'Routing',
+  agents: 'Subagents',
+  usage: 'Usage',
   network: 'Proxy & timeouts',
   about: 'Storage'
 }
@@ -89,7 +115,12 @@ const SECTION_BLURB: Partial<Record<SettingsSectionId, string>> = {
   general: 'How this window is talking to the kernel right now.',
   appearance: 'Pick a palette — everything else in the app follows it.',
   shortcuts: 'What the app listens for, and nothing it does not.',
+  permissions:
+    'Rules saved from the confirmation dialog, and the built-ins they sit beside. Refusals are always collected first.',
   routing: 'Which model answers which kind of call, and what the session has spent.',
+  agents: 'Reusable subagent roles. Changes apply to new sessions — running ones keep the roles they started with.',
+  usage:
+    'Where the tokens went, by model and by what triggered the call. Aggregated offline from the event log — nothing is reported anywhere.',
   network: 'The kernel\u2019s own HTTP settings — proxy, stream timeout, retries.',
   about: 'What lives on this device, and what belongs to the kernel.'
 }
@@ -275,6 +306,8 @@ function SettingsPage({
   const routing = useModelRouting()
   const networkSettings = useNetworkSettings()
   const usage = useSessionUsage(activeSessionId)
+  const memorySettings = useMemorySettings()
+  const questionSettings = useQuestionSettings()
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -313,6 +346,55 @@ function SettingsPage({
               Every value above is read from the running window — none of it is stored in a
               preferences file of its own.
             </p>
+            <Card title="Memory" testId="settings-memory">
+              <div className="flex items-start justify-between gap-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs text-[var(--text)]">Remember facts automatically</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                    After a turn ends, keep durable facts — preferences, corrections, project
+                    goals. Costs an extra model call per turn, so it is off by default. Applies
+                    to new chats only.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={memorySettings.settings?.autoExtract === true}
+                  disabled={memorySettings.settings === null}
+                  label="Remember facts automatically"
+                  testId="settings-memory-auto-extract"
+                  onClick={() => {
+                    void memorySettings.setAutoExtract(
+                      memorySettings.settings?.autoExtract !== true
+                    )
+                  }}
+                />
+              </div>
+            </Card>
+            <Card title="Questions" testId="settings-questions">
+              <div className="flex items-start justify-between gap-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs text-[var(--text)]">Continue automatically if unanswered</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                    When the agent asks a question and nobody answers within{' '}
+                    {questionSettings.settings === null
+                      ? '5 minutes'
+                      : `${Math.round(questionSettings.settings.timeoutMs / 60000)} minutes`}
+                    , it picks a direction and carries on. Permission prompts and plan approvals
+                    always wait.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={questionSettings.settings?.autoContinue !== false}
+                  disabled={questionSettings.settings === null}
+                  label="Continue automatically if unanswered"
+                  testId="settings-question-auto-continue"
+                  onClick={() => {
+                    void questionSettings.setAutoContinue(
+                      questionSettings.settings?.autoContinue === false
+                    )
+                  }}
+                />
+              </div>
+            </Card>
           </>
         )
 
@@ -369,6 +451,9 @@ function SettingsPage({
           </>
         )
 
+      case 'permissions':
+        return <PermissionRulesPanel />
+
       case 'models':
         return (
           <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3.5">
@@ -384,6 +469,12 @@ function SettingsPage({
             hasSession={activeSessionId !== null}
           />
         )
+
+      case 'usage':
+        return <UsageStatsPanel />
+
+      case 'agents':
+        return <CustomAgentsPanel />
 
       case 'network':
         return <NetworkSettings controller={networkSettings} />

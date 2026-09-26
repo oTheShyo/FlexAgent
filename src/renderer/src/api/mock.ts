@@ -7,6 +7,8 @@ import {
   type ChatMessage,
   type CodexApi,
   type CreateSessionInput,
+  type CustomAgentDefinitionInput,
+  type CustomAgentsSnapshot,
   type CustomModelEntry,
   type CustomModelRef,
   type CustomModelSaveInput,
@@ -867,6 +869,22 @@ export class MockCodexApi implements CodexApi {
     }
     this.permissionRules = next
     return this.permissionRuleSet()
+  }
+
+  async listCustomAgents(): Promise<CustomAgentsSnapshot> {
+    return { agents: [], diagnostics: [] }
+  }
+
+  async saveCustomAgent(_input: CustomAgentDefinitionInput): Promise<CustomAgentsSnapshot> {
+    throw new ContractError('INVALID_INPUT', 'mock api has no subagent definitions')
+  }
+
+  async deleteCustomAgent(_input: { name: string }): Promise<CustomAgentsSnapshot> {
+    throw new ContractError('INVALID_INPUT', 'mock api has no subagent definitions')
+  }
+
+  async setCustomAgentEnabled(_input: { name: string; enabled: boolean }): Promise<CustomAgentsSnapshot> {
+    throw new ContractError('INVALID_INPUT', 'mock api has no subagent definitions')
   }
 
   async pickDirectory(): Promise<string | null> {

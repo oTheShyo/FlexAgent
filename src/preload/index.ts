@@ -28,7 +28,12 @@ import {
   type MemoryCardRef,
   type MemoryWriteReceipt,
   type ModelConfig,
+  type GlobalUsageStats,
+  type MemorySettings,
   type NetworkSettings,
+  type QuestionSettings,
+  type SetMemoryAutoExtractInput,
+  type SetQuestionAutoContinueInput,
   type RoutingState,
   type SetModelRoleInput,
   type SetNetworkInput,
@@ -40,12 +45,21 @@ import {
   type PluginSummary,
   type McpServerStatusEntry,
   type McpServerStatusEvent,
+  type PluginMcpServerOverrides,
   type UserMcpSaveInput,
   type UserMcpServerSummary,
   type PermissionMode,
   type PermissionRuleSet,
+  type CustomAgentDefinitionInput,
+  type CustomAgentsSnapshot,
+  type RemovePermissionRuleInput,
+  type SavePermissionRuleInput,
   type PromptInput,
+  type RenameSessionInput,
   type RespondPermissionInput,
+  type RespondQuestionInput,
+  type StopQuestionTimerInput,
+  type SetSessionArchivedInput,
   type SetPermissionModeInput,
   type SessionDetail,
   type SessionId,
@@ -160,9 +174,19 @@ const codex: CodexApi = {
   setSessionCwd: (input: SetSessionCwdInput) =>
     invoke<SessionSummary>(IPC.setSessionCwd, input),
 
+  renameSession: (input: RenameSessionInput) =>
+    invoke<SessionSummary>(IPC.renameSession, input),
+
+  setSessionArchived: (input: SetSessionArchivedInput) =>
+    invoke<SessionSummary>(IPC.setSessionArchived, input),
+
   prompt: (input: PromptInput) => invoke(IPC.prompt, input),
 
   abort: (sessionId: SessionId) => invoke<void>(IPC.abort, sessionId),
+
+  respondQuestion: (input: RespondQuestionInput) => invoke<void>(IPC.respondQuestion, input),
+  stopQuestionTimer: (input: StopQuestionTimerInput) =>
+    invoke<void>(IPC.stopQuestionTimer, input),
 
   respondPermission: (input: RespondPermissionInput) =>
     invoke<void>(IPC.respondPermission, input),
@@ -174,6 +198,23 @@ const codex: CodexApi = {
     invoke<PermissionMode>(IPC.setPermissionMode, input),
 
   listPermissionRules: () => invoke<PermissionRuleSet>(IPC.listPermissionRules),
+
+  savePermissionRule: (input: SavePermissionRuleInput) =>
+    invoke<PermissionRuleSet>(IPC.savePermissionRule, input),
+
+  removePermissionRule: (input: RemovePermissionRuleInput) =>
+    invoke<PermissionRuleSet>(IPC.removePermissionRule, input),
+
+  listCustomAgents: () => invoke<CustomAgentsSnapshot>(IPC.listCustomAgents),
+
+  saveCustomAgent: (input: CustomAgentDefinitionInput) =>
+    invoke<CustomAgentsSnapshot>(IPC.saveCustomAgent, input),
+
+  deleteCustomAgent: (input: { name: string }) =>
+    invoke<CustomAgentsSnapshot>(IPC.deleteCustomAgent, input),
+
+  setCustomAgentEnabled: (input: { name: string; enabled: boolean }) =>
+    invoke<CustomAgentsSnapshot>(IPC.setCustomAgentEnabled, input),
 
   subscribe(sessionId: SessionId, listener: (event: KernelEvent) => void): () => void {
     const handler = (_event: IpcRendererEvent, payload: KernelEvent): void => {
@@ -228,6 +269,16 @@ const codex: CodexApi = {
 
   sessionUsage: (sessionId: SessionId) => invoke<UsageReport>(IPC.sessionUsage, sessionId),
 
+  getMemorySettings: () => invoke<MemorySettings>(IPC.getMemorySettings),
+  setMemoryAutoExtract: (input: SetMemoryAutoExtractInput) =>
+    invoke<MemorySettings>(IPC.setMemoryAutoExtract, input),
+
+  getUsageStats: () => invoke<GlobalUsageStats>(IPC.getUsageStats),
+
+  getQuestionSettings: () => invoke<QuestionSettings>(IPC.getQuestionSettings),
+  setQuestionAutoContinue: (input: SetQuestionAutoContinueInput) =>
+    invoke<QuestionSettings>(IPC.setQuestionAutoContinue, input),
+
   listPlugins: () => invoke<PluginSummary[]>(IPC.listPlugins),
 
   listSlashCommands: () => invoke<SlashCommandSummary[]>(IPC.listSlashCommands),
@@ -263,6 +314,12 @@ const codex: CodexApi = {
     invoke<UserMcpServerSummary[]>(IPC.toggleUserMcpServer, { name, enabled }),
 
   listMcpServerStatus: () => invoke<McpServerStatusEntry[]>(IPC.listMcpServerStatus),
+
+  listPluginMcpServerOverrides: () =>
+    invoke<PluginMcpServerOverrides>(IPC.listPluginMcpServerOverrides),
+
+  setPluginMcpServerEnabled: (input: { key: string; enabled: boolean }) =>
+    invoke<PluginMcpServerOverrides>(IPC.setPluginMcpServerEnabled, input),
 
   subscribeMcpStatus(listener: (event: McpServerStatusEvent) => void): () => void {
     const handler = (_event: IpcRendererEvent, payload: McpServerStatusEvent): void => {

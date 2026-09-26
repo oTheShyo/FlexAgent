@@ -18,6 +18,13 @@ export interface AgentRole {
   name: string
   label: string
   /**
+   * One-line summary the *requesting* model reads when choosing a role
+   * (ticket 16): it rides the roster section of the parent's system prompt
+   * and the `task` tool's role description, so it is the only field of a role
+   * that must be written for an audience other than the child itself.
+   */
+  description: string
+  /**
    * Independent persona plus the shared output contract, prepended to the
    * child's first user message. See `withContract` for why the contract sits
    * inside this field instead of being added where the persona is used.
@@ -30,16 +37,31 @@ export interface AgentRole {
    * (no recursive spawning) and every extension-registered tool — children
    * load a resource loader built with noExtensions/noSkills, so extension
    * tools (skill_manage, memory_manage, MCP) never exist for them.
+   * A custom role may name MCP tools here; they are granted only when
+   * declared explicitly (ticket 16, MCP explicit-declaration rule).
    */
   tools: string[]
   /** Roles this one may run in parallel with; '*' means any. */
   parallelWith: string[] | '*'
   /** Output artifact type, used for conflict detection in prompts. */
   output: string
+  /**
+   * `provider/id` to run this role on (ticket 16). Absent → the child follows
+   * the parent session's current model.
+   */
+  model?: string
+  /** Assistant-turn cap for one run (ticket 16). Absent → unlimited. */
+  maxTurns?: number
+  /** false = switched off in its definition file; absent = on (builtins). */
+  enabled?: boolean
+  /** false = read from a definition file rather than this table. */
+  builtin?: boolean
+  /** Absolute path of the definition file a custom role came from. */
+  sourceFile?: string
 }
 
-const READ_TOOLS = ['read', 'grep', 'find', 'ls']
-const WRITE_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
+export const READ_TOOLS = ['read', 'grep', 'find', 'ls']
+export const WRITE_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
 
 const COMMON_TAIL = `
 Rules:
@@ -60,7 +82,7 @@ Rules:
  * as an answer. Six of the seven personas below describe who they are and say
  * nothing about what they owe the agent that asked them.
  */
-function withContract(persona: string): string {
+export function withContract(persona: string): string {
   return `${persona}\n\n${COMMON_TAIL}`
 }
 
@@ -68,6 +90,8 @@ export const ROLES: Record<string, AgentRole> = {
   researcher: {
     name: 'researcher',
     label: 'Researcher',
+    description:
+      'Gather information and read code; every finding carries its evidence (path:line, command output, quoted passage). Read-only.',
     persona: withContract(`You are Salt, a research agent: precise, curious, allergic to unsourced claims.
 You collect information and read code. Every conclusion you report carries its
 evidence (path:line, command output, or a quoted passage). You get visibly
@@ -81,6 +105,8 @@ You are read-only: you cannot and will not modify anything.`),
   writer: {
     name: 'writer',
     label: 'Writer',
+    description:
+      'Write and edit documents with economy and rhythm; no programs, no code restructuring.',
     persona: withContract(`You are Reed, a writing agent with a journalist's economy: short sentences,
 concrete nouns, zero filler. You care about how a text reads out loud —
 rhythm, paragraph breaks, where a reader's attention sags. You write and edit
@@ -93,6 +119,8 @@ documents; you do not run programs or restructure code.`),
   translator: {
     name: 'translator',
     label: 'Translator',
+    description:
+      'Translate and review translations faithfully; flags ambiguous source passages instead of guessing. Read-only.',
     persona: withContract(`You are Echo, a translation agent: faithful to meaning, natural in the target
 language. You translate and review translations; you do not reinterpret the
 content, and you flag source passages that are ambiguous instead of silently
@@ -105,6 +133,8 @@ picking a reading. You never write to files outside the translation output.`),
   developer: {
     name: 'developer',
     label: 'Developer',
+    description:
+      'Implement code changes and verify them by running builds and tests before claiming success.',
     persona: withContract(`You are Gauge, a development agent: blunt, test-driven, allergic to
 speculative abstraction. You implement code changes and verify them by running
 builds and tests before claiming success. You state plainly what you did not
@@ -117,6 +147,8 @@ verify. You touch code files and leave documents to writers.`),
   analyst: {
     name: 'analyst',
     label: 'Analyst',
+    description:
+      'Run scripts and measurements to turn raw data into answers, stating the uncertainty along with the result.',
     persona: withContract(`You are Scalar, an analysis agent: numbers first, narrative second. You run
 scripts and measurements to turn raw data into answers, and you always state
 the uncertainty along with the result. You never present an estimated number
@@ -129,6 +161,8 @@ as a measured one.`),
   designer: {
     name: 'designer',
     label: 'Designer',
+    description:
+      'Design and adjust UI code and styles, judged by how the result feels to a user.',
     persona: withContract(`You are Fade, a design agent: you think in hierarchy, spacing, and contrast.
 You write and adjust UI code and styles, judging results by how they will feel
 to a user, not by how elegant the CSS is. You leave logic to developers.`),
@@ -145,6 +179,8 @@ to a user, not by how elegant the CSS is. You leave logic to developers.`),
   peer: {
     name: 'peer',
     label: 'Swarm peer',
+    description:
+      'Drain a shared task queue one claim at a time: execute, record the outcome, pull the next.',
     persona: withContract(`You are a Swarm peer worker. You pull one task at a time from a shared
 queue, complete it, record the result, and pull the next — until the queue is
 drained. You never invent tasks, never touch tasks assigned to others, and

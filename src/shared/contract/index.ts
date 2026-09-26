@@ -360,6 +360,42 @@ export interface RemovePermissionRuleInput {
   id: string
 }
 
+/** Create-or-update payload for a custom subagent definition (ticket 16). */
+export interface CustomAgentDefinitionInput {
+  name: string
+  description: string
+  label?: string
+  /** `provider/id`; absent → the role follows the dispatching session's model. */
+  model?: string
+  /** Explicit tool whitelist; an MCP tool here is its own declaration. */
+  tools: string[]
+  maxTurns?: number
+  enabled: boolean
+  persona: string
+}
+
+export interface CustomAgentDiagnostic {
+  file: string
+  code: string
+  message: string
+  severity: 'error' | 'warning'
+}
+
+export interface CustomAgentsSnapshot {
+  agents: Array<{
+    name: string
+    label: string
+    description: string
+    model?: string
+    tools: string[]
+    maxTurns?: number
+    enabled: boolean
+    builtin: boolean
+    persona: string
+  }>
+  diagnostics: CustomAgentDiagnostic[]
+}
+
 export interface PermissionRuleSet {
   /** Absolute path of the file the rules were loaded from. */
   sourcePath: string
@@ -1490,6 +1526,15 @@ export interface CodexApi {
   /** Drop one previously saved rule. Built-ins have no id to remove. */
   removePermissionRule(input: RemovePermissionRuleInput): Promise<PermissionRuleSet>
 
+  /** Custom subagents (ticket 16): full registry view incl. disabled + diagnostics. */
+  listCustomAgents(): Promise<CustomAgentsSnapshot>
+  /** Create or update one definition file. Rejects with the validation error. */
+  saveCustomAgent(input: CustomAgentDefinitionInput): Promise<CustomAgentsSnapshot>
+  /** Delete one definition file. Built-ins are rejected in main. */
+  deleteCustomAgent(input: { name: string }): Promise<CustomAgentsSnapshot>
+  /** Toggle one definition's enabled flag. Built-ins are rejected in main. */
+  setCustomAgentEnabled(input: { name: string; enabled: boolean }): Promise<CustomAgentsSnapshot>
+
   /** Available models (provider auth OK). Not session-scoped. */
   listModels(): Promise<ModelOption[]>
   /** Current session's effective model + thinking config. */
@@ -1648,6 +1693,10 @@ export const IPC = {
   listPermissionRules: 'codex:listPermissionRules',
   savePermissionRule: 'codex:savePermissionRule',
   removePermissionRule: 'codex:removePermissionRule',
+  listCustomAgents: 'codex:listCustomAgents',
+  saveCustomAgent: 'codex:saveCustomAgent',
+  deleteCustomAgent: 'codex:deleteCustomAgent',
+  setCustomAgentEnabled: 'codex:setCustomAgentEnabled',
   listCustomModels: 'codex:listCustomModels',
   customModelsPath: 'codex:customModelsPath',
   saveCustomModel: 'codex:saveCustomModel',

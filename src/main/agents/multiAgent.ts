@@ -44,9 +44,15 @@ import type {
   ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import { auditSymmetry, canRunInParallel, getRole, listRoleNames, type AgentRole } from './roles'
+import { loadAgentRegistry } from './customAgents'
 import { getSwarmQueue, type SwarmTask } from './swarmQueue'
 
 type PiModule = typeof import('@earendil-works/pi-coding-agent')
+
+/** The model type a session accepts; derived because PI nests its Model type in a subpackage app code cannot resolve. */
+type RoleModel = NonNullable<
+  import('@earendil-works/pi-coding-agent').CreateAgentSessionOptions['model']
+>
 
 /** Same limits as the kernel's own subagent reference implementation. */
 const MAX_PARALLEL_TASKS = 8
@@ -63,6 +69,12 @@ export interface MultiAgentDeps {
   loadPi: () => Promise<PiModule>
   /** The worker-wide ModelRuntime; children share it like every other session. */
   getModelRuntime: () => Promise<ModelRuntime>
+  /**
+   * The parent session's current model (ticket 16): a custom role without an
+   * explicit model follows the session that dispatched it. Resolved at dispatch
+   * time because the deps object outlives any one session.
+   */
+  getParentModel: (parentSessionId: string) => Promise<RoleModel | undefined>
   /**
    * Evaluate a child tool call under the parent session's permission mode and
    * route "ask" verdicts to the parent's UI. Implemented in the worker so the
@@ -238,6 +250,17 @@ function readChildLedger(session: AgentSession | undefined): {
  * touching the shared system-prompt prefix of the parent, which is what keeps
  * the parent's KV-cache hit rate intact — the very reason delegation exists.
  */
+function resolveRoleModel(runtime: ModelRuntime, spec: string): RoleModel {
+  const slash = spec.indexOf('/')
+  const providerId = slash > 0 ? spec.slice(0, slash) : spec
+  const modelId = slash > 0 ? spec.slice(slash + 1) : ''
+  const model = runtime.getModel(providerId, modelId)
+  if (model === undefined) {
+    throw new Error(`role model "${spec}" is not available on this runtime`)
+  }
+  return model
+}
+
 async function runChild(
   pi: PiModule,
   deps: MultiAgentDeps,
@@ -253,9 +276,17 @@ async function runChild(
   const started = Date.now()
   const { createAgentSession, SessionManager } = pi
   const modelRuntime = await deps.getModelRuntime()
+  // Ticket 16: an explicit role model wins; otherwise the child follows the
+  // session that dispatched it (never the settings default, which would ignore
+  // what the parent is actually running on).
+  const model =
+    role.model !== undefined
+      ? resolveRoleModel(modelRuntime, role.model)
+      : await deps.getParentModel(parentSessionId)
   const resourceLoader = await acquireChildLoader(pi, parentCwd)
   let session: AgentSession | undefined
   let succeeded = false
+  let turnCapHit = false
   try {
     const { session: child } = await createAgentSession({
       cwd: parentCwd,
@@ -265,6 +296,7 @@ async function runChild(
       sessionManager: SessionManager.inMemory(parentCwd),
       resourceLoader,
       modelRuntime,
+      ...(model !== undefined ? { model } : {}),
       // Whitelist must cover the extra custom tools too — the kernel filters
       // customTools through the same allowed-names set as built-ins.
       tools: [...role.tools, ...extraTools.map((tool) => tool.name)],
@@ -292,16 +324,52 @@ async function runChild(
     }
     signal?.addEventListener('abort', onAbort, { once: true })
 
+    // maxTurns (ticket 16): PI has no turn cap, so the cap is enforced here —
+    // count assistant turns off the event stream and abort once the cap is
+    // hit. The cap-th turn's tool calls still finish; turn N+1 never starts.
+    let assistantTurns = 0
+    const maxTurns = role.maxTurns
+    const unsubscribeTurns =
+      maxTurns !== undefined
+        ? child.subscribe((event) => {
+            if (event.type !== 'message_end') return
+            const message = (event as { message?: { role?: string } }).message
+            if (message?.role !== 'assistant') return
+            assistantTurns += 1
+            if (assistantTurns >= maxTurns) {
+              turnCapHit = true
+              void child.abort().catch(() => {})
+            }
+          })
+        : undefined
+
     try {
       await child.prompt(`${role.persona}\n\n---\n\n# Task\n\n${taskText}`)
       succeeded = true
     } finally {
       signal?.removeEventListener('abort', onAbort)
+      unsubscribeTurns?.()
     }
 
     const output = child.getLastAssistantText() ?? '(child produced no output)'
-    return { ok: true, output: cap(output, PER_TASK_OUTPUT_CAP), ms: Date.now() - started }
+    const capNote = turnCapHit ? `\n\n(stopped at the ${String(role.maxTurns)}-turn cap)` : ''
+    return {
+      ok: true,
+      output: cap(output + capNote, PER_TASK_OUTPUT_CAP),
+      ms: Date.now() - started
+    }
   } catch (err) {
+    if (turnCapHit) {
+      const output = session?.getLastAssistantText() ?? '(child stopped at the turn cap)'
+      return {
+        ok: true,
+        output: cap(
+          `${output}\n\n(stopped at the ${String(role.maxTurns)}-turn cap)`,
+          PER_TASK_OUTPUT_CAP
+        ),
+        ms: Date.now() - started
+      }
+    }
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, output: cap(message, PER_TASK_OUTPUT_CAP), ms: Date.now() - started }
   } finally {
@@ -333,33 +401,35 @@ interface TaskSpec {
   task: string
 }
 
-const TASK_TOOL_SCHEMA = {
-  type: 'object',
-  properties: {
-    role: { type: 'string', enum: listRoleNames(), description: 'Agent role for single mode.' },
-    task: { type: 'string', description: 'Single mode: the task text.' },
-    tasks: {
-      type: 'array',
-      description:
-        'Parallel mode: 2–8 independent tasks run concurrently. Allowed only when every task uses a read-only role or roles that declare parallel compatibility; otherwise the call is rejected — run them one by one instead.',
-      items: {
-        type: 'object',
-        properties: { role: { type: 'string', enum: listRoleNames() }, task: { type: 'string' } },
-        required: ['role', 'task']
-      }
-    },
-    chain: {
-      type: 'array',
-      description:
-        'Chain mode: sequential tasks where "{previous}" in a task text is replaced by the previous task\'s output. Use when each step builds on the last.',
-      items: {
-        type: 'object',
-        properties: { role: { type: 'string', enum: listRoleNames() }, task: { type: 'string' } },
-        required: ['role', 'task']
+function buildTaskToolSchema(roleNames: readonly string[]) {
+  return {
+    type: 'object',
+    properties: {
+      role: { type: 'string', enum: [...roleNames], description: 'Agent role for single mode.' },
+      task: { type: 'string', description: 'Single mode: the task text.' },
+      tasks: {
+        type: 'array',
+        description:
+          'Parallel mode: 2–8 independent tasks run concurrently. Allowed only when every task uses a read-only role or roles that declare parallel compatibility; otherwise the call is rejected — run them one by one instead.',
+        items: {
+          type: 'object',
+          properties: { role: { type: 'string', enum: [...roleNames] }, task: { type: 'string' } },
+          required: ['role', 'task']
+        }
+      },
+      chain: {
+        type: 'array',
+        description:
+          'Chain mode: sequential tasks where "{previous}" in a task text is replaced by the previous task\'s output. Use when each step builds on the last.',
+        items: {
+          type: 'object',
+          properties: { role: { type: 'string', enum: [...roleNames] }, task: { type: 'string' } },
+          required: ['role', 'task']
+        }
       }
     }
   }
-} as const
+}
 
 function parseSpecs(params: Record<string, unknown>): { mode: string; specs: TaskSpec[] } {
   const specsFrom = (value: unknown): TaskSpec[] => {
@@ -535,6 +605,19 @@ export function createMultiAgentExtension(deps: MultiAgentDeps): InlineExtension
     // writes; refusing to register beats both.
     throw new Error(`multi-agent role table is not symmetric: ${auditSymmetry().join('; ')}`)
   }
+  // Registry snapshot per extension build (ticket 16): each session attach
+  // rebuilds this extension, so definition-file changes apply to new sessions
+  // and never mutate a running one. The snapshot feeds the schema enums, the
+  // task-tool description roster, and role resolution.
+  const registry = loadAgentRegistry()
+  const mergedRoleNames = [...new Set([...listRoleNames(), ...Object.keys(registry.roles)])]
+  const customRoles = registry.all.filter(
+    (role) => role.builtin !== true && role.enabled !== false
+  )
+  const customRoleSummary =
+    customRoles.length > 0
+      ? ` Custom roles: ${customRoles.map((role) => `${role.name} (${role.description})`).join('; ')}.`
+      : ''
   return {
     name: 'flex-multi-agent',
     factory: (pi: ExtensionAPI): void => {
@@ -544,10 +627,11 @@ export function createMultiAgentExtension(deps: MultiAgentDeps): InlineExtension
         name: 'task',
         label: 'Task',
         description:
-          'Delegate subtasks to isolated child agents. Three modes: single ({role, task}), parallel ({tasks: [...]} — only read-only/compatible roles, truly concurrent), chain ({chain: [...]} — sequential, "{previous}" carries the prior output). Each child gets its own context and returns one report; you synthesize.',
+          'Delegate subtasks to isolated child agents. Three modes: single ({role, task}), parallel ({tasks: [...]} — only read-only/compatible roles, truly concurrent), chain ({chain: [...]} — sequential, "{previous}" carries the prior output). Each child gets its own context and returns one report; you synthesize.' +
+          customRoleSummary,
         promptSnippet: TASK_PROMPT_SNIPPET,
         promptGuidelines: TASK_PROMPT_GUIDELINES,
-        parameters: TASK_TOOL_SCHEMA,
+        parameters: buildTaskToolSchema(mergedRoleNames),
         execute: async (_toolCallId, rawParams, signal, onUpdate, ctx) => {
           const params =
             rawParams !== null && typeof rawParams === 'object' ? (rawParams as Record<string, unknown>) : {}
@@ -559,9 +643,16 @@ export function createMultiAgentExtension(deps: MultiAgentDeps): InlineExtension
               throw new Error(`too many tasks (${specs.length}); the cap is ${MAX_PARALLEL_TASKS}`)
             }
             const roles = specs.map((spec) => {
-              const role = getRole(spec.role)
+              // Ticket 16: built-ins first, then enabled custom definitions —
+              // one resolution path so the model can address both uniformly.
+              const role = getRole(spec.role) ?? registry.roles[spec.role]
               if (role === undefined) {
-                throw new Error(`unknown role "${spec.role}" — available: ${listRoleNames().join(', ')}`)
+                throw new Error(
+                  `unknown role "${spec.role}" — available: ${listRoleNames().join(', ')}` +
+                    (customRoles.length > 0
+                      ? `; custom: ${customRoles.map((r) => r.name).join(', ')}`
+                      : '')
+                )
               }
               return role
             })

@@ -14,6 +14,8 @@ import { KernelSettingsService } from './kernelSettings'
 import { scratchCwd } from './workspace'
 import { MarketplaceService } from './pluginMarketplace'
 import { registerMarketplaceIpc } from './marketplaceIpc'
+import { registerPermissionRuleIpc } from './permissionRulesIpc'
+import { registerCustomAgentsIpc } from './customAgentsIpc'
 import {
   IPC,
   type MarketplaceProgressEvent,
@@ -53,8 +55,8 @@ function broadcastWindowMaximized(maximized: boolean): void {
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
-    width: 1320,
-    height: 860,
+    width: 1284,
+    height: 792,
     minWidth: 960,
     minHeight: 620,
     frame: false,
@@ -151,6 +153,8 @@ app.whenReady().then(() => {
     onProgress: broadcastMarketplaceProgress
   })
   registerMarketplaceIpc(marketplaceService)
+  registerPermissionRuleIpc(registry)
+  registerCustomAgentsIpc()
   void pluginService.pushResourceSpec()
   createWindow()
 
