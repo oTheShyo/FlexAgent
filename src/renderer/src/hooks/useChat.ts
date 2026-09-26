@@ -5,6 +5,7 @@ import {
   type ChatMessage,
   type ContractErrorCode,
   type FileChange,
+  type GoalStateSummary,
   type KernelEvent,
   type ModelConfig,
   type ModelOption,
@@ -75,6 +76,10 @@ export interface UseChatResult {
   modelRetry: ModelRetryState | null
   /** Question awaiting an answer, or null. */
   pendingQuestion: QuestionNotice | null
+  /** Latest goal state for the active session (ticket 05); null = no goal. */
+  goal: GoalStateSummary | null
+  /** The message a goal_update carried, for the transcript. */
+  goalMessage: string | null
   /** Answer it. Stops the countdown as a side effect of settling it. */
   respondQuestion: (questionId: string, answer: string) => Promise<void>
   /** Stop one question's countdown for good. */
@@ -224,6 +229,8 @@ export function useChat(): UseChatResult {
   /** Live kernel retry notice — the run is silent for up to ~1 min per cycle. */
   const [modelRetry, setModelRetry] = useState<ModelRetryState | null>(null)
   const [pendingQuestion, setPendingQuestion] = useState<QuestionNotice | null>(null)
+  const [goal, setGoal] = useState<GoalStateSummary | null>(null)
+  const [goalMessage, setGoalMessage] = useState<string | null>(null)
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -461,6 +468,11 @@ export function useChat(): UseChatResult {
         }
         break
       }
+      case 'goal_update': {
+        setGoal(event.goal)
+        setGoalMessage(event.message)
+        break
+      }
       case 'file_changes': {
         setFiles(event.files)
         break
@@ -503,6 +515,8 @@ export function useChat(): UseChatResult {
       setModelRetry(null)
       setPendingQuestion(null)
       setPendingPermission(null)
+      setGoal(null)
+      setGoalMessage(null)
       setHistoryLoading(true)
       try {
         const detail = await codexApi.openSession(sessionId)
@@ -510,6 +524,14 @@ export function useChat(): UseChatResult {
         setItems(detail.messages.map((message) => ({ kind: 'message', message })))
         setRunState(detail.summary.runState)
         setSessions((prev) => prev.map((s) => (s.id === sessionId ? detail.summary : s)))
+        // Ticket 05: the goal survives restarts (persisted worker-side); the
+        // view refetches it on switch instead of replaying events.
+        void codexApi
+          .getGoal?.(sessionId)
+          .then((state) => {
+            setGoal(state ?? null)
+          })
+          .catch(() => {})
         unsubRef.current = codexApi.subscribe(sessionId, handleEvent)
         applyReconnected()
       } catch (err) {
@@ -833,6 +855,18 @@ export function useChat(): UseChatResult {
       const sessionId = activeIdRef.current
       const trimmed = text.trim()
       if (!sessionId || trimmed.length === 0) return
+      // Ticket 05: /goal commands never reach the model — they configure the
+      // session's goal on the worker thread. The reply lands in the transcript
+      // as a notice, and the goal state updates from the event.
+      if (trimmed.startsWith('/goal')) {
+        try {
+          const result = await codexApi.goalCommand({ sessionId, raw: trimmed })
+          setItems((prev) => [...prev, { kind: 'notice', text: result.message }])
+        } catch (err) {
+          setItems((prev) => [...prev, errorItemFrom(err)])
+        }
+        return
+      }
       try {
         // Ticket 27: references ride as their own field. The main process opens
         // any file they point at, so what arrives here is a path and what the
@@ -1000,6 +1034,8 @@ export function useChat(): UseChatResult {
     applyFiles,
     modelRetry,
     pendingQuestion,
+    goal,
+    goalMessage,
     respondQuestion,
     stopQuestionTimer,
     createSession,

@@ -84,6 +84,8 @@ export default function App({ children }: AppProps) {
     pendingPermission,
     modelRetry,
     pendingQuestion,
+    goal,
+    goalMessage,
     respondQuestion,
     stopQuestionTimer,
     send,
@@ -717,6 +719,8 @@ export default function App({ children }: AppProps) {
         onAddReference={handleAddReference}
         onErrorRetry={onErrorRetry}
         onFork={handleForkSession}
+        goal={goal}
+        goalMessage={goalMessage}
       />
     ) : historyLoading === true ? (
       <ChatSkeleton />

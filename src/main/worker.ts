@@ -22,7 +22,8 @@ import {
   type SessionSearchHit,
   type ThinkingLevel,
   type ToolCallId,
-  type UsageReport
+  type UsageReport,
+  type GoalStateSummary
 } from '../shared/contract'
 import type {
   ApplyModelKeysResult,
@@ -64,6 +65,14 @@ import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from './kernelSettings'
 import { readJsonDocument } from './jsonFile'
 import { personaSystemPrompt } from './persona'
 import { readMemoryAutoExtract, readQuestionSettings } from './settings'
+import {
+  applyGoalCommand,
+  canVerify,
+  hasActiveGoal,
+  readGoal,
+  recordVerification,
+  shouldVerifyOnSettle
+} from './goalRunner'
 import { createAskUserExtension, type AskUserAnswer, type AskUserRequest } from './askUser'
 import { observeEvent, observeLlmCall } from './observability'
 import { PermissionGate, PermissionMemory, describeDenials } from './permissionGate'
@@ -876,8 +885,110 @@ function emit(sessionId: SessionId, event: WorkerKernelEvent): void {
   port!.postMessage({ type: 'event', sessionId, event } satisfies WorkerResponse)
 }
 
+/**
+ * Goal mode (ticket 05), called from agent_settled only. Two paths:
+ *
+ *  - a verification round is in flight (begun before the run, no verdict yet):
+ *    read the verdict from the just-finished assistant message and record it;
+ *  - no pending round: start the next one by prompting the verify prompt —
+ *    which itself ends in another agent_settled, closing the loop.
+ *
+ * Never throws into the event handler: a goal failure must not take the
+ * session down. Errors surface as goal_update with the message.
+ */
+async function maybeRunGoalStep(host: HostSession): Promise<void> {
+  try {
+    const sessionId = host.sessionId
+    // Evidence = what this run actually produced. A turn with no file changes
+    // and no tool calls has nothing to verify against.
+    const hasEvidence = host.fileChanges.size > 0
+    const pending = readGoal(sessionId)
+    const pendingRound =
+      pending?.iterations[pending.iterations.length - 1] !== undefined &&
+      pending.iterations[pending.iterations.length - 1].verdict === undefined
+        ? pending.iterations[pending.iterations.length - 1]
+        : undefined
+
+    if (pendingRound !== undefined) {
+      // A verification just ran: its verdict is the last assistant message.
+      const lastAssistant = await lastAssistantText(host)
+      const { status, message, state } = recordVerification(sessionId, lastAssistant, hasEvidence)
+      if (state !== undefined) {
+        emitGoalUpdate(sessionId, state, message)
+      }
+      if (status === 'reached' || status === 'capped') return
+      // Still active: the next step rides in the message; the next round
+      // begins on the NEXT settle (this one is spent). Continue by prompting
+      // the verify prompt below only when no round is pending any more.
+      const after = readGoal(sessionId)
+      if (after === undefined || !canVerify(after, Date.now())) return
+      const step = shouldVerifyOnSettle(sessionId, hasEvidence)
+      if (step.verify && step.prompt !== undefined) {
+        await host.session.prompt(step.prompt)
+      }
+      return
+    }
+
+    // No pending round: start the next verification.
+    const step = shouldVerifyOnSettle(sessionId, hasEvidence)
+    if (step.verify && step.prompt !== undefined) {
+      const starting = readGoal(sessionId)
+      if (starting !== undefined) emitGoalUpdate(sessionId, starting, 'Verifying the goal…')
+      await host.session.prompt(step.prompt)
+    }
+  } catch (err) {
+    // A goal failure must not take the session down.
+    try {
+      observeEvent(host.sessionId, {
+        kind: 'goal',
+        message: err instanceof Error ? err.message : String(err)
+      })
+    } catch {
+      // Observability is best-effort too.
+    }
+  }
+}
+
+/** The last finalized assistant text, read from the live session transcript. */
+async function lastAssistantText(host: HostSession): Promise<string> {
+  try {
+    const entries = (host.session as unknown as { entries?: unknown[] }).entries
+    if (!Array.isArray(entries)) return ''
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index] as { role?: string; text?: string; content?: unknown }
+      if (entry?.role !== 'assistant') continue
+      if (typeof entry.text === 'string' && entry.text.length > 0) return entry.text
+      if (Array.isArray(entry.content)) {
+        const text = entry.content
+          .map((part) =>
+            typeof part === 'object' && part !== null && 'text' in part
+              ? String((part as { text: unknown }).text)
+              : ''
+          )
+          .filter((part) => part.length > 0)
+          .join('\n')
+        if (text.length > 0) return text
+      }
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
 function fail(requestId: string, code: ContractError['code'], message: string, details?: unknown): void {
   port!.postMessage({ requestId, type: 'fail', code, message, details } satisfies WorkerResponse)
+}
+
+/** Goal-mode progress (ticket 05): EventMeta needs the sessionId and ts. */
+function emitGoalUpdate(sessionId: SessionId, goal: unknown, message: string): void {
+  emit(sessionId, {
+    type: 'goal_update',
+    goal: goal as GoalStateSummary,
+    message,
+    sessionId,
+    ts: Date.now()
+  })
 }
 
 function ok(requestId: string, result?: unknown): void {
@@ -1745,6 +1856,13 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
         pendingQuestions.delete(questionId)
       }
       setRunState(host, 'idle')
+      // Goal mode (ticket 05): the run just ended with the transcript carrying
+      // this turn's evidence. A pending verification round reads its verdict
+      // from the last assistant message; an active goal without one starts the
+      // next verification round — automatically, without the user saying
+      // "continue". Both fire only from here: one worker thread means a
+      // verification IS a turn, and prompting mid-run would interleave.
+      void maybeRunGoalStep(host)
       break
     }
     case 'auto_retry_start': {
@@ -2475,6 +2593,14 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       await host.session.abort()
       // abort() waits for idle; belt-and-suspenders if agent_settled was missed.
       setRunState(host, 'idle')
+      // Goal mode (ticket 05): the user stopped the run — pause the goal so it
+      // never keeps consuming without them knowing. Resume is explicit.
+      if (hasActiveGoal(req.sessionId)) {
+        const result = applyGoalCommand(req.sessionId, '/goal pause', host.mode)
+        if (result.ok && result.state !== undefined) {
+          emitGoalUpdate(req.sessionId, result.state, 'Goal paused — the run was stopped.')
+        }
+      }
       return undefined
     }
     case 'respondPermission': {
@@ -2522,6 +2648,18 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'listPermissionRules': {
       return effectiveRuleSet()
+    }
+    case 'goalCommand': {
+      const host = requireSession(req.sessionId)
+      const result = applyGoalCommand(req.sessionId, req.raw, host.mode)
+      if (!result.ok) throw new ContractError('INVALID_INPUT', result.message)
+      if (result.state !== undefined) {
+        emitGoalUpdate(req.sessionId, result.state, result.message)
+      }
+      return { state: result.state, message: result.message }
+    }
+    case 'getGoal': {
+      return readGoal(req.sessionId)
     }
     case 'disposeSession': {
       const host = sessions.get(req.sessionId)

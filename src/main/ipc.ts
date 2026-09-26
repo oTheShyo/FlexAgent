@@ -30,7 +30,8 @@ import {
   type TerminalInputInput,
   type TerminalResizeInput,
   type UserMcpSaveInput,
-  type WebEditKind
+  type WebEditKind,
+  type GoalCommandInput
 } from '../shared/contract'
 import { collectUsageStats } from './usageStats'
 import { applyFileChanges } from './applyChanges'
@@ -289,6 +290,38 @@ export function registerIpcHandlers(
         registry.remove(newId)
         throw err
       }
+    })
+  )
+
+  // Ticket 05: /goal commands run on the session's own worker thread — the
+  // goal lives there, and the verification loop is a worker-side turn loop.
+  ipcMain.handle(IPC.goalCommand, (_e, input: { sessionId?: unknown; raw?: unknown }) =>
+    guard(async () => {
+      if (input === null || typeof input !== 'object') {
+        throw new ContractError('INVALID_INPUT', 'expected { sessionId, raw }')
+      }
+      if (typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      if (typeof input.raw !== 'string' || !input.raw.trim()) {
+        throw new ContractError('INVALID_INPUT', 'raw command is required')
+      }
+      registry.require(input.sessionId)
+      return (await kernel.request({
+        type: 'goalCommand',
+        sessionId: input.sessionId,
+        raw: input.raw
+      })) as { state?: unknown; message: string }
+    })
+  )
+
+  ipcMain.handle(IPC.getGoal, (_e, sessionId: unknown) =>
+    guard(async () => {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      registry.require(sessionId)
+      return (await kernel.request({ type: 'getGoal', sessionId })) as unknown | undefined
     })
   )
 

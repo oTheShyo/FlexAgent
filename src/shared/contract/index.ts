@@ -71,6 +71,42 @@ export interface ForkSessionInput {
   messagePrefix: string
 }
 
+// ─── Goal mode (ticket 05) ───────────────────────────────────────────────────
+
+/** One iteration of verify → continue (or stop). */
+export interface GoalIteration {
+  /** Monotonic from 1. Incremented when a verification round begins. */
+  round: number
+  startedAt: number
+  /** Model verdict for the round; undefined while in flight. */
+  verdict?: 'complete' | 'incomplete' | 'error'
+  /** The next step the model proposed (incomplete rounds only). */
+  nextStep?: string
+}
+
+export type GoalStatus = 'active' | 'paused' | 'reached' | 'capped'
+
+/** What the renderer sees. The full text is the user's own words. */
+export interface GoalStateSummary {
+  text: string
+  status: GoalStatus
+  iterations: GoalIteration[]
+  maxRounds: number
+  updatedAt: number
+}
+
+export interface GoalCommandInput {
+  sessionId: SessionId
+  /** The raw `/goal …` text, verbatim from the composer. */
+  raw: string
+}
+
+export interface GoalCommandResult {
+  state?: GoalStateSummary
+  /** Human-readable outcome: set/paused/resumed/cleared/rejected + reason. */
+  message: string
+}
+
 export interface SessionDetail {
   summary: SessionSummary
   /** Full visible transcript for this session (UI-only messages included). */
@@ -1486,6 +1522,12 @@ export type KernelEvent =
       outcome: 'answered' | 'timeout' | 'cancelled'
       answer?: string
     })
+  /**
+   * Goal-mode progress (ticket 05). Emitted when a verification round begins,
+   * when a verdict lands, and on pause/cap/reached. The UI shows the latest
+   * goal state; the full history lives in the session's goal.
+   */
+  | (EventMeta & { type: 'goal_update'; goal: GoalStateSummary; message: string })
   /** Async failure during a run. Run may still settle afterward. */
   | (EventMeta & {
       type: 'error'
@@ -1558,6 +1600,13 @@ export interface CodexApi {
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
   /** Fork from one stable assistant message (ticket 17). History to the fork point; disk files untouched. */
   forkSession(input: ForkSessionInput): Promise<SessionSummary>
+
+  // ─── Goal mode (ticket 05) ─────────────────────────────────────────────────
+
+  /** Apply a `/goal …` command. Rejected in plan mode with the reason. */
+  goalCommand(input: GoalCommandInput): Promise<GoalCommandResult>
+  /** Current goal state for the session; undefined = no goal. */
+  getGoal(sessionId: SessionId): Promise<GoalStateSummary | undefined>
 
   /**
    * Submit user text. Resolves when accepted (not when the run finishes).
@@ -1774,6 +1823,8 @@ export const IPC = {
   renameSession: 'codex:renameSession',
   setSessionArchived: 'codex:setSessionArchived',
   forkSession: 'codex:forkSession',
+  goalCommand: 'codex:goalCommand',
+  getGoal: 'codex:getGoal',
   prompt: 'codex:prompt',
   abort: 'codex:abort',
   respondPermission: 'codex:respondPermission',

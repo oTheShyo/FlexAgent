@@ -53,6 +53,9 @@ import {
   type CustomAgentDefinitionInput,
   type CustomAgentsSnapshot,
   type ForkSessionInput,
+  type GoalCommandInput,
+  type GoalCommandResult,
+  type GoalStateSummary,
   type RemovePermissionRuleInput,
   type SavePermissionRuleInput,
   type PromptInput,
@@ -185,6 +188,10 @@ const codex: CodexApi = {
     invoke<SessionSummary>(IPC.setSessionArchived, input),
 
   forkSession: (input: ForkSessionInput) => invoke<SessionSummary>(IPC.forkSession, input),
+
+  goalCommand: (input: GoalCommandInput) => invoke<GoalCommandResult>(IPC.goalCommand, input),
+
+  getGoal: (sessionId: SessionId) => invoke<GoalStateSummary | undefined>(IPC.getGoal, sessionId),
 
   prompt: (input: PromptInput) => invoke(IPC.prompt, input),
 

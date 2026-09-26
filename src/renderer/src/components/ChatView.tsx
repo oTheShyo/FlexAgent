@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { ChatItem, ModelRetryState } from '../hooks/useChat'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, GoalStateSummary } from '../types'
 import { LoadingIndicator } from './LoadingIndicator'
 import { Markdown } from './Markdown'
 import { CheckIcon, CopyIcon, ForkIcon, RegenerateIcon } from './icons'
@@ -30,6 +30,10 @@ export interface ChatViewProps {
    * user picked. Only wired on non-failed assistant rows.
    */
   onFork?: (message: ChatMessage) => void
+  /** Goal mode (ticket 05): the session's current goal, or null. */
+  goal?: GoalStateSummary | null
+  /** The latest goal_update message, shown under the banner text. */
+  goalMessage?: string | null
 }
 
 const AssistantContent = memo(function AssistantContent({
@@ -426,7 +430,9 @@ export function ChatView({
   onRegenerate,
   onErrorRetry,
   onAddReference,
-  onFork
+  onFork,
+  goal = null,
+  goalMessage = null
 }: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
@@ -504,6 +510,24 @@ export function ChatView({
       aria-label="Chat messages"
     >
       <SelectionToolbar snapshot={snapshot} onAdd={handleAddSelection} />
+      {goal !== null && (
+        <div className="sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--surface)]/95 px-4 py-2 backdrop-blur">
+          <p
+            role="status"
+            data-testid="goal-banner"
+            className="mx-auto max-w-3xl text-xs leading-4 text-[var(--text-secondary)]"
+          >
+            <span className="font-medium">{goal.status === 'reached' ? '✓ Goal' : 'Goal'}</span>{' '}
+            {goal.text}{' '}
+            <span className="text-[var(--text-subtle)]">
+              · {goal.status} · round {goal.iterations.length}/{goal.maxRounds}
+            </span>
+            {goalMessage !== null && (
+              <span className="block text-[var(--text-subtle)]">{goalMessage}</span>
+            )}
+          </p>
+        </div>
+      )}
       {items.length === 0 ? (
         <div className="flex h-full items-center justify-center px-6">
           <p className="text-sm text-[var(--text-subtle)]">Send a message to start.</p>

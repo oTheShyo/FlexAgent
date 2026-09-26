@@ -10,6 +10,8 @@ import {
   type CustomAgentDefinitionInput,
   type CustomAgentsSnapshot,
   type ForkSessionInput,
+  type GoalCommandResult,
+  type GoalStateSummary,
   type CustomModelEntry,
   type CustomModelRef,
   type CustomModelSaveInput,
@@ -893,6 +895,14 @@ export class MockCodexApi implements CodexApi {
 
   async forkSession(_input: ForkSessionInput): Promise<SessionSummary> {
     throw new ContractError('INVALID_INPUT', 'mock api cannot fork sessions')
+  }
+
+  async goalCommand(_input: { sessionId: string; raw: string }): Promise<GoalCommandResult> {
+    throw new ContractError('INVALID_INPUT', 'mock api has no goal mode')
+  }
+
+  async getGoal(_sessionId: string): Promise<GoalStateSummary | undefined> {
+    return undefined
   }
 
   async pickDirectory(): Promise<string | null> {
