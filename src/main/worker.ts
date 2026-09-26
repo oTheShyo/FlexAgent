@@ -24,6 +24,7 @@ import {
   type UsageReport
 } from '../shared/contract'
 import type {
+  ApplyModelKeysResult,
   WorkerKernelEvent,
   WorkerRequest,
   WorkerResponse,
@@ -904,6 +905,52 @@ async function getModelRuntime(): Promise<import('@earendil-works/pi-coding-agen
     return ModelRuntime.create()
   })()
   return modelRuntimePromise
+}
+
+/**
+ * Ticket 26 — put already-opened model keys into the runtime.
+ *
+ * The keys arrive from main, which is the only side that can reach Electron's
+ * `safeStorage`. Injecting them here rather than leaving them in `models.json` is
+ * what keeps the file free of secrets: a configured key outranks nothing once a
+ * runtime credential exists, and the configured value is then never resolved —
+ * so `models.json` can hold a reference that does not resolve to anything.
+ *
+ * A provider in `clear` has lost its key (model deleted, or the entry removed),
+ * and keeps using the old credential until it is told otherwise.
+ *
+ * Failures name the provider and never the key.
+ */
+async function applyModelKeys(
+  keys: Record<string, string>,
+  clear: string[]
+): Promise<ApplyModelKeysResult> {
+  const runtime = await getModelRuntime()
+  const applied: string[] = []
+  const failed: string[] = []
+  const cleared: string[] = []
+  for (const [provider, key] of Object.entries(keys)) {
+    if (key.length === 0) continue
+    try {
+      await runtime.setRuntimeApiKey(provider, key)
+      applied.push(provider)
+    } catch (err) {
+      failed.push(provider)
+      console.error(
+        `[model-keys] could not apply the key for "${provider}": ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+  for (const provider of clear) {
+    try {
+      await runtime.removeRuntimeApiKey(provider)
+      cleared.push(provider)
+    } catch {
+      // A provider that was never given a runtime key has nothing to remove;
+      // the only thing at stake is a stale credential and it is already gone.
+    }
+  }
+  return { applied, failed, cleared }
 }
 
 /**
@@ -2554,6 +2601,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'applyNetwork': {
       return applyNetwork(req.proxy, req.idleTimeoutMs)
+    }
+    case 'applyModelKeys': {
+      return applyModelKeys(req.keys, req.clear)
     }
     case 'sessionUsage': {
       const host = requireSession(req.sessionId)

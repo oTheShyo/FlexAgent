@@ -36,6 +36,13 @@ import type {
 } from '../shared/contract'
 import { asString, isRecord, readJsonDocument, writeJsonDocument } from './jsonFile'
 import type { JsonDocument } from './jsonFile'
+import {
+  adoptPlaintextKey,
+  dropModelKey,
+  isManagedKey,
+  moveModelKey,
+  readModelKeys
+} from './modelKeys'
 
 const PROVIDER_RE = /^[a-zA-Z0-9_-]{1,64}$/
 const MAX_ID_LENGTH = 200
@@ -145,11 +152,19 @@ function modelEntries(provider: Record<string, unknown>): Record<string, unknown
 }
 
 function summarize(providers: Record<string, Record<string, unknown>>): CustomModelEntry[] {
+  const stored = readModelKeys()
   const out: CustomModelEntry[] = []
   for (const providerId of Object.keys(providers).sort()) {
     const config = providers[providerId]
     const baseUrl = asString(config.baseUrl)
-    const apiKeySet = asString(config.apiKey) !== undefined
+    // A managed reference means the key lives in the vault, so "is one set" is
+    // answered by the vault and not by the presence of the reference. A reference
+    // whose key is gone must read as unset — saying otherwise would show a model
+    // as configured while every call it makes is unauthenticated.
+    const declared = asString(config.apiKey)
+    const apiKeySet =
+      declared !== undefined &&
+      (!isManagedKey(declared) || stored.keys[providerId] !== undefined)
     for (const model of modelEntries(config)) {
       const id = asString(model.id)
       if (id === undefined) continue
@@ -219,9 +234,21 @@ export class UserModelsService {
     const original = normalizeRef(input.original)
 
     const document = readDocument(file)
+    // Read before the drop: renaming a provider to a new id must carry its
+    // credential across, or the rename would quietly leave a provider that
+    // asserts as unusable (`assertComposable` requires one).
+    const inheritedKey =
+      original !== undefined && original.provider !== providerId
+        ? asString(document.providers[original.provider]?.apiKey)
+        : undefined
     // A rename edits *the* entry; without this the write would leave two.
     if (original !== undefined && (original.provider !== providerId || original.id !== id)) {
       dropEntry(document, original)
+      // A renamed provider keeps its credential only when the form did not
+      // supply a new one — a typed key wins, and omitting it means "keep mine".
+      if (original.provider !== providerId && apiKey === undefined) {
+        moveModelKey(original.provider, providerId)
+      }
     }
 
     const provider = document.providers[providerId] ?? {}
@@ -229,7 +256,15 @@ export class UserModelsService {
     // must never wipe an existing credential.
     if (baseUrl !== undefined) provider.baseUrl = baseUrl
     if (api !== undefined) provider.api = api
-    if (apiKey !== undefined) provider.apiKey = apiKey
+    if (apiKey !== undefined) {
+      // A literal secret goes to the vault and the file gets a reference to it;
+      // anything else (the user's `$MY_KEY`, a `!command`) is left verbatim —
+      // see modelKeys.ts for why the file cannot hold the key itself.
+      provider.apiKey = adoptPlaintextKey(providerId, apiKey) ?? apiKey
+    } else if (inheritedKey !== undefined && provider.apiKey === undefined) {
+      // A rename that did not retype the key keeps the reference it had.
+      provider.apiKey = inheritedKey
+    }
 
     const existing = modelEntries(provider)
     const current = existing.find((model) => asString(model.id) === id)
@@ -270,6 +305,10 @@ export class UserModelsService {
     if (!dropEntry(document, ref)) {
       throw new ContractError('CUSTOM_MODEL_NOT_FOUND', `Unknown custom model: ${ref.provider}/${ref.id}`)
     }
+    // The provider going away is the only case that removes a key: it existed to
+    // serve exactly these models. Leaving it behind would keep a secret on disk
+    // for a provider nothing can reach any more.
+    if (document.providers[ref.provider] === undefined) dropModelKey(ref.provider)
     await persist(document)
     return {
       result: { models: summarize(document.providers) },
@@ -277,6 +316,45 @@ export class UserModelsService {
       ref
     }
   }
+}
+
+/**
+ * Providers whose `models.json` entry points at the vault but whose key is no
+ * longer in it. The runtime keeps using a credential until it is told to drop
+ * one, so these have to be named explicitly rather than left to rot.
+ */
+export function staleManagedProviders(file: string): string[] {
+  const { providers } = readDocument(file)
+  const stored = readModelKeys()
+  return Object.keys(providers).filter(
+    (id) => isManagedKey(providers[id]?.apiKey) && stored.keys[id] === undefined
+  )
+}
+
+/**
+ * Move every plaintext key still sitting in `models.json` into the vault.
+ *
+ * This has to happen on a read path, not only on save: a file written before
+ * ticket 26 keeps its key in plaintext until someone happens to edit that
+ * provider, and an upgrade that leaves the secret in place until then is not an
+ * upgrade. Called before the keys are handed to the worker, so the runtime is
+ * never given a file whose key is still on disk in the clear.
+ *
+ * Returns the providers that moved, so the caller can say what happened.
+ */
+export async function migratePlaintextKeys(file: string): Promise<string[]> {
+  const document = readDocument(file)
+  const moved: string[] = []
+  for (const [id, provider] of Object.entries(document.providers)) {
+    const declared = asString(provider.apiKey)
+    if (declared === undefined) continue
+    const reference = adoptPlaintextKey(id, declared)
+    if (reference === undefined) continue
+    provider.apiKey = reference
+    moved.push(id)
+  }
+  if (moved.length > 0) await persist(document)
+  return moved
 }
 
 /** What one write produced — plus what the kernel has to be asked to re-check. */

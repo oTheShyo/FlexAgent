@@ -550,6 +550,10 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
   ipcMain.handle(IPC.saveCustomModel, (_e, input: CustomModelSaveInput) =>
     guard(async () => {
       const write = await customModels.save(await kernel.modelsPath(), input)
+      // The key left for the vault during the save, so the runtime has to be
+      // given it before the provider is recomposed — otherwise the model shows
+      // up resolved but authenticated by nothing.
+      await kernel.applyModelKeys()
       const error = await kernel.reloadModels(write.providers, { ...write.ref, present: true })
       return error === undefined ? write.result : { ...write.result, error }
     })
@@ -558,6 +562,9 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
   ipcMain.handle(IPC.removeCustomModel, (_e, input: CustomModelRef) =>
     guard(async () => {
       const write = await customModels.remove(await kernel.modelsPath(), input)
+      // A provider that lost its last model also lost its key; tell the runtime
+      // so it stops holding a credential for something that no longer exists.
+      await kernel.applyModelKeys()
       const error = await kernel.reloadModels(write.providers, { ...write.ref, present: false })
       return error === undefined ? write.result : { ...write.result, error }
     })

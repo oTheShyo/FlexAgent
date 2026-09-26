@@ -164,11 +164,28 @@ export type WorkerRequest =
   | { requestId: string; type: 'networkStatus' }
   /** Make the stored network settings true in this process, and report the outcome. */
   | { requestId: string; type: 'applyNetwork'; proxy: string; idleTimeoutMs: number }
+  /**
+   * Ticket 26: hand the worker the model API keys, already opened.
+   *
+   * They travel in-process rather than being read by the worker because the
+   * worker thread cannot reach Electron's `safeStorage`, and they do not travel
+   * through the environment because every bash subprocess the agent spawns would
+   * inherit them. Models whose key is absent are named in `clear` so a removed
+   * provider stops using the credential it had.
+   */
+  | { requestId: string; type: 'applyModelKeys'; keys: Record<string, string>; clear: string[] }
   /** One session's tokens, attributed to the purpose that spent them. */
   | { requestId: string; type: 'sessionUsage'; sessionId: SessionId }
   | { requestId: string; type: 'shutdown' }
 
 export type WorkerRequestInput = StripRequestId<WorkerRequest>
+
+/** Outcome of `applyModelKeys`. Providers only — a key itself is never reported. */
+export interface ApplyModelKeysResult {
+  applied: string[]
+  failed: string[]
+  cleared: string[]
+}
 
 /**
  * What the worker can say about the machine's HTTP path. The renderer-facing

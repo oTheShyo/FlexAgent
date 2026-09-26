@@ -12,12 +12,15 @@ import {
   type UsageReport
 } from '../shared/contract'
 import type {
+  ApplyModelKeysResult,
   NetworkStatus,
   WorkerKernelEvent,
   WorkerRequest,
   WorkerRequestInput,
   WorkerResponse
 } from '../shared/kernel-protocol'
+import { readModelKeys } from './modelKeys'
+import { migratePlaintextKeys, staleManagedProviders } from './userModels'
 
 type Pending = {
   resolve: (value: unknown) => void
@@ -157,9 +160,13 @@ export class KernelHost {
    * real request pays the cost as it did before.
    */
   prewarm(cwd?: string): void {
-    void this.request(cwd === undefined ? { type: 'warmup' } : { type: 'warmup', cwd }).catch(
-      () => {}
-    )
+    void this.request(cwd === undefined ? { type: 'warmup' } : { type: 'warmup', cwd })
+      .catch(() => {})
+      .then(() =>
+        // Chained, not parallel: a cold worker has no model keys at all until
+        // this lands, and asking before the runtime exists would only fail.
+        this.applyModelKeys().catch(() => {})
+      )
   }
 
   /**
@@ -190,6 +197,30 @@ export class KernelHost {
       | { error?: string }
       | undefined
     return result?.error
+  }
+
+  /**
+   * Ticket 26 — hand the worker the model keys, opened here.
+   *
+   * Main is the side that can decrypt them (`safeStorage` is not reachable from
+   * the worker thread), and the wire is the process channel rather than the
+   * environment, which every bash subprocess the agent spawns would inherit.
+   *
+   * Safe to call repeatedly: it is how a key edited in Settings reaches a worker
+   * that is already running, and how a fresh worker gets them at all.
+   */
+  async applyModelKeys(): Promise<ApplyModelKeysResult> {
+    const file = await this.modelsPath()
+    // A file written before this ticket still holds its key in plaintext. Move
+    // it first, so the keys read below are the whole set and the disk copy never
+    // has one by the time the runtime is given anything.
+    await migratePlaintextKeys(file)
+    const { keys } = readModelKeys()
+    const clear = staleManagedProviders(file)
+    const result = (await this.request({ type: 'applyModelKeys', keys, clear })) as
+      | ApplyModelKeysResult
+      | undefined
+    return result ?? { applied: [], failed: Object.keys(keys), cleared: [] }
   }
 
   /** PI's own `settings.json`; the network settings are stored there. */
