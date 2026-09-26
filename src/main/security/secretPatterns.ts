@@ -82,12 +82,25 @@ const ASSIGNMENT_KEYWORDS =
 const VALUE_INDIRECTION =
   /^(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|process\.env\.[A-Za-z0-9_.]+|<[^>]*>|x{6,}|\.{3,}|your[_-][A-Za-z0-9_-]*|changeme|change[_-]?me|placeholder|redacted|todo|tbd|example|none|null|undefined)$/i
 
+/**
+ * Shortest value still treated as a credential. 8 is not a number picked out of
+ * thin air: the floor used to be 12, and every token shorter than that —
+ * `sk-abc123`, a 9-char CI token — sailed through as ordinary text. A masked
+ * string costs a re-read; an unmasked one costs a key.
+ */
+const MIN_SECRET_LENGTH = 8
+
 const ASSIGNMENT_RULES: Rule[] = [
   {
     kind: 'credential-assignment',
+    // Two shapes, one pattern. Source reads `apiKey = "x"`; a JSON file — which
+    // is what `cat ~/.flexagent/mcp.json` produces, and the leak this layer
+    // exists for — reads `"apiKey": "x"`, with the quote *before* the colon.
+    // The lookahead lets a quote sit in either place without becoming a group,
+    // which keeps the replacement below unchanged.
     // Quoted values may contain spaces (passphrases); unquoted ones may not.
     pattern: new RegExp(
-      `(${ASSIGNMENT_KEYWORDS}\\s*[:=]\\s*)(["']?)([^\\s"',;]{12,})\\2`,
+      `(${ASSIGNMENT_KEYWORDS})(?:\\s*["'])?\\s*[:=]\\s*(["']?)([^\\s"',;]{${MIN_SECRET_LENGTH},})\\2`,
       'gi'
     ),
     replace: (match, prefix, quote, value: string) => {
@@ -104,13 +117,18 @@ const ASSIGNMENT_RULES: Rule[] = [
   {
     kind: 'env-assignment',
     // .env style: KEY_WITH_SECRET_IN_NAME=longvalue
-    pattern: /^([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|CREDENTIAL)[A-Z0-9_]*)=(.{12,})$/gim,
+    pattern: new RegExp(
+      `^([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|CREDENTIAL)[A-Z0-9_]*)=(.{${MIN_SECRET_LENGTH},})$`,
+      'gim'
+    ),
     replace: (_match, name: string, value: string) =>
       VALUE_INDIRECTION.test(value.trim()) ? _match : `${name}=${REDACTION_MARK}:env-value`
   },
   {
     kind: 'authorization-header',
-    pattern: /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi,
+    // A Bearer shorter than this is a typo, not a token — the earlier floor of
+    // 16 let the short live-keys through as if they were prose.
+    pattern: /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi,
     replace: (_match, prefix: string) => `${prefix}${REDACTION_MARK}:bearer`
   },
   {

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'fs'
+import { chmod } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { ContractError } from '../shared/contract'
@@ -9,6 +10,14 @@ import type {
 } from '../shared/contract'
 import type { PluginMcpServerConfig, PluginResourceSpec } from '../shared/kernel-protocol'
 import { writeFileAtomically } from './marketplaceAtomic'
+import {
+  CredentialError,
+  UNREADABLE_MARK,
+  decryptSecret,
+  encryptSecret,
+  isEnvelope,
+  vaultAlgorithm
+} from './security/credentialVault'
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/
 
@@ -33,15 +42,126 @@ function stringMap(value: unknown, field: string): Record<string, string> | unde
   return out
 }
 
+/**
+ * The secret-bearing field of a stored config, per transport: an `http` server
+ * carries its credential in `headers`, a `stdio` server exports one to the
+ * child process as `env`. Both are `{ [name]: string }` all the way up to the
+ * IPC payload, so both are sealed value-by-value rather than as one map.
+ */
+interface SecretField {
+  field: 'env' | 'headers'
+  values: Record<string, string>
+}
+
+function secretFields(config: UserMcpServerConfig): SecretField[] {
+  if (config.type === 'stdio') {
+    return config.env === undefined ? [] : [{ field: 'env', values: config.env }]
+  }
+  return config.headers === undefined ? [] : [{ field: 'headers', values: config.headers }]
+}
+
+/**
+ * Seal every plaintext secret in place, and report how many were sealed. Applied
+ * to *every* write, so a plaintext value can only ever live in memory that is
+ * about to be sealed — there is no second code path that could still write one.
+ */
+function sealConfig(config: UserMcpServerConfig): number {
+  let sealed = 0
+  for (const { field, values } of secretFields(config)) {
+    const next: Record<string, string> = {}
+    for (const [key, value] of Object.entries(values)) {
+      // The marker is not a secret. Re-sealing it would hide the fact that
+      // something is wrong behind a value that looks like a real credential.
+      if (isEnvelope(value) || value === UNREADABLE_MARK) {
+        next[key] = value
+        continue
+      }
+      next[key] = encryptSecret(value)
+      sealed += 1
+    }
+    if (field === 'env' && config.type === 'stdio') config.env = next
+    else config.headers = next
+  }
+  return sealed
+}
+
+/**
+ * Open every secret in a config that just came off disk. Returns how much work
+ * the caller has to do: `legacy` values were plaintext and need re-sealing,
+ * `failed` values are unreadable and were replaced by the marker.
+ *
+ * `strict` decides what an unreadable value costs. The editing paths (`save`,
+ * `remove`, `toggle`) use it and fail: writing a server whose token comes back
+ * as a marker is a lie the user discovers later, from the server refusing to
+ * connect. The display path and the worker-facing merge use the relaxed mode:
+ * the entry survives, the console says which one, and `UNREADABLE_MARK` is
+ * visible in the value. Losing the entry would be the one outcome nobody can
+ * recover from without a backup.
+ */
+function openSecrets(
+  config: UserMcpServerConfig,
+  where: string,
+  strict: boolean
+): { config: UserMcpServerConfig; legacy: number; failed: number } {
+  let legacy = 0
+  let failed = 0
+  for (const { field, values } of secretFields(config)) {
+    const opened: Record<string, string> = {}
+    for (const [key, value] of Object.entries(values)) {
+      if (!isEnvelope(value)) {
+        // Plaintext on disk is a pre-vault file. Keep using it — it is the only
+        // copy that exists — and let the caller re-seal it on the next write.
+        legacy += 1
+        opened[key] = value
+        continue
+      }
+      try {
+        opened[key] = decryptSecret(value, `${where} ${field}.${key}`)
+      } catch (err) {
+        failed += 1
+        opened[key] = UNREADABLE_MARK
+        // Names the entry, never the value: this line is console output, and a
+        // console is where secrets end up in a bug report.
+        const reason = err instanceof Error ? err.message : String(err)
+        console.error(
+          `[credential-vault] ${where} ${field}.${key} is unreadable (${reason}); ` +
+            `the entry is kept, the value replaced by ${UNREADABLE_MARK}`
+        )
+        if (strict) throw asServiceError(err)
+      }
+    }
+    if (field === 'env' && config.type === 'stdio') config.env = opened
+    else config.headers = opened
+  }
+  return { config, legacy, failed }
+}
+
+/** A credential failure is the user's to act on, so it leaves as a ContractError. */
+function asServiceError(err: unknown): ContractError {
+  if (err instanceof CredentialError) {
+    return new ContractError('KERNEL_INTERNAL', err.message)
+  }
+  return new ContractError('KERNEL_INTERNAL', err instanceof Error ? err.message : String(err))
+}
+
+function logMigration(file: string, migrated: number, failed: number): void {
+  const alg = vaultAlgorithm()
+  console.info(
+    `[credential-vault] migrated ${file}: ${migrated} plaintext value(s) re-sealed with ${alg}` +
+      (failed > 0 ? `, ${failed} value(s) still unreadable` : '')
+  )
+}
+
 /** Structural validation shared by file loads (lenient → skip) and saves (strict → throw). */
 function validateConfig(raw: unknown, strict: boolean): UserMcpServerConfig {
   if (!isRecord(raw)) {
     if (strict) throw new ContractError('INVALID_INPUT', 'config must be an object')
     throw new ContractError('INVALID_INPUT', 'config must be an object')
   }
-  const type = raw.type === 'http' ? 'http' : raw.type === 'stdio' ? 'stdio' : undefined
+  const type =
+    raw.type === 'http' ? 'http' : raw.type === 'stdio' ? 'stdio' : raw.type === 'sse' ? 'sse' : undefined
   if (type === undefined) {
-    throw new ContractError('INVALID_INPUT', 'config.type must be "stdio" or "http"')
+    throw new ContractError('INVALID_INPUT', 'config.type must be "stdio", "http" or "sse"')
   }
   const expose = raw.expose === 'direct' ? 'direct' : raw.expose === 'proxy' ? 'proxy' : undefined
   if (raw.expose !== undefined && expose === undefined) {
@@ -90,7 +210,7 @@ function validateConfig(raw: unknown, strict: boolean): UserMcpServerConfig {
       : {
           url: (() => {
             if (typeof raw.url !== 'string' || raw.url.length === 0) {
-              throw new ContractError('INVALID_INPUT', 'http server requires "url"')
+              throw new ContractError('INVALID_INPUT', `${type} server requires "url"`)
             }
             try {
               const parsed = new URL(raw.url)
@@ -135,33 +255,90 @@ function parseFile(raw: string): Record<string, UserMcpServerConfig> {
 }
 
 async function persist(servers: Record<string, UserMcpServerConfig>): Promise<void> {
+  const file = mcpFilePath()
+  // Sealed on the way out, sorted for a stable diff — no write in this process
+  // can reach the file with a plaintext value in it.
+  const mcpServers: Record<string, UserMcpServerConfig> = {}
+  for (const name of Object.keys(servers).sort()) {
+    sealConfig(servers[name])
+    mcpServers[name] = servers[name]
+  }
   try {
-    await writeFileAtomically(
-      mcpFilePath(),
-      JSON.stringify({ mcpServers: sortServers(servers) }, null, 2) + '\n'
-    )
+    await writeFileAtomically(file, JSON.stringify({ mcpServers }, null, 2) + '\n')
   } catch (err) {
     throw new ContractError(
       'KERNEL_INTERNAL',
       `Failed to write mcp.json: ${err instanceof Error ? err.message : String(err)}`
     )
   }
-}
-
-function sortServers(servers: Record<string, UserMcpServerConfig>): Record<string, UserMcpServerConfig> {
-  const out: Record<string, UserMcpServerConfig> = {}
-  for (const name of Object.keys(servers).sort()) out[name] = servers[name]
-  return out
-}
-
-function loadServers(): Record<string, UserMcpServerConfig> {
-  const file = mcpFilePath()
-  if (!existsSync(file)) return {}
+  // Best effort, and deliberately outside the write above: the encryption is
+  // what makes the file safe to share, the mode is a second line of defence
+  // that must not be able to fail a save.
   try {
-    return parseFile(readFileSync(file, 'utf8'))
+    await chmod(file, 0o600)
   } catch {
-    return {}
+    /* Windows ignores POSIX modes; nothing else to do. */
   }
+}
+
+interface LoadedServers {
+  servers: Record<string, UserMcpServerConfig>
+  /** Plaintext values that were opened and need a re-seal. */
+  migrated: number
+  failed: number
+}
+
+/** Parse + open everything. Synchronous because `mergeUserMcpIntoSpec` is. */
+function readServers(strict: boolean): LoadedServers {
+  const file = mcpFilePath()
+  if (!existsSync(file)) return { servers: {}, migrated: 0, failed: 0 }
+  let entries: Record<string, UserMcpServerConfig>
+  try {
+    entries = parseFile(readFileSync(file, 'utf8'))
+  } catch {
+    // A file the kernel-shaped loader also treats leniently: an unparsable
+    // mcp.json reads as "nothing configured" rather than as a dialog box.
+    // Pre-existing behaviour, out of scope here — the vault only adds failures
+    // it is asked to raise about values it can actually decode.
+    return { servers: {}, migrated: 0, failed: 0 }
+  }
+  const servers: Record<string, UserMcpServerConfig> = {}
+  let migrated = 0
+  let failed = 0
+  for (const [name, config] of Object.entries(entries)) {
+    const opened = openSecrets(config, `mcp server "${name}"`, strict)
+    migrated += opened.legacy
+    failed += opened.failed
+    servers[name] = opened.config
+  }
+  return { servers, migrated, failed }
+}
+
+/**
+ * Read, and on a legacy file migrate in place.
+ *
+ * Migration is the one-way door the acceptance criterion asks for: the plaintext
+ * is opened only so it can be immediately re-sealed and overwritten, so a file
+ * that was ever plaintext is plaintext-free after its first read. If the
+ * overwrite itself fails we do not throw — the values are already usable in
+ * memory and the file on disk is still the one that was configured, which is
+ * strictly better than refusing to start.
+ */
+async function loadServers(strict: boolean): Promise<LoadedServers> {
+  const loaded = readServers(strict)
+  if (loaded.migrated > 0) {
+    try {
+      await persist(loaded.servers)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.error(
+        `[credential-vault] migration could not rewrite ${mcpFilePath()} (${reason}); ` +
+          'the plaintext values stay usable in memory until the next save'
+      )
+    }
+    logMigration(mcpFilePath(), loaded.migrated, loaded.failed)
+  }
+  return loaded
 }
 
 function summarize(servers: Record<string, UserMcpServerConfig>): UserMcpServerSummary[] {
@@ -178,8 +355,13 @@ function requireName(name: unknown): string {
 }
 
 export class UserMcpService {
-  list(): UserMcpServerSummary[] {
-    return summarize(loadServers())
+  /**
+   * Async so a legacy file is migrated on the read the user actually performs:
+   * `guard()` unwraps the promise, so the IPC contract and the renderer's data
+   * are both unchanged.
+   */
+  async list(): Promise<UserMcpServerSummary[]> {
+    return summarize((await loadServers(false)).servers)
   }
 
   async save(input: UserMcpSaveInput): Promise<UserMcpServerSummary[]> {
@@ -188,7 +370,8 @@ export class UserMcpService {
     }
     const name = requireName(input.name)
     const config = validateConfig(input.config, true)
-    const servers = loadServers()
+    // Strict: an edit that cannot be read back must not be written.
+    const { servers } = await loadServers(true)
     servers[name] = config
     await persist(servers)
     return summarize(servers)
@@ -196,7 +379,7 @@ export class UserMcpService {
 
   async remove(name: string): Promise<UserMcpServerSummary[]> {
     const key = requireName(name)
-    const servers = loadServers()
+    const { servers } = await loadServers(true)
     if (!(key in servers)) {
       throw new ContractError('USER_MCP_NOT_FOUND', `Unknown MCP server: ${key}`)
     }
@@ -210,7 +393,7 @@ export class UserMcpService {
     if (typeof enabled !== 'boolean') {
       throw new ContractError('INVALID_INPUT', 'enabled must be a boolean')
     }
-    const servers = loadServers()
+    const { servers } = await loadServers(true)
     const existing = servers[key]
     if (!existing) {
       throw new ContractError('USER_MCP_NOT_FOUND', `Unknown MCP server: ${key}`)
@@ -254,7 +437,18 @@ function toPluginConfig(config: UserMcpServerConfig): PluginMcpServerConfig {
  * Mutates and returns the spec.
  */
 export function mergeUserMcpIntoSpec(spec: PluginResourceSpec): PluginResourceSpec {
-  const servers = loadServers()
+  const loaded = readServers(false)
+  // Fire-and-forget: the spec has to be built synchronously and the plaintext
+  // is already open, so a legacy file only needs its on-disk copy tidied. A
+  // failure here costs nothing — the next save rewrites it anyway.
+  if (loaded.migrated > 0) {
+    const file = mcpFilePath()
+    void persist(loaded.servers).catch(() => {
+      console.error(`[credential-vault] could not re-seal ${file}`)
+    })
+    logMigration(file, loaded.migrated, loaded.failed)
+  }
+  const servers = loaded.servers
   for (const [name, config] of Object.entries(servers)) {
     if (config.enabled === false) continue
     if (spec.mcpServers === undefined) spec.mcpServers = {}
