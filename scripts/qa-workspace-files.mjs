@@ -73,7 +73,7 @@ async function main() {
   await bundle()
   const { listWorkspaceFiles, readWorkspaceFile, invalidateWorkspaceFiles, rankFiles } =
     await load('workspaceFiles')
-  const { renderReferences } = await load('promptReferences')
+  const { renderReferences, renderSessionTranscript } = await load('promptReferences')
 
   // ── The list is real, and skips what it must ──────────────────────────────
   {
@@ -255,6 +255,46 @@ async function main() {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  }
+
+  // ── A `#` citation: the transcript, bounded at a message boundary ─────────
+  {
+    const messages = [
+      { role: 'user', content: 'why is the wall detection jittering?' },
+      { role: 'assistant', content: 'because the 11px sub-image re-centres every frame' },
+      // Empty content is common (a tool round-trip with no prose) and would put
+      // a bare "Assistant:" line in the citation.
+      { role: 'assistant', content: '   ' },
+      { role: 'user', content: 'x'.repeat(7_000) }
+    ]
+    const full = renderSessionTranscript(messages)
+    check(
+      'a citation carries what the chat said, oldest first',
+      full.text.startsWith('User: why is the wall detection') &&
+        full.text.includes('11px sub-image') &&
+        full.truncated === true,
+      `truncated=${full.truncated}`
+    )
+    check(
+      'a message with no prose leaves no empty line behind',
+      !/\nAssistant:\s*$/m.test(full.text) && !full.text.includes('Assistant: \n'),
+      'blank turns are skipped'
+    )
+
+    const tight = renderSessionTranscript(messages, 60)
+    check(
+      'the cap stops at a whole message, never mid-sentence',
+      tight.truncated === true &&
+        tight.text === 'User: why is the wall detection jittering?' &&
+        !tight.text.includes('because'),
+      JSON.stringify(tight.text.slice(0, 50))
+    )
+
+    check(
+      'an empty transcript is empty, not a failed read',
+      renderSessionTranscript([]).text === '' && renderSessionTranscript([]).truncated === false,
+      'no messages, no text'
+    )
   }
 
   console.log(

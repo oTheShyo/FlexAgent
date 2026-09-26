@@ -10,6 +10,7 @@ import type {
   ModelOption,
   PermissionMode,
   PromptReference,
+  SessionContextResult,
   SessionSearchHit,
   SessionSummary,
   SlashCommandSummary,
@@ -122,6 +123,12 @@ export interface ComposerProps {
    * rather than offering paths from a project the user is not in.
    */
   listWorkspaceFiles?: (query: string) => Promise<string[]>
+  /**
+   * Ticket 27: the transcript behind a `#` pick. Optional so the popup degrades
+   * to title-only citations — which the chip already marks as partial — rather
+   * than failing a pick that used to work.
+   */
+  readSessionContext?: (sessionId: string) => Promise<SessionContextResult | undefined>
 }
 
 const MENTION_BEFORE_CARET = /@[\w./-]*$/
@@ -463,7 +470,8 @@ function Composer({
   onSelectionPickConsumed,
   sessions = [],
   activeSessionId = null,
-  listWorkspaceFiles
+  listWorkspaceFiles,
+  readSessionContext
 }: ComposerProps) {
   const [text, setText] = useState('')
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -807,7 +815,7 @@ function Composer({
    * the reference.
    */
   const pickSession = useCallback(
-    (sessionId: string): void => {
+    async (sessionId: string): Promise<void> => {
       const el = textareaRef.current
       if (el === null) return
       if (matchSessionQuery(el.value, el.selectionStart ?? el.value.length) === null) {
@@ -819,12 +827,22 @@ function Composer({
         closeSession()
         return
       }
+      // Ticket 27: a search hit carries ~200 characters, which is a title with a
+      // comma after it, not a citation. The transcript is fetched here so the
+      // reference holds what the chat actually said. A failure leaves the snippet
+      // in place, and the chip still says the quote is partial — a pick that used
+      // to work must not start failing because the read did.
+      let snippet = option.snippet
+      if (readSessionContext !== undefined) {
+        const context = await readSessionContext(option.id)
+        if (context !== undefined) {
+          snippet = context.truncated ? `${context.text}\n…(earlier part omitted)` : context.text
+        }
+      }
       const candidate = createSessionReference({
         sessionId: option.id,
         title: option.title,
-        ...(option.snippet !== undefined && option.snippet.length > 0
-          ? { snippet: option.snippet }
-          : {}),
+        ...(snippet !== undefined && snippet.length > 0 ? { snippet } : {}),
         updatedAt: option.updatedAt
       })
       const applied = addReference(referencesRef.current, candidate)
@@ -850,7 +868,7 @@ function Composer({
     }
     if (sessionOpen) {
       const id = sessionItems[sessionIndex]?.id
-      if (id !== undefined) pickSession(id)
+      if (id !== undefined) void pickSession(id)
       return true
     }
     if (mentionOpen) {

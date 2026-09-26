@@ -18,6 +18,7 @@ import {
   type RoutingState,
   type RunState,
   type SessionId,
+  type SessionContextResult,
   type SessionSearchHit,
   type ThinkingLevel,
   type ToolCallId,
@@ -68,6 +69,7 @@ import { PermissionGate, PermissionMemory, describeDenials } from './permissionG
 import { effectiveRuleSet } from './permissionRules'
 import { readDefaultPermissionMode, writeDefaultPermissionMode } from './settings'
 import { invalidateWorkspaceFiles } from './workspaceFiles'
+import { renderSessionTranscript } from './promptReferences'
 import {
   connectMcpClient,
   listMcpTools,
@@ -1952,6 +1954,7 @@ function buildMessages(session: AgentSession): ChatMessage[] {
   return out
 }
 
+
 /**
  * Resource loaders are bound to a cwd and expensive to build: reload() resolves
  * the package graph, loads every extension module and re-reads the project
@@ -2253,6 +2256,32 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       perf.mark('buildMessages')
       perf.done('openSession', { sessionId: req.sessionId, warm: false, messages: messages.length })
       return { messages }
+    }
+    case 'readSessionContext': {
+      const host = sessions.get(req.sessionId)
+      // Already attached means it is the open session, or one the UI is showing:
+      // read it and leave it alone. Disposing somebody else's live session here
+      // would be a bug far worse than the citation is worth.
+      if (host !== undefined) {
+        return renderSessionTranscript(buildMessages(host.session), req.maxChars)
+      }
+      if (!req.piSessionFile) {
+        return {
+          text: '',
+          truncated: false,
+          reason: 'this chat has no transcript file yet'
+        }
+      }
+      const { SessionManager } = await loadPi()
+      const sessionManager = SessionManager.open(req.piSessionFile, undefined, req.cwd)
+      const opened = await attachSession(req.sessionId, req.cwd, sessionManager)
+      try {
+        return renderSessionTranscript(buildMessages(opened.session), req.maxChars)
+      } finally {
+        opened.unsubscribe()
+        opened.session.dispose()
+        sessions.delete(req.sessionId)
+      }
     }
     case 'setSessionCwd': {
       const perf = perfStart()

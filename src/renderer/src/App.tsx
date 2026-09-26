@@ -88,6 +88,7 @@ export default function App({ children }: AppProps) {
     stopQuestionTimer,
     send,
     listWorkspaceFiles,
+    readSessionContext,
     stop,
     respond,
     applyFiles,
@@ -821,6 +822,7 @@ export default function App({ children }: AppProps) {
                   ? undefined
                   : (query: string) => listWorkspaceFiles(activeSessionId, query)
               }
+              readSessionContext={readSessionContext}
               onStop={handleStop}
               disabled={!activeSessionId}
               running={isStreaming}

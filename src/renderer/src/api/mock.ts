@@ -44,6 +44,8 @@ import {
   type SessionId,
   type SessionSearchHit,
   type WorkspaceFileQuery,
+  type SessionContextQuery,
+  type SessionContextResult,
   type SessionSummary,
   type SetModelInput,
   type SetModelRoleInput,
@@ -1554,6 +1556,19 @@ export class MockCodexApi implements CodexApi {
     ]
     if (needle.length === 0) return fixtures.slice(0, 4)
     return fixtures.filter((path) => path.toLowerCase().includes(needle))
+  }
+
+  /** Fixture transcript: enough to see the chip fill, not enough to trust. */
+  async readSessionContext(input: SessionContextQuery): Promise<SessionContextResult> {
+    const session = this.sessions.get(input.sessionId)
+    if (session === undefined) {
+      return { text: '', truncated: false, reason: 'no such chat in the mock' }
+    }
+    const lines = session.messages.map(
+      (message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`
+    )
+    const text = lines.join('\n')
+    return { text: text.slice(0, input.maxChars ?? 6_000), truncated: text.length > 6_000 }
   }
 
   async searchSessions(query: string): Promise<SessionSearchHit[]> {    const needle = query.trim().toLowerCase()

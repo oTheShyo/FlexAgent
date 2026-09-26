@@ -1270,6 +1270,27 @@ export interface WorkspaceFileQuery {
   query?: string
 }
 
+/**
+ * Ticket 27: what the Composer `#` popup asks for — another session's
+ * transcript, read without opening it.
+ *
+ * `openSession` cannot be used for this: it attaches the session and the
+ * renderer switches the view to it, which is a different thing from citing it.
+ */
+export interface SessionContextQuery {
+  sessionId: SessionId
+  /** Capped server-side; a citation is not a transcript dump. */
+  maxChars?: number
+}
+
+export interface SessionContextResult {
+  /** The transcript as plain text, oldest first. Empty when it could not be read. */
+  text: string
+  truncated: boolean
+  /** Why `text` is empty, when it is. */
+  reason?: string
+}
+
 // ─── Skill Hub (v1.8, additive) ──────────────────────────────────────────────
 
 /** A browsable skill catalog: the built-in one plus user-registered ones. */
@@ -1690,6 +1711,11 @@ export interface CodexApi {
    * it returns at most a popup's worth of paths and never the whole tree.
    */
   listWorkspaceFiles(input: WorkspaceFileQuery): Promise<string[]>
+  /**
+   * Ticket 27: the transcript of a session that is not the open one, so `#` can
+   * cite what a chat actually said instead of only its title.
+   */
+  readSessionContext(input: SessionContextQuery): Promise<SessionContextResult>
 
   // ── Skill Hub (v1.8) ──
   /** Built-in hub + user-registered hubs (~/.flexagent/skillhubs.json). */
@@ -1791,6 +1817,7 @@ export const IPC = {
   listSkillUsage: 'codex:listSkillUsage',
   searchSessions: 'codex:searchSessions',
   listWorkspaceFiles: 'codex:listWorkspaceFiles',
+  readSessionContext: 'codex:readSessionContext',
   listUserMcpServers: 'codex:listUserMcpServers',
   saveUserMcpServer: 'codex:saveUserMcpServer',
   removeUserMcpServer: 'codex:removeUserMcpServer',

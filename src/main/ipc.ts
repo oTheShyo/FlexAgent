@@ -16,6 +16,8 @@ import {
   type PermissionRuleSet,
   type PromptInput,
   type WorkspaceFileQuery,
+  type SessionContextQuery,
+  type SessionContextResult,
   type RespondPermissionInput,
   type NetworkSettings,
   type SetModelInput,
@@ -941,6 +943,25 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       // Scanned here rather than in the worker: walking a tree while the agent
       // is mid-run would stall the run, and the cwd is already on the record.
       return listWorkspaceFiles(registry.require(query.sessionId).cwd, query.query ?? '')
+    })
+  )
+
+  ipcMain.handle(IPC.readSessionContext, (_e, input: unknown) =>
+    guard(async () => {
+      const query = input as SessionContextQuery | undefined
+      if (query === undefined || typeof query.sessionId !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      const rec = registry.require(query.sessionId)
+      // Citing a chat is not opening one: the worker releases it again as soon
+      // as the transcript is read, so this stays a read and not a switch.
+      return (await kernel.request({
+        type: 'readSessionContext',
+        sessionId: query.sessionId,
+        cwd: rec.cwd,
+        piSessionFile: rec.piSessionFile,
+        maxChars: query.maxChars
+      })) as SessionContextResult | undefined
     })
   )
 

@@ -69,6 +69,8 @@ import {
   type SetThinkingLevelInput,
   type SessionSearchHit,
   type WorkspaceFileQuery,
+  type SessionContextQuery,
+  type SessionContextResult,
   type SkillPendingWrite,
   type SkillUndoEntry,
   type SkillUsageEntry,
@@ -358,6 +360,9 @@ const codex: CodexApi = {
 
   listWorkspaceFiles: (input: WorkspaceFileQuery) =>
     invoke<string[]>(IPC.listWorkspaceFiles, input),
+
+  readSessionContext: (input: SessionContextQuery) =>
+    invoke<SessionContextResult>(IPC.readSessionContext, input),
 
   listSkillHubs: () => invoke<SkillHubInfo[]>(IPC.listSkillHubs),
 

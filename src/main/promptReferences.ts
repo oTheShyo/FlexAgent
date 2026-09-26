@@ -108,3 +108,34 @@ export async function renderReferences(
     notices
   }
 }
+
+/** Ticket 27: how much of another chat a `#` citation may carry. */
+export const DEFAULT_SESSION_CONTEXT_CHARS = 6_000
+
+/**
+ * Ticket 27: a transcript as plain text, oldest first, for a `#` citation.
+ *
+ * The cap stops at the last whole message rather than trimming one: a
+ * transcript cut mid-sentence reads as a complete exchange that ended oddly,
+ * which is a worse citation than one that stops and says it stopped.
+ */
+export function renderSessionTranscript(
+  messages: readonly { role: string; content?: string }[],
+  maxChars: number = DEFAULT_SESSION_CONTEXT_CHARS
+): { text: string; truncated: boolean } {
+  const lines: string[] = []
+  let used = 0
+  let truncated = false
+  for (const message of messages) {
+    const content = (message.content ?? '').trim()
+    if (content.length === 0) continue
+    const line = `${message.role === 'user' ? 'User' : 'Assistant'}: ${content}`
+    if (used + line.length > maxChars) {
+      truncated = true
+      break
+    }
+    lines.push(line)
+    used += line.length
+  }
+  return { text: lines.join('\n'), truncated }
+}

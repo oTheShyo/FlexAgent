@@ -11,6 +11,7 @@ import {
   type PermissionDecision,
   type PromptMode,
   type PromptReference,
+  type SessionContextResult,
   type RunState,
   type SessionSummary,
   type SlashCommandSummary,
@@ -57,6 +58,8 @@ export interface UseChatResult {
   send: (text: string, mode?: PromptMode, references?: PromptReference[]) => Promise<void>
   /** Ticket 27: files offered by the Composer `@` popup, for this session. */
   listWorkspaceFiles: (sessionId: string, query: string) => Promise<string[]>
+  /** Ticket 27: another session's transcript, read without opening it. */
+  readSessionContext: (sessionId: string) => Promise<SessionContextResult | undefined>
   stop: () => Promise<void>
   respond: (decision: PermissionDecision) => Promise<void>
   applyFiles: (files: FileChange[]) => Promise<ApplyFileChangesResult | null>
@@ -739,6 +742,22 @@ export function useChat(): UseChatResult {
     []
   )
 
+  /**
+   * Ticket 27. Returns undefined rather than throwing: a chat whose transcript
+   * cannot be read is still citable by title, and the chip already says so.
+   */
+  const readSessionContext = useCallback(
+    async (sessionId: string): Promise<SessionContextResult | undefined> => {
+      try {
+        const result = await codexApi.readSessionContext({ sessionId })
+        return result !== undefined && result.text.length > 0 ? result : undefined
+      } catch {
+        return undefined
+      }
+    },
+    []
+  )
+
   const stop = useCallback(async (): Promise<void> => {
     const sessionId = activeIdRef.current
     if (!sessionId) return
@@ -818,6 +837,7 @@ export function useChat(): UseChatResult {
     pendingPermission,
     send,
     listWorkspaceFiles,
+    readSessionContext,
     stop,
     respond,
     applyFiles,

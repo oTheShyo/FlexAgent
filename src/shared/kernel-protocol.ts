@@ -106,6 +106,20 @@ export type WorkerRequest =
   | { requestId: string; type: 'createSession'; sessionId: SessionId; cwd: string; title?: string }
   | { requestId: string; type: 'openSession'; sessionId: SessionId; cwd: string; piSessionFile?: string }
   | { requestId: string; type: 'setSessionCwd'; sessionId: SessionId; cwd: string }
+  /**
+   * Ticket 27: read a session's transcript without opening it. The session is
+   * attached only for the read and released in the same handler — a chat the
+   * user merely cited must not keep a subscription, a socket, or a place in
+   * the session map afterwards.
+   */
+  | {
+      requestId: string
+      type: 'readSessionContext'
+      sessionId: SessionId
+      cwd: string
+      piSessionFile?: string
+      maxChars?: number
+    }
   | {
       requestId: string
       type: 'prompt'
