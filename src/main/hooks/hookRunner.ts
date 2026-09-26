@@ -388,6 +388,15 @@ export async function runHook(options: HookRunOptions): Promise<HookRunResult> {
         return
       }
       if (code === 2) {
+        // A vetoing hook states its reason as JSON on stdout — the parsed reason
+        // is the model-facing text; raw stderr/stdout is only the fallback.
+        const parsed = parseHookStdout(stdout)
+        const parsedReason =
+          parsed.output !== undefined && typeof parsed.output.reason === 'string'
+            ? parsed.output.reason
+            : parsed.output !== undefined && typeof parsed.output.stopReason === 'string'
+              ? parsed.output.stopReason
+              : undefined
         resolvePromise(
           baseResult({
             status: 'ok',
@@ -398,8 +407,12 @@ export async function runHook(options: HookRunOptions): Promise<HookRunResult> {
             truncated,
             durationMs,
             blockRequested: true,
+            ...(parsed.output !== undefined ? { output: parsed.output } : {}),
             blockReason:
-              trimForPreview(stderr) ?? trimForPreview(stdout) ?? 'Hook blocked execution'
+              parsedReason ??
+              trimForPreview(stderr) ??
+              trimForPreview(stdout) ??
+              'Hook blocked execution'
           })
         )
         return

@@ -3,7 +3,7 @@ import { dirname, join } from 'path'
 import type { PluginHookContext, PluginResourceSpec } from '../shared/kernel-protocol'
 import type { HookEntry, HookSourceDiagnosticCode } from './hookSources'
 import type { HookTemplateContext } from './userConfig'
-import type { HookRunOptions, HookRunResult } from './hooks/hookRunner'
+import type { HookRunOptions, HookRunPlugin, HookRunResult } from './hooks/hookRunner'
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -216,6 +216,21 @@ export function matchesHookMatcher(
   }
 }
 
+/**
+ * A hook entry registered for an enforcement-capable event (ticket 13).
+ * PreToolUse and UserPromptSubmit have no fire-and-forget kernel event that
+ * could block, so they are checked synchronously at the enforcement points
+ * (worker `beforeToolCall` / prompt handler) instead of `pi.on`.
+ */
+export interface RegisteredHookCheck {
+  event: 'PreToolUse' | 'UserPromptSubmit'
+  /** Tool-name filter for PreToolUse: exact `a|b` list, regex, or `*`/undefined = all. */
+  matcher?: string
+  entry: HookEntry
+  plugin: HookRunPlugin | undefined
+  hookContext?: PluginHookContext
+}
+
 export interface PluginHookDeps {
   parseHooksContent(
     content: string,
@@ -226,10 +241,14 @@ export interface PluginHookDeps {
   }
   interpolate(template: string, context: HookTemplateContext): string
   runHook(options: HookRunOptions): Promise<HookRunResult>
+  /** Mutated by registerPluginHooks; read by runPreToolUseHooks at each tool call. */
+  preToolUseChecks: RegisteredHookCheck[]
+  /** Mutated by registerPluginHooks; read by runPromptSubmitHooks at each prompt. */
+  promptSubmitChecks: RegisteredHookCheck[]
 }
 
 function buildHookStdin(
-  sourceEvent: MappedHookEvent,
+  sourceEvent: string,
   payload: Record<string, unknown>,
   cwd: string
 ): string {
@@ -238,6 +257,9 @@ function buildHookStdin(
     hookEventName: sourceEvent,
     cwd,
     timestamp: new Date().toISOString()
+  }
+  if (typeof payload.prompt === 'string') {
+    input.prompt = payload.prompt
   }
   if (typeof payload.toolName === 'string') {
     input.tool_name = payload.toolName
@@ -253,6 +275,111 @@ function buildHookStdin(
     input.is_error = payload.isError === true
   }
   return `${JSON.stringify(input)}\n`
+}
+
+export interface HookCheckResult {
+  blocked: boolean
+  /** Veto/block reason — reaches the model (PreToolUse) or user (UserPromptSubmit). */
+  reason?: string
+  /** UserPromptSubmit only: hook-provided context appended to the outgoing prompt. */
+  additionalContext?: string
+  diagnostics: string[]
+}
+
+async function runHookChecks(
+  deps: PluginHookDeps,
+  checks: RegisteredHookCheck[],
+  input: {
+    event: 'PreToolUse' | 'UserPromptSubmit'
+    payload: Record<string, unknown>
+    matchValue: string | undefined
+    cwd: string
+  }
+): Promise<HookCheckResult> {
+  const diagnostics: string[] = []
+  const contexts: string[] = []
+  for (const check of checks) {
+    if (check.matcher !== undefined && !matchesHookMatcher(input.matchValue, check.matcher)) {
+      continue
+    }
+    const templateContext: HookTemplateContext = {
+      values: check.hookContext?.userConfig ?? {},
+      sensitiveKeys: check.hookContext?.sensitiveKeys ?? [],
+      ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
+      projectDir: input.cwd
+    }
+    let command: string
+    let args: string[] | undefined
+    try {
+      command = deps.interpolate(check.entry.command, templateContext)
+      if (check.entry.args !== undefined) {
+        args = check.entry.args.map((arg) => deps.interpolate(arg, templateContext))
+      }
+    } catch (error) {
+      diagnostics.push(
+        `${check.event} hook interpolation failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+      continue
+    }
+    const result = await deps.runHook({
+      type: check.entry.type,
+      command,
+      ...(args !== undefined ? { args } : {}),
+      ...(check.entry.shell !== undefined ? { shell: check.entry.shell } : {}),
+      cwd: input.cwd,
+      stdin: buildHookStdin(input.event, input.payload, input.cwd),
+      ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
+      ...(check.entry.timeoutMs !== undefined ? { timeoutMs: check.entry.timeoutMs } : {})
+    })
+    for (const diag of result.diagnostics) {
+      diagnostics.push(`${check.event} hook: ${diag.message}`)
+    }
+    const blocked =
+      result.blockRequested ||
+      result.output?.continue === false ||
+      result.output?.decision === 'block'
+    if (blocked) {
+      const reason =
+        result.blockReason ??
+        (typeof result.output?.reason === 'string' ? result.output.reason : undefined) ??
+        (typeof result.output?.stopReason === 'string' ? result.output.stopReason : undefined) ??
+        'blocked by hook'
+      return { blocked: true, reason, diagnostics }
+    }
+    const raw = result.output?.additionalContext ?? result.output?.additional_context
+    if (typeof raw === 'string' && raw.trim().length > 0) contexts.push(raw)
+  }
+  return {
+    blocked: false,
+    ...(contexts.length > 0 ? { additionalContext: contexts.join('\n\n') } : {}),
+    diagnostics
+  }
+}
+
+export async function runPreToolUseHooks(
+  deps: PluginHookDeps,
+  input: { toolName: string; args: unknown; toolCallId: string; cwd: string }
+): Promise<HookCheckResult> {
+  return runHookChecks(deps, deps.preToolUseChecks, {
+    event: 'PreToolUse',
+    payload: { toolName: input.toolName, args: input.args, toolCallId: input.toolCallId },
+    matchValue: input.toolName,
+    cwd: input.cwd
+  })
+}
+
+export async function runPromptSubmitHooks(
+  deps: PluginHookDeps,
+  input: { prompt: string; cwd: string }
+): Promise<HookCheckResult> {
+  return runHookChecks(deps, deps.promptSubmitChecks, {
+    event: 'UserPromptSubmit',
+    payload: { prompt: input.prompt },
+    matchValue: undefined,
+    cwd: input.cwd
+  })
 }
 
 export function registerPluginHooks(
@@ -299,6 +426,21 @@ export function registerPluginHooks(
       }
     }
     for (const entry of parsed.entries) {
+      // Enforcement-capable events (ticket 13): registered as checks the worker
+      // awaits at the enforcement points, not fire-and-forget kernel events.
+      if (entry.event === 'PreToolUse' || entry.event === 'UserPromptSubmit') {
+        const check: RegisteredHookCheck = {
+          event: entry.event,
+          ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
+          entry,
+          plugin: pluginInfo,
+          ...(hookContext !== undefined ? { hookContext } : {})
+        }
+        if (entry.event === 'PreToolUse') deps.preToolUseChecks.push(check)
+        else deps.promptSubmitChecks.push(check)
+        registered += 1
+        continue
+      }
       if (!isMappedHookEvent(entry.event)) {
         seenUnsupported.add(entry.event)
         continue
@@ -371,7 +513,7 @@ export function registerPluginHooks(
             'block requested by hook'
           diagnostics.push({
             code: 'hook_block_ignored',
-            message: `${entry.event} hook requested a block (not enforced in P2c): ${reason}`
+            message: `${entry.event} hook requested a block (observed only — this event has no enforcement point): ${reason}`
           })
         }
       })

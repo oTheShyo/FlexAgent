@@ -37,7 +37,7 @@ import type {
   DefaultResourceLoader as DefaultResourceLoaderType,
   SessionManager as SessionManagerType
 } from '@earendil-works/pi-coding-agent'
-import { createPluginBridgeFactory, type PluginHookDeps, type McpToolBridgeDef, type McpToolBridgeResult } from './pluginBridge'
+import { createPluginBridgeFactory, runPreToolUseHooks, runPromptSubmitHooks, type PluginHookDeps, type McpToolBridgeDef, type McpToolBridgeResult } from './pluginBridge'
 import { parseHooksContent } from './hookSources'
 import { perfStart } from './perf'
 import { interpolateHookTemplate } from './userConfig'
@@ -126,7 +126,9 @@ function trackedRunHook(options: HookRunOptions): Promise<HookRunResult> {
 const hookDeps: PluginHookDeps = {
   parseHooksContent,
   interpolate: interpolateHookTemplate,
-  runHook: trackedRunHook
+  runHook: trackedRunHook,
+  preToolUseChecks: [],
+  promptSubmitChecks: []
 }
 
 async function settleHookRuns(): Promise<void> {
@@ -1424,53 +1426,81 @@ function setupPermissionGate(host: HostSession): void {
 
     if (outcome === 'allow') {
       host.gate.noteAllowance()
-      return undefined
+    } else {
+      // waitMs starts when the dialog is published, not when the gate began —
+      // classifier latency inside evaluate is system time and belongs in execMs
+      // attribution, not the user's wait (observability §3.2).
+      const waitStartedAt = Date.now()
+      emit(host.sessionId, {
+        type: 'permission_request',
+        sessionId: host.sessionId,
+        ts: Date.now(),
+        toolCallId,
+        name,
+        label: name,
+        args,
+        mode: host.mode,
+        verdict,
+        reason: `Kernel requires approval for tool "${name}"`
+      })
+
+      const decision = await new Promise<PermissionDecision>((resolvePromise) => {
+        host.pending.set(toolCallId, { resolve: resolvePromise })
+      })
+      host.permissionWaits.set(toolCallId, Date.now() - waitStartedAt)
+
+      if (decision === 'allowSession') {
+        // Recorded against tool name + parameter fingerprint, so an allowance for
+        // `npm test` never leaks onto `rm -rf`.
+        host.memory.record(name, PermissionMemory.fingerprintArgs(args))
+        host.gate.noteAllowance()
+      } else if (decision === 'allowOnce') {
+        host.gate.noteAllowance()
+      } else {
+        host.denials.set(toolCallId, { name, reason: verdict.reason })
+        // The refusal text lands in the transcript, which is the only channel that
+        // reaches the model: without it the agent retries the same blocked call next
+        // turn. Per-session *system-prompt* injection would be the nicer home, but
+        // PI's extension factories are cached per cwd and `before_agent_start` carries
+        // no session identity, so there is no per-session hook to attach to.
+        const summary = describeDenials(host.denials.values())
+        return {
+          block: true,
+          reason: summary ? `${verdict.reason} — ${summary}` : verdict.reason
+        }
+      }
     }
 
-    // waitMs starts when the dialog is published, not when the gate began —
-    // classifier latency inside evaluate is system time and belongs in execMs
-    // attribution, not the user's wait (observability §3.2).
-    const waitStartedAt = Date.now()
-    emit(host.sessionId, {
-      type: 'permission_request',
-      sessionId: host.sessionId,
-      ts: Date.now(),
-      toolCallId,
-      name,
-      label: name,
+    // PreToolUse veto (ticket 13): permission allowed — matching hooks get the
+    // final say. A veto blocks the call; the reason flows through the same
+    // denials channel the permission refusals use, so it lands in the
+    // transcript and the model can adapt.
+    const veto = await runPreToolUseHooks(hookDeps, {
+      toolName: name,
       args,
-      mode: host.mode,
-      verdict,
-      reason: `Kernel requires approval for tool "${name}"`
+      toolCallId,
+      cwd: host.cwd
     })
-
-    const decision = await new Promise<PermissionDecision>((resolvePromise) => {
-      host.pending.set(toolCallId, { resolve: resolvePromise })
-    })
-    host.permissionWaits.set(toolCallId, Date.now() - waitStartedAt)
-
-    if (decision === 'allowSession') {
-      // Recorded against tool name + parameter fingerprint, so an allowance for
-      // `npm test` never leaks onto `rm -rf`.
-      host.memory.record(name, PermissionMemory.fingerprintArgs(args))
-      host.gate.noteAllowance()
-      return undefined
+    for (const line of veto.diagnostics) {
+      observeEvent(host.sessionId, {
+        kind: 'hook',
+        event: 'PreToolUse',
+        message: line,
+        ts: Date.now()
+      })
     }
-    if (decision === 'allowOnce') {
-      host.gate.noteAllowance()
-      return undefined
+    if (veto.blocked) {
+      host.denials.set(toolCallId, { name, reason: veto.reason })
+      observeEvent(host.sessionId, {
+        kind: 'hook_veto',
+        event: 'PreToolUse',
+        tool: name,
+        reason: veto.reason,
+        ts: Date.now()
+      })
+      return { block: true, reason: veto.reason }
     }
-    host.denials.set(toolCallId, { name, reason: verdict.reason })
-    // The refusal text lands in the transcript, which is the only channel that
-    // reaches the model: without it the agent retries the same blocked call next
-    // turn. Per-session *system-prompt* injection would be the nicer home, but
-    // PI's extension factories are cached per cwd and `before_agent_start` carries
-    // no session identity, so there is no per-session hook to attach to.
-    const summary = describeDenials(host.denials.values())
-    return {
-      block: true,
-      reason: summary ? `${verdict.reason} — ${summary}` : verdict.reason
-    }
+    return undefined
   }
 }
 
@@ -2230,6 +2260,44 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       // §2.1) and must never feed registry, fanOut, or run_state emission.
       const piStreamActive = host.session.isStreaming
 
+      // UserPromptSubmit hooks (ticket 13): on a fresh run only — steering and
+      // queued prompts are part of an already-running turn, and the hook
+      // contract is "before the model request begins".
+      let outgoing = text
+      if (disposition === 'started') {
+        const check = await runPromptSubmitHooks(hookDeps, { prompt: text, cwd: host.cwd })
+        for (const line of check.diagnostics) {
+          observeEvent(host.sessionId, {
+            kind: 'hook',
+            event: 'UserPromptSubmit',
+            message: line,
+            ts: Date.now()
+          })
+        }
+        if (check.blocked) {
+          observeEvent(host.sessionId, {
+            kind: 'hook_block',
+            event: 'UserPromptSubmit',
+            reason: check.reason,
+            ts: Date.now()
+          })
+          throw new ContractError(
+            'INVALID_INPUT',
+            `Blocked by UserPromptSubmit hook: ${check.reason ?? 'prompt rejected'}`
+          )
+        }
+        if (check.additionalContext !== undefined) {
+          // Append-only (ticket 13): the user's own words are never rewritten —
+          // the hook may only add model-visible context.
+          outgoing = `${text}\n\n---\n\n${check.additionalContext}`
+          observeEvent(host.sessionId, {
+            kind: 'hook_context',
+            event: 'UserPromptSubmit',
+            ts: Date.now()
+          })
+        }
+      }
+
       // Contract §3.1.1: resolve when accepted (preflightResult), not when the run ends.
       // PI prompt() awaits the full run after preflight(true) on the started path.
       await new Promise<void>((resolve, reject) => {
@@ -2251,7 +2319,7 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
               preflightResult
             }
           : { preflightResult }
-        host.session.prompt(text, opts).then(
+        host.session.prompt(outgoing, opts).then(
           () => {
             if (!settled) {
               settled = true

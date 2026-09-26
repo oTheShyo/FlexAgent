@@ -187,6 +187,7 @@ interface HookHandlerResult {
   diagnostics: PluginBridgeDiagnostic[]
   handlers: Map<string, (payload: unknown, ctx: unknown) => void | Promise<void>>
   runs: RecordedHookRun[]
+  deps: PluginHookDeps
 }
 
 function registerHooksFrom(
@@ -217,27 +218,20 @@ function registerHooksFrom(
     runHook: async (options: HookRunOptions): Promise<HookRunResult> => {
       runs.push({ options })
       return hookRunner.runHook(options)
-    }
+    },
+    preToolUseChecks: [],
+    promptSubmitChecks: []
   }
 
   const diagnostics: PluginBridgeDiagnostic[] = []
   const { registered } = pluginBridge.registerPluginHooks(spec, on, pluginBridge.nodeBridgeFsRead, deps, diagnostics)
-  return { registered, diagnostics, handlers, runs }
+  return { registered, diagnostics, handlers, runs, deps }
 }
 
 const PRE_TOOL_EVENT = 'tool_execution_start'
 
-async function fireToolStart(
-  result: HookHandlerResult,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const handler = result.handlers.get(PRE_TOOL_EVENT)
-  expect(handler).toBeDefined()
-  await handler!({ ...payload }, { cwd: scratch })
-}
-
-describe('registerPluginHooks — bridge glue over the runner', () => {
-  it('builds stdin JSON for the hook and runs it to a clean ok', async () => {
+describe('registerPluginHooks — enforcement-capable events become checks (ticket 13)', () => {
+  it('registers a PreToolUse entry as a check and runs it with the kernel stdin shape', async () => {
     const bridge = registerHooksFrom(
       {
         hooks: {
@@ -250,9 +244,16 @@ describe('registerPluginHooks — bridge glue over the runner', () => {
     )
     expect(bridge.registered).toBe(1)
     expect(bridge.diagnostics).toEqual([])
+    expect(bridge.handlers.get(PRE_TOOL_EVENT)).toBeUndefined()
 
-    await fireToolStart(bridge, { toolName: 'bash', args: { command: 'ls' }, toolCallId: 't1' })
+    const outcome = await pluginBridge.runPreToolUseHooks(bridge.deps, {
+      toolName: 'bash',
+      args: { command: 'ls' },
+      toolCallId: 't1',
+      cwd: scratch
+    })
 
+    expect(outcome.blocked).toBe(false)
     expect(bridge.runs).toHaveLength(1)
     const stdin = bridge.runs[0]!.options.stdin
     expect(stdin).toBeDefined()
@@ -265,7 +266,7 @@ describe('registerPluginHooks — bridge glue over the runner', () => {
     expect(bridge.diagnostics).toEqual([])
   })
 
-  it('surfaces a block request as a hook_block_ignored diagnostic', async () => {
+  it('enforces a PreToolUse block request as a veto with the hook reason', async () => {
     const bridge = registerHooksFrom(
       {
         hooks: {
@@ -277,14 +278,19 @@ describe('registerPluginHooks — bridge glue over the runner', () => {
       'bridge-block.json'
     )
 
-    await fireToolStart(bridge, { toolName: 'bash', args: { command: 'rm x' }, toolCallId: 't2' })
+    const outcome = await pluginBridge.runPreToolUseHooks(bridge.deps, {
+      toolName: 'bash',
+      args: { command: 'rm x' },
+      toolCallId: 't2',
+      cwd: scratch
+    })
 
-    expect(bridge.diagnostics).toHaveLength(1)
-    expect(bridge.diagnostics[0]).toMatchObject({ code: 'hook_block_ignored' })
-    expect(bridge.diagnostics[0]!.message).toContain('nope: denied')
+    expect(outcome.blocked).toBe(true)
+    expect(outcome.reason).toContain('nope: denied')
+    expect(bridge.diagnostics).toEqual([])
   })
 
-  it('propagates a recoverable exit-1 failure as a diagnostic without throwing', async () => {
+  it('propagates a recoverable exit-1 failure as a diagnostic without blocking', async () => {
     const bridge = registerHooksFrom(
       {
         hooks: {
@@ -296,11 +302,16 @@ describe('registerPluginHooks — bridge glue over the runner', () => {
       'bridge-fail.json'
     )
 
-    await fireToolStart(bridge, { toolName: 'bash', args: { command: 'ls' }, toolCallId: 't3' })
+    const outcome = await pluginBridge.runPreToolUseHooks(bridge.deps, {
+      toolName: 'bash',
+      args: { command: 'ls' },
+      toolCallId: 't3',
+      cwd: scratch
+    })
 
-    expect(bridge.diagnostics).toHaveLength(1)
-    expect(bridge.diagnostics[0]).toMatchObject({ code: 'hook_exit_nonzero' })
-    expect(bridge.diagnostics[0]!.message).toContain('kaboom')
+    expect(outcome.blocked).toBe(false)
+    expect(outcome.diagnostics).toHaveLength(1)
+    expect(outcome.diagnostics[0]).toContain('kaboom')
   })
 
   it('a non-matching matcher skips the hook entirely', async () => {
@@ -318,9 +329,14 @@ describe('registerPluginHooks — bridge glue over the runner', () => {
       'bridge-matcher.json'
     )
 
-    await fireToolStart(bridge, { toolName: 'bash', args: { command: 'ls' }, toolCallId: 't4' })
+    const outcome = await pluginBridge.runPreToolUseHooks(bridge.deps, {
+      toolName: 'bash',
+      args: { command: 'ls' },
+      toolCallId: 't4',
+      cwd: scratch
+    })
 
     expect(bridge.runs).toEqual([])
-    expect(bridge.diagnostics).toEqual([])
+    expect(outcome.blocked).toBe(false)
   })
 })

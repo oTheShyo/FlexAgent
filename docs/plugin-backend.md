@@ -509,3 +509,41 @@ PI `ToolDefinition.parameters` 要求 `TSchema`；typebox 1.3.27（PI 嵌套依�
 
 - `scripts/accept-plugins.mjs` mcp 块（18 项）：模块导入×2、工具命名空间、内联/文件/裸对象/字符串路径/路径逃逸/http warning/坏 JSON、`user_config.*` 插值（command/args/env sink）、敏感值 command+args sink 阻断（env sink 放行）、env overlay 键、`FLEX_PLUGIN_ID` 权威、client round-trip（initialize/tools/list/tools/call/close，fake stdio server via `node -e`）。
 - 总计 **134/134 PASS**；typecheck 0；marketplace 55/55、model 11/11、mock-fallback/apply PASS 不回归。
+
+---
+
+## 8. Hook 事件（ticket 13 已交付）
+
+两类事件按执行能力分治：
+
+| 事件 | 注册路径 | block 语义 |
+| -- | -- | -- |
+| `PreToolUse` | worker `beforeToolCall` 同步检查（权限放行后 hooks 终裁） | **强制 veto**：拦截工具调用，reason 经 denials 通道进 transcript（模型可见） |
+| `UserPromptSubmit` | worker prompt handler 同步检查（仅 `started` 路径；steering/queued 不触发） | **强制阻断**：主模型不被调用，reason 以 `INVALID_INPUT` 返给渲染端 + `hook_block` 事件 |
+| `SessionStart` / `SessionEnd` / `PreCompact` / `PostCompact` / `PostToolUse` | `pi.on` 透传（kernel 事件映射 `HOOK_EVENT_MAP`） | block 仅观测（`hook_block_ignored` 诊断），不拦截 |
+
+### 8.1 stdin 契约（`pluginBridge.buildHookStdin`）
+
+hook 进程从 stdin 收到一行 JSON：`hook_event_name`（双写驼峰）、`cwd`、`timestamp`；`PreToolUse` 附 `tool_name`/`tool_input`/`tool_use_id`（args 为权限门同款脱敏显示形）；`UserPromptSubmit` 附 `prompt`（用户原文）；`PostToolUse` 附 `tool_response`/`is_error`。
+
+### 8.2 输出契约（`hooks/hookRunner.runHook`）
+
+- **放行**：exit 0；stdout 可选 JSON（`additionalContext` 等字段，坏 JSON 忽略不致命）。
+- **veto**：exit 2 + stdout JSON `{"decision":"block","reason":"..."}`；reason 解析优先（JSON `reason`/`stopReason` > stderr > 原始 stdout），该文本即模型看到的拒绝理由。
+- 其他非零退出：`failed`/`killed` 诊断，不 block。超时默认 60s（`timeoutMs`/`timeout` 可配，超时 taskkill 树杀）、输出上限 32KB、spawn 失败 → `spawn_error` 不崩 session。
+
+### 8.3 matcher 语义（`matchesHookMatcher`）
+
+`a|b|c` 精确列表、正则、`*` 或缺省 = 匹配全部；仅对 `PreToolUse` 按工具名过滤。
+
+### 8.4 强制点与可观测
+
+- **beforeToolCall**（worker）：权限门放行后运行匹配的 `PreToolUse` checks；veto → `denials.set` + `hook_veto` 事件（事件日志 `observeEvent`）+ `{block:true, reason}` 返还内核。
+- **prompt handler**（worker）：`started` 路径运行 `UserPromptSubmit` checks；阻断 → 请求拒绝（不进 run_state）+ `hook_block` 事件；`additionalContext` 以 append-only 方式拼进发出给模型的 prompt（用户原文不改写）。
+- 全程 `hook`/`hook_veto`/`hook_block`/`hook_context` 事件进事件日志（`observeEvent` → JSONL）。
+
+### 8.5 示例与验收
+
+- 示例 hook：`examples/hooks/hooks.json` + `examples/hooks/veto-demo.mjs`（演示两类事件：DO-NOT-WRITE 路径 veto、BLOCK-DEMO prompt 阻断、additionalContext 注入）。
+- 一键演示：`node scripts/demo-hooks.mjs`（5 项 PASS/FAIL，驱动真实协议）。
+- 单测：`tests/hookChecks.test.ts`（18 项：matcher 语义、runHook 真子进程 allow/veto/timeout/spawn_error/非 JSON、stdin 载荷形状、first-block-wins、additionalContext 收集、插值失败诊断）。

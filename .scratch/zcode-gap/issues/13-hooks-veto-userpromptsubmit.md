@@ -4,13 +4,13 @@
 
 **Blocked by:** 01 (落库未提交子系统), 02 (工程工具链)
 
-**Status:** ready-for-agent
+**Status:** done (committed this lane; report: reports/13-hooks-veto-userpromptsubmit.md)
 
-- [ ] PreToolUse hook 返回拒绝 → 工具不执行，拒绝理由进入模型上下文，事件日志可查
-- [ ] PreToolUse matcher 按工具名过滤（如仅 Write|Edit 生效），不匹配的工具不受影响
-- [ ] UserPromptSubmit hook 可注入 additionalContext（模型首轮可见）
-- [ ] UserPromptSubmit 可阻断本次请求，用户看到阻断原因，主模型不被调用
-- [ ] 超时、非 JSON 输出、异常退出均按现有诊断语义处理，不拖垮会话
-- [ ] 示例 hook + 验证脚本入库（能一键演示两个事件）
-- [ ] 协议解析与 veto 决策有 vitest 单测
-- [ ] 插件/hook 文档更新：事件、输入契约、退出码语义
+- [x] PreToolUse hook 返回拒绝 → 工具不执行，拒绝理由进入模型上下文，事件日志可查
+- [x] PreToolUse matcher 按工具名过滤（如仅 Write|Edit 生效），不匹配的工具不受影响
+- [x] UserPromptSubmit hook 可注入 additionalContext（模型首轮可见）
+- [x] UserPromptSubmit 可阻断本次请求，用户看到阻断原因，主模型不被调用
+- [x] 超时、非 JSON 输出、异常退出均按现有诊断语义处理，不拖垮会话
+- [x] 示例 hook + 验证脚本入库（能一键演示两个事件）
+- [x] 协议解析与 veto 决策有 vitest 单测
+- [x] 插件/hook 文档更新：事件、输入契约、退出码语义
