@@ -79,7 +79,7 @@ export function createGoal(text: string, now: number, maxRounds = DEFAULT_GOAL_M
 }
 
 /** Whether the goal accepts a new verification round right now. */
-export function canVerify(goal: GoalState, now: number): boolean {
+export function canVerify(goal: GoalState, _now: number): boolean {
   if (goal.status !== 'active') return false
   if (goal.iterations.length >= goal.maxRounds) return false
   const last = goal.iterations[goal.iterations.length - 1]

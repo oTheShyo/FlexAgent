@@ -721,6 +721,7 @@ export default function App({ children }: AppProps) {
         onFork={handleForkSession}
         goal={goal}
         goalMessage={goalMessage}
+        onGoalCommand={(raw) => void send(raw)}
       />
     ) : historyLoading === true ? (
       <ChatSkeleton />

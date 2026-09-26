@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactElement } fro
 import type { ChatItem, ModelRetryState } from '../hooks/useChat'
 import type { ChatMessage, GoalStateSummary } from '../types'
 import { LoadingIndicator } from './LoadingIndicator'
+import { GoalCard } from './GoalCard'
 import { Markdown } from './Markdown'
 import { CheckIcon, CopyIcon, ForkIcon, RegenerateIcon } from './icons'
 import SelectionToolbar from './SelectionToolbar'
@@ -34,6 +35,8 @@ export interface ChatViewProps {
   goal?: GoalStateSummary | null
   /** The latest goal_update message, shown under the banner text. */
   goalMessage?: string | null
+  /** Goal controls (ticket 06): send a /goal command as the user would. */
+  onGoalCommand?: (raw: string) => void
 }
 
 const AssistantContent = memo(function AssistantContent({
@@ -432,7 +435,8 @@ export function ChatView({
   onAddReference,
   onFork,
   goal = null,
-  goalMessage = null
+  goalMessage = null,
+  onGoalCommand
 }: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
@@ -510,7 +514,12 @@ export function ChatView({
       aria-label="Chat messages"
     >
       <SelectionToolbar snapshot={snapshot} onAdd={handleAddSelection} />
-      {goal !== null && (
+      {goal !== null && onGoalCommand !== undefined && (
+        <div className="px-4 pt-3">
+          <GoalCard goal={goal} onCommand={onGoalCommand} />
+        </div>
+      )}
+      {goal !== null && onGoalCommand === undefined && (
         <div className="sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--surface)]/95 px-4 py-2 backdrop-blur">
           <p
             role="status"
