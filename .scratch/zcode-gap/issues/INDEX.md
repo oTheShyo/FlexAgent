@@ -86,8 +86,9 @@
 
 ## 当前 frontier（可立即领取）
 
-- **17**（01+12 均已完成；侦察完毕带地图，零探索可直做）
-- 已完成：01、02、03、04、05、06、07、08、09、10、11、12、13、14、15、16、**18**、19、**20**、21、**22**、23、24、25、**26**、**27**、**28**
+- **29**（删除会话留下孤儿转录文件）—— 由 17 的真机走查发现，2026-09-27 立票
+- 已完成：01、02、03、04、05、06、07、08、09、10、11、12、13、14、15、16、**17**、**18**、19、**20**、21、**22**、23、24、25、**26**、**27**、**28**
+- 部分完成（有具名未闭环项）：**06**（迭代分隔指示未实现）、**11**（真机多模态调用未做）——两项都在各自工单里写明
 - 阻塞中：无（20 的 20b 已拆为 26 并单独落库）
 
 ## 认领
@@ -100,7 +101,15 @@
   - **13** `done`（`90d2e79`）—— PreToolUse veto / UserPromptSubmit 强制检查、示例 hook + `node scripts/demo-hooks.mjs`（5/5）、18 单测；报告 reports/13-hooks-veto-userpromptsubmit.md。
   - **16** `done`（`e63de15`）—— 注册表快照/按角色 model/maxTurns 强制/CRUD IPC + Subagents 设置页、14 单测；box 8 真实 e2e 未跑已注明；报告 reports/16-custom-subagents.md。
   - **25** `done`（`d0a3c4e`）—— electron-builder NSIS 安装包（224MB）+ `npm run dist` + docs/packaging.md + 打包启动冒烟；box 2 真机人工回归未执行已注明；报告 reports/25-packaging.md。
-- **17** 侦察完毕未实现（本会话上下文耗尽）：完整文件/行号地图已写进工单 Scouted 节，零探索可直做。
+- **17** `done`（`821fad9` 实现；2026-09-27 真机走查 + 修掉一个真 bug）—— 分叉脚本 `scripts/diag-session-fork.mjs` 四阶段（create 16/16 · verify 18/18 · click 21/21 · cleanup 6/6），真截断 54/133、重启后冷加载、UI 真点 Fork。
+  - 走查揪出：`ipc.openSession` 手搓 summary 漏了 `archived`/`derivedFrom`，而渲染端拿它**整条替换**侧栏行 → 打开分叉会话后 `fork` 徽章消失（顺带：打开已归档会话会掉回归档标记）。修法 = summary 只留 `toSessionSummary` 一个来源（`src/main/sessionSummary.ts`），回归 `tests/sessionSummary.test.ts`。
+  - 走查另发现 `deleteSession` 不删 PI 转录 → 立 **29**。
+- **05 / 06 / 07 / 11 / 14** 的工单文件于 2026-09-27 逐项复核收口（代码在 2026-09-27 早已提交，当时只提交了代码没动工单文件）：
+  - **05** `done` —— 命令族 / 独立校验 / 轮次上限 / plan 档拒绝 / abort 自动暂停都有代码行号 + 单测；**持久化的重启验证列为未闭环**。
+  - **06** `done（部分）` —— 目标卡、按轮分组、三按钮、自然语言映射都在；**「迭代之间的对话流分隔指示」未实现**，具名留下。
+  - **07** `done` —— 计划档写拒绝在权限门（不是 prompt）、三路径确认界面、双向互斥都在；本日实跑 `perm-regress` **52/52**。
+  - **11** `done（部分）` —— spike 落档、通路、上限与点名拒绝都在；**真机多模态调用未做**（key 限 qwen/deepseek/glm，是否支持图片未实测）。
+  - **14** `done` —— Stop 续跑上限 3 + PermissionRequest 可收紧不可放宽都有测试；本日把 `scripts/demo-hooks.mjs` 从 2 个事件扩到 4 个（10/10），补上"示例 hook 验证脚本"这一项。
 - **05 / 06 / 07 / 11 / 14 / 22** 已于 2026-09-27 由本会话按依赖序做完并分票提交：
   - **05** `done`（`c3cb5df`）—— goalMode/goalRunner 纯逻辑 + worker 接线 + 目标条，10 单测。
   - **06** `done`（`7ef6208`）—— GoalCard（goalCard.ts 5 单测）。

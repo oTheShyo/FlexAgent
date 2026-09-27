@@ -38,6 +38,33 @@ Attempts: agent sessions ×3 all killed by the 30-minute inactivity timeout with
 
 ## 诚实缺口
 
-- **未跑 app 内 e2e**：分叉的端到端（真实会话里点 Fork → 新会话落地）需 dev server + 窗口；纯逻辑（截断/匹配/header 重写）由 9 项单测覆盖，worker/IPC 接线按既有 createSession 模式镜像但未运行时验证。
-- **分叉点匹配依赖 `{ts, prefix}`**：prompt 前 64 字若有重复（同一会话两次相同开头）且 transcript 无时间戳，会取**最后一次**命中——已在测试中固化该行为（last-match）。
+- **~~未跑 app 内 e2e~~ → 2026-09-27 已补，并因此抓到一个真 bug**（见下节）。纯逻辑（截断/匹配/header 重写）由 9 项单测覆盖，worker/IPC 接线现已由真机走查覆盖。
+- **分叉点匹配依赖 `{ts, prefix}`**：prompt 前 64 字若有重复（同一会话两次相同开头）且 transcript 无时间戳，会取**最后一次**命中——已在测试中固化该行为（last-match）。真实 transcript 实测 `message.timestamp`（数值 epoch ms）与 `message.stopReason` 都在，所以精确匹配那条路是通的，不是只在合成数据里成立。
 - 分叉会话的 PI 文件 id 与源不同、`parentSession` 指向源（PI 血缘），但内核 sessionId 由 ipc 侧 `randomUUID()` 新生成——两套 id 各自独立（与工单 03 的双 id 空间修复同源的注意点）。
+
+## 2026-09-27 端到端复核（发现并修掉一个真 bug）
+
+脚本 `scripts/diag-session-fork.mjs`，四阶段跑在起着的应用上（`npm run dev` + CDP）：
+
+```
+create  16/16   真实会话中段分叉：保留 54 / 丢弃 79；源 transcript 字节未变
+verify  18/18   重启应用后冷加载：22 条消息 = 磁盘前缀应有条数；UI 入口 10/10 挂在助手行
+click   21/21   真点第 4 条助手消息的 Fork：保留 33/133，界面落到新会话，带 fork 徽章
+cleanup  6/6    临时分叉删除，列表条数回到点击前
+```
+
+前两次仓库里真实存在的分叉（`33f523dc` / `38b3e97f`）分叉点都落在**末条**，一行没截 —— 也就是说"历史截至分叉点"这件事在本轮之前从未被真跑过。
+
+### 抓到的 bug：打开分叉会话后 `fork` 徽章消失
+
+- **症状**：侧栏行的 `fork` 标记在打开该会话后不再渲染（`document.querySelectorAll('[data-testid="session-derived-badge"]')` 只剩两条旧分叉）。
+- **根因**：`ipc.ts` 的 `openSession` / `forkSession` / `createSession` 各自手搓了一个 `summary` 字面量。`openSession` 那个漏了 `archived` 与 `derivedFrom`，而渲染端 `useChat.ts:545` 是 `prev.map(s => s.id === sessionId ? detail.summary : s)` —— **整条替换**。所以一打开，徽章就没了。
+- **同一个漏字段的第二个后果**：打开一个**已归档**的会话，`archived` 丢掉后它会立刻回到普通会话列表（`real` 影响，不只是显示）。
+- **修法**：删掉三处字面量，统一走 `registry.summary(id)`；把映射抽成纯模块 `src/main/sessionSummary.ts`（`toSessionSummary`），使"summary 只有一处定义"这件事可以被单测钉住。
+- **回归**：`tests/sessionSummary.test.ts` — 7 项行为断言（含 `archived` 必为布尔、`derivedFrom` 无血缘时整个键不出现、不改写入参）+ 一条源码护栏（`ipc.ts` 不得出现 `runState:` / `derivedFrom:` / `summary: {`，且必须调用 `registry.summary(`）。
+- **为什么单测没抓到**：`ipc.ts` / `registry.ts` 依赖 `electron`，本仓的单测约定是"只导入纯逻辑模块"；这条缝只有真机走查能覆盖。
+
+### 顺带发现（不属本工单，记在 29）
+
+`deleteSession`（`ipc.ts:383-402`）删了内核会话、终端、权限规则和注册表行，**唯独把 PI 转录留在盘上**，而 `registry.remove` 是那文件唯一的指针 —— 删除即产生不可达的孤儿文件（含完整对话内容）。
+

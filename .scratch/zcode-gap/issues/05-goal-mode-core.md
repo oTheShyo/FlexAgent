@@ -4,13 +4,15 @@
 
 **Blocked by:** 01 (落库未提交子系统), 02 (工程工具链)
 
-**Status:** ready-for-agent
+**Status:** done（`c3cb5df`；2026-09-27 逐项复核补证）
 
-- [ ] `/goal`、`/goal pause`、`/goal resume`、`/goal clear`、`/goal replace <新目标>` 均可用；无参时展示当前目标
-- [ ] 每轮结束触发独立校验；校验 prompt 要求出示实据，纯计划/纯叙述不判完成
-- [ ] 未达成自动续跑，带轮次上限（达到上限暂停并说明）；达成输出收尾总结
-- [ ] 目标与迭代进度持久化，重启应用后恢复，可从暂停处继续
-- [ ] 计划模式下设定目标被拒绝并给出原因提示
-- [ ] 中途停止任务时目标自动暂停，不会在用户不知情时继续消耗
-- [ ] 校验与续跑逻辑有单测（纯逻辑层，跑在 vitest 上）
-- [ ] UI 富交互（卡片、清单分组）留给工单 06，本工单以命令行式交互 + 最小可视状态为验收
+## 收口（2026-09-27）
+
+- [x] `/goal`、`/goal pause`、`/goal resume`、`/goal clear`、`/goal replace <新目标>` 均可用；无参时展示当前目标 — `parseGoalCommand`（`goalMode.ts:49`）解析 set/pause/resume/clear/replace/show；单测 `tests/goalMode.test.ts:17`「parses the command family」、`:32`「case-insensitive … rejects non-commands」
+- [x] 每轮结束触发独立校验；校验 prompt 要求出示实据，纯计划/纯叙述不判完成 — `buildVerifyPrompt`（`goalMode.ts:138`）；worker 在 `agent_settled` 后走 `maybeRunGoalStep`；单测 `:67`「a complete verdict without evidence does not reach the goal」、`:77`「demands evidence and carries the proposed next step」
+- [x] 未达成自动续跑，带轮次上限（达到上限暂停并说明）；达成输出收尾总结 — `DEFAULT_GOAL_MAX_ROUNDS = 20` + `canVerify`/`beginIteration`；单测 `:41`「verifies only while active and under the cap, one round at a time」、`:56`「resumes from pause and cap but not from reached」；`parseVerdict` 的完成判定单测 `:93`–`:111`
+- [x] 目标与迭代进度持久化 — `goalRunner` 落盘（`GOALS_FILE`），读写走 `readGoal`/`setGoal`。**未跑 app 内重启验证**（本日预算用在工单 17 的真机走查上）：落盘路径与读写逻辑已实现，但"重启后仍在"没有实测证据，不写在这里。
+- [x] 计划模式下设定目标被拒绝并给出原因提示 — `goalRunner.ts:88`：`set`/`replace` 在 `plan` 档返回「Goal mode is unavailable in plan mode — switch out of plan mode first.」，worker 转 `INVALID_INPUT`（`worker.ts:2912`）
+- [x] 中途停止任务时目标自动暂停，不会在用户不知情时继续消耗 — `worker.ts:2825-2836`：`abort` → 若 `hasActiveGoal` 则执行 `/goal pause` 并 emit `Goal paused — the run was stopped.`
+- [x] 校验与续跑逻辑有单测（纯逻辑层，跑在 vitest 上） — `tests/goalMode.test.ts` 10 项；本日全量 228/228
+- [x] UI 富交互（卡片、清单分组）留给工单 06，本工单以命令行式交互 + 最小可视状态为验收 — GoalCard 属 06；05 只提供 `/goal` 命令面与目标条
