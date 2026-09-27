@@ -255,6 +255,136 @@ describe('permission chain — the five decision layers run in order', () => {
   })
 })
 
+describe('mode rails are the final reduction — nothing short-circuits them', () => {
+  it('plan mode denies a write even when session memory allowed this exact call', async () => {
+    const memory = new PermissionMemory('plan-memory')
+    const args = { path: join(workspace, 'notes.md'), content: 'draft' }
+    memory.record('write', PermissionMemory.fingerprintArgs(args))
+
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'write', args },
+      baseOptions({ mode: 'plan', memory })
+    )
+
+    expect(result.outcome).toBe('deny')
+    expect(result.verdict.via).toBe('mode')
+    expect(result.verdict.reason).toBe('plan mode blocks writes')
+  })
+
+  it('plan mode denies an allow-rule match for a write', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'write', args: { path: join(workspace, 'notes.md'), content: 'x' } },
+      baseOptions({
+        mode: 'plan',
+        rules: [{ id: 'allow-writes', tool: 'write', action: 'allow' }]
+      })
+    )
+
+    expect(result.outcome).toBe('deny')
+    expect(result.verdict.via).toBe('mode')
+  })
+
+  it('acceptEdits honours an explicit session grant instead of revoking it', async () => {
+    const memory = new PermissionMemory('accept-memory')
+    const args = { command: 'python deploy.py --release' }
+    memory.record('bash', PermissionMemory.fingerprintArgs(args))
+
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'bash', args },
+      baseOptions({ mode: 'acceptEdits', memory })
+    )
+
+    expect(result.outcome).toBe('allow')
+    expect(result.verdict.via).toBe('user')
+  })
+
+  it('acceptEdits does not auto-allow an ungranted shell command', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'bash', args: { command: 'python deploy.py --release' } },
+      baseOptions({ mode: 'acceptEdits' })
+    )
+
+    expect(result.outcome).not.toBe('allow')
+  })
+
+  it('a credential read stays a question in plan mode rather than becoming an allow', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'read', args: { path: join(process.env.HOME ?? '', '.ssh', 'id_rsa') } },
+      baseOptions({ mode: 'plan' })
+    )
+
+    expect(result.outcome).toBe('ask')
+  })
+})
+
+describe('MCP tool names are never read-only by shape', () => {
+  it('an mcp read-named tool is not auto-allowed in plan mode', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'mcp__server__read_files', args: {} },
+      baseOptions({ mode: 'plan' })
+    )
+
+    expect(result.outcome).toBe('deny')
+    expect(result.verdict.reason).toBe('plan mode blocks writes')
+  })
+
+  it('an mcp read-named tool asks rather than inheriting the read heuristic', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'mcp__server__read_files', args: {} },
+      baseOptions()
+    )
+
+    expect(result.outcome).toBe('ask')
+    expect(result.verdict.reason).toContain('external server, not sandboxed')
+  })
+
+  it('the discovery carve-out still passes in plan mode — it never reaches a server', async () => {
+    const result = await new PermissionGate().evaluate(
+      { toolName: 'mcp', args: { mode: 'search' } },
+      baseOptions({ mode: 'plan' })
+    )
+
+    expect(result.outcome).toBe('allow')
+    expect(result.verdict.via).toBe('mode')
+  })
+})
+
+describe('session memory is scoped to the exact call and the exact session', () => {
+  it('reuses an allowance for identical parameters only', async () => {
+    const memory = new PermissionMemory('scope-1')
+    const gate = new PermissionGate()
+    const allowed = { path: join(workspace, 'a.md'), content: 'x' }
+    memory.record('write', PermissionMemory.fingerprintArgs(allowed))
+
+    const same = await gate.evaluate(
+      { toolName: 'write', args: allowed },
+      baseOptions({ memory })
+    )
+    expect(same.outcome).toBe('allow')
+    expect(same.verdict.via).toBe('user')
+
+    const different = await gate.evaluate(
+      { toolName: 'write', args: { path: join(workspace, 'b.md'), content: 'y' } },
+      baseOptions({ memory })
+    )
+    expect(different.outcome).toBe('allow')
+    expect(different.verdict.via).toBe('heuristic')
+  })
+
+  it('an allowance does not carry into another session', async () => {
+    const args = { path: join(workspace, 'a.md'), content: 'x' }
+    const first = new PermissionMemory('session-a')
+    first.record('write', PermissionMemory.fingerprintArgs(args))
+
+    const otherSession = await new PermissionGate().evaluate(
+      { toolName: 'write', args },
+      baseOptions({ memory: new PermissionMemory('session-b') })
+    )
+
+    expect(otherSession.verdict.via).not.toBe('user')
+  })
+})
+
 describe('permissionRules — the source of the rules layer', () => {
   const flexDir = join(home, '.flexagent')
   const permissionsFile = join(flexDir, 'permissions.json')

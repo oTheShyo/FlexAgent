@@ -511,9 +511,16 @@ export class PermissionGate {
     const paths = pathsForArgs(args)
     const command = commandForArgs(args)
 
+    // The layers below produce a *base verdict*; `applyMode` runs
+    // unconditionally at the end as the final reduction. Earlier revisions
+    // returned early from memory/rules/credential, which let each of them
+    // short-circuit the mode rails — `plan` could be defeated by a prior
+    // `allowSession`, and an early `allow` inherited nothing from the mode.
+    let base: PermissionVerdict | undefined
+
     // Layer 1 — session memory (name AND parameters).
     if (memory.has(toolName, fingerprint)) {
-      return { outcome: 'allow', verdict: { outcome: 'allow', via: 'user', reason: 'allowed earlier this session, same parameters' } }
+      base = { outcome: 'allow', via: 'user', reason: 'allowed earlier this session, same parameters' }
     }
 
     // Layer 1.5 — credential boundary (before rules, on purpose).
@@ -522,6 +529,11 @@ export class PermissionGate {
     // this exact call once keeps working without a prompt. Rules sit below it,
     // so `permissions.json` cannot blanket-authorise credential access — the
     // boundary is a capability limit, not a policy default.
+    //
+    // It also bypasses the mode reduction: `plan`'s "reads pass" exemption is
+    // about not starving the planner of workspace context, and must not double
+    // as a waiver for secrets entering the model context. The boundary decides
+    // on its own.
     const credential = credentialGuardFor(toolName, paths, command)
     if (credential !== undefined) return credential
 
@@ -530,9 +542,9 @@ export class PermissionGate {
     // Above the rule layer on purpose: an "always allow" the user handed us must
     // not be able to re-authorise `rm -rf`. The patterns live with the rest of
     // the bash heuristics (`hardDenyFor`) so there is still one list of them.
-    const hardDeny = command === '' ? undefined : hardDenyFor(command)
-    if (hardDeny !== undefined) {
-      return { outcome: 'deny', verdict: DENY(`blocked pattern: ${hardDeny} — no rule can allow this`) }
+    if (base === undefined) {
+      const hardDeny = command === '' ? undefined : hardDenyFor(command)
+      if (hardDeny !== undefined) base = DENY(`blocked pattern: ${hardDeny} — no rule can allow this`)
     }
 
     // Layer 2 — ordered rules, collected by outcome.
@@ -543,22 +555,22 @@ export class PermissionGate {
     // expresses intent lost to whatever was written first. Order still decides
     // ties *inside* a class (the built-ins deliberately come first), but across
     // classes a refusal beats a question, and a question beats an allow.
-    const ruleVerdict = collectRuleVerdict(rules, toolName, command, paths, cwd, options.sessionId)
-    if (ruleVerdict !== undefined) {
-      return { outcome: ruleVerdict.outcome, verdict: ruleVerdict }
+    if (base === undefined) {
+      base = collectRuleVerdict(rules, toolName, command, paths, cwd, options.sessionId)
     }
 
     // Layer 3 — heuristics (fast path, no model call).
-    let base: PermissionVerdict | undefined
-
+    //
     // Writes are checked before reads on purpose: substring matching for reads
     // would otherwise swallow write tools whose names merely contain a read-ish
     // word (`find_and_replace`, `read_write_config`, ...).
-    const mcpVerdict = classifyMcpTool(toolName, args)
-    if (mcpVerdict) base = mcpVerdict
-    else if (command) base = classifyBashCommand(command)
-    else if (WRITE_TOOLS.has(toolName) || isFileEditTool(toolName)) base = classifyWrite(toolName, paths, cwd)
-    else if (READ_TOOLS.has(toolName) || matchesReadSubstring(toolName)) base = ALLOW('read-only tool')
+    if (base === undefined) {
+      const mcpVerdict = classifyMcpTool(toolName, args)
+      if (mcpVerdict) base = mcpVerdict
+      else if (command) base = classifyBashCommand(command)
+      else if (WRITE_TOOLS.has(toolName) || isFileEditTool(toolName)) base = classifyWrite(toolName, paths, cwd)
+      else if (readAllowedByShape(toolName, args)) base = ALLOW('read-only tool')
+    }
 
     // Layer 4 — classifier, but only where the heuristics drew a blank.
     //
@@ -597,8 +609,11 @@ export class PermissionGate {
       }
     }
 
-    // Layer 5 — mode rails. Most conservative reading of the base verdict.
-    return this.applyMode(base, mode, toolName, command, isMcpDiscovery(toolName, args))
+    // Layer 5 — mode rails. The final reduction, run unconditionally: every
+    // layer above contributed a base verdict, and the mode has the last word on
+    // it. A mode may tighten (plan turns allow into deny) but never loosen an
+    // explicit deny.
+    return this.applyMode(base, mode, toolName, command, args)
   }
 
   noteAllowance(): void {
@@ -615,17 +630,19 @@ export class PermissionGate {
     mode: PermissionMode,
     toolName: string,
     command: string,
-    /** Read-only by argument, not by name (MCP discovery modes). */
-    readOnly = false
+    args: Record<string, unknown>
   ): GateResult {
     const fallback = base ?? ASK(`no policy for tool "${toolName}"`)
+    const readOnly = readAllowedByShape(toolName, args)
 
     switch (mode) {
       case 'plan': {
-        // Reads pass, writes never do. Note the article's pitfall: blocking
-        // *every* tool here starves the planner of context, so reads are exempt.
-        // MCP discovery counts: it is how the planner learns what exists.
-        if (readOnly || isReadTool(toolName)) {
+        // Reads pass, writes never do — and this holds no matter which layer
+        // said otherwise, which is why it is a reduction and not a step in the
+        // chain. Note the article's pitfall: blocking *every* tool here starves
+        // the planner of context, so reads are exempt. MCP discovery counts: it
+        // is how the planner learns what exists.
+        if (readOnly) {
           return { outcome: 'allow', verdict: { outcome: 'allow', via: 'mode', reason: 'plan mode: read allowed' } }
         }
         return { outcome: 'deny', verdict: { outcome: 'deny', via: 'mode', reason: 'plan mode blocks writes' } }
@@ -640,7 +657,7 @@ export class PermissionGate {
       }
       case 'acceptEdits': {
         // Version-controlled workspace edits are trusted; shell commands are not.
-        if (readOnly || isReadTool(toolName)) {
+        if (readOnly) {
           return { outcome: 'allow', verdict: { outcome: 'allow', via: 'mode', reason: 'accept-edits mode' } }
         }
         return { outcome: fallback.outcome, verdict: fallback }
@@ -652,6 +669,22 @@ export class PermissionGate {
       }
     }
   }
+}
+
+/**
+ * Whether a tool is read-only *by its shape* — the single definition the mode
+ * rails and the heuristics both consult.
+ *
+ * MCP is the reason this is a function and not a direct `isReadTool` call: a
+ * third-party server picks its own tool names, so `mcp__server__read_files`
+ * says nothing about what the call does. Only the proxy's discovery modes
+ * (which never reach a server) count as reads; any other MCP tool is not a read
+ * no matter what its name contains.
+ */
+function readAllowedByShape(toolName: string, args: Record<string, unknown>): boolean {
+  if (isMcpDiscovery(toolName, args)) return true
+  if (isMcpToolName(toolName)) return false
+  return isReadTool(toolName)
 }
 
 function matchesReadSubstring(toolName: string): boolean {
