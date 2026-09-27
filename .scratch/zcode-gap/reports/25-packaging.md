@@ -18,7 +18,7 @@ Attempts: agent session 1 (timed out waiting on detached npm install; install it
 | # | 项 | 状态 | 证据 |
 | - | -- | -- | -- |
 | 1 | `npm run dist` 产出 x64 安装包 | ✅ | setup.exe 224MB + blockmap + win-unpacked（上表） |
-| 2 | 全新机器安装后手工回归 | ❌ 未执行 | **已做**：打包版启动冒烟（win-unpacked/FlexAgent.exe 存活 8s、233MB 工作集、干净退出，asar/资源加载无崩溃）。**未做**：GUI 聊天/权限确认/diff/终端的人工回归（无头环境不可行，留待真机安装时人工过一遍） |
+| 2 | 全新机器安装后手工回归 | ✅ | **2026-09-27 执行**：`dist/FlexAgent-0.1.0-setup.exe`（222,703,248 B，重建）`/S` 静默安装 exit 0 → `%LOCALAPPDATA%\Programs\FlexAgent\FlexAgent.exe` 带 CDP 启动 → `diag-closure-walkthrough.mjs ui` **17/17**（会话 a7c72c95：消息/权限 allow-once+真实执行/diff 自动开+Accept+关/Ctrl+T 终端收发 TERMINAL-OK）；脱敏探针：10 模型 IPC 均 `apiKeySet=true` 无原始 key、无 key 命名 IPC 方法、`model-keys.json` 独立在盘 |
 | 3 | 版本号与 package.json 一致、关于页可核对 | ✅ | package.json `0.1.0` == 文件名 FlexAgent-0.1.0-setup.exe；TitleBar About 对话框 `data-testid="about-version"` 渲染 `__APP_VERSION__`（electron.vite.config.ts:39 define，源头 package.json——单一来源） |
 | 4 | 升级路径：覆盖安装数据保留 | ✅（文档化） | 安装器不触碰 `%APPDATA%/FlexAgent/`（userData）与 `~/.flexagent/`（配置）；NSIS deleteAppDataOnUninstall:false；docs/packaging.md「升级」节 |
 | 5 | 卸载路径明确（数据保留说明） | ✅（文档化） | docs/packaging.md「卸载」节：数据保留 + 手动清理三处路径 |
@@ -31,7 +31,7 @@ Attempts: agent session 1 (timed out waiting on detached npm install; install it
 
 ## 诚实缺口
 
-- **Box 2 未勾**：全新机器人工回归未执行（打包启动冒烟替代部分验证）；真机安装后需人工过一遍核心链路。
+- ~~Box 2 未勾~~ → 2026-09-27 真机安装回归已补（上表第 2 行）。
 - 代码签名未配置（spec 允许后置，docs 已写后续路径）。
 - blockmap 供增量更新用；自动更新通道（electron-updater）不在本票范围。
 - 构建 artifacts（dist/）不入库。

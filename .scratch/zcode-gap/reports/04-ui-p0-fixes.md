@@ -26,7 +26,7 @@ Commits: `b79d7c2` (interaction), `13686d8` (contrast/legibility).
 
 ## 诚实缺口（未做/不在范围）
 
-- **CDP 视觉/手工回归未执行**（工单验收第 6 项未勾）：以结构证明 + 门禁 + 对比度脚本替代。
+- ~~CDP 视觉/手工回归未执行~~ → **2026-09-27 已补**：`scripts/diag-closure-walkthrough.mjs ui` 真机 17/17——dev 环境（会话 391252bf）+ 安装包环境（会话 a7c72c95，见 25 号）：发消息→权限 allow-once→diff 自动打开 2ms/可 Accept/Ctrl+T 终端抽屉收发全绿。
 - 12px 下限未推到全站：Composer 模型菜单 10px 标签属模型选择器车道、ToolCard/Sidebar 等不在 P0/P1 范围（批量重排被工单禁止）。
 - P2（favicon/bundle 性能）、P3 清理、"Reject 即回滚"、roving tabindex —— 不在本票范围，未修。
 - 共享文件搭载：`App.tsx`/`PermissionDialog.tsx`/`Composer.tsx` 含并行会话的 question/references/remember hunks，各自由其车道提交。

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (多智能体端到端验证)
 
-**Status:** done (committed this lane; report: reports/16-custom-subagents.md; 验收第 8 项真实 e2e 未执行——机制由 03 号 e2e + 本票注册表/白名单单测覆盖，已注明)
+**Status:** done (committed this lane; report: reports/16-custom-subagents.md; 验收第 8 项已于 2026-09-27 真机执行——9/9，并顺带修出 settings CRUD 缓存失效真 bug（修复 `3049ea4`），见下)
 
 - [x] 定义文件格式落档并被加载（frontmatter 校验：缺 name/description 时忽略并有诊断）
 - [x] 设置页：创建/编辑/启停/删除全流程可用，内置角色不可删改
@@ -13,4 +13,4 @@
 - [x] 指定 model 时用指定模型，未指定时跟随主会话模型
 - [x] maxTurns 生效
 - [x] 修改定义的生效时机明确（新会话生效），界面有提示
-- [ ] 至少创建一个自定义子智能体完成一个真实任务的 e2e 用例（留证据）（未执行：需 build+真实模型+worker 协议驱动，本会话任务基础设施三次全灭；机制由 03 号 e2e + 注册表/白名单单测覆盖，见 reports/16-custom-subagents.md）
+- [x] 至少创建一个自定义子智能体完成一个真实任务的 e2e 用例（留证据）（2026-09-27 真机执行：`scripts/diag-closure-walkthrough.mjs subagent` **9/9**，会话 85f9b816——`saveCustomAgent` CRUD 建 `walker-scribe`（tools=read,write / maxTurns=6）→ 新会话注册表加载 → 真实 `task` 回合 14s、allow-once 1 次（权限继承链路）→ 报告 `walker-scribe — ok (5.9s)` → 子智能体真实产出 `walker-out.txt`=`COPY: PROBE-IN-123` → 报告无 shell 执行（白名单未绕过）。**顺带修出真 bug**：settings CRUD 不通知 worker，loader 缓存使新角色对 `task` enum 不可见——修复 = `registerCustomAgentsIpc(kernel)`，save/delete/enable 后 `reloadResources`（`src/main/customAgentsIpc.ts` + `index.ts:157`）。见 reports/16-custom-subagents.md）

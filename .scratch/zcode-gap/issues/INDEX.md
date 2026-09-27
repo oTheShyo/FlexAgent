@@ -88,7 +88,7 @@
 
 - 无 —— **29** 于 2026-09-27 收口，**29/29 全部 done**
 - 已完成：01、02、03、04、05、06、07、08、09、10、11、12、13、14、15、16、**17**、**18**、19、**20**、21、**22**、23、24、25、**26**、**27**、**28**、**29**
-- 部分完成（有具名未闭环项）：**06**（迭代分隔指示未实现）、**11**（真机多模态调用未做）——两项都在各自工单里写明
+- 部分完成（有具名未闭环项）：无——2026-09-27 晚间把 04/05/06/11/16/25 的具名残留全部以真机证据闭环（见"认领"末条），06 与 11 的"部分"标注已撤
 - 阻塞中：无（20 的 20b 已拆为 26 并单独落库）
 
 ## 认领
@@ -127,6 +127,13 @@
     **模型 API key 仍明文** → 拆票 **26**。状态由"done（部分）"改回 blocked，理由见工单头。
   - 附带：`a809914` 提交了 `ipcGuard`（21 的产物）—— HEAD 里 `customAgentsIpc.ts` 早已 import 它，  
     该模块一直没入库，HEAD 本来编译不过。
+- **具名未闭环项收口**（2026-09-27 晚间，编排会话亲自执行，真机/安装证据全部落在各工单 Status 与验收行）：
+  - **04** 验收 6：dev 与安装包双环境 `diag-closure-walkthrough.mjs ui` 各 **17/17**（会话 391252bf / a7c72c95）。
+  - **05** 验收「持久化重启」+ runner 真机修复（`bd8e699`：verdict 证据归判定轮 / 自动续跑断链 / lastAssistant 读 messages / goals.json 同步写）：`goal-restart` **6/6**，goals.json 会话 a9b5b02f 重启后 `reached · round 2/20`。
+  - **06** 撤"部分"：L15 迭代分隔指示**本轮补齐**（`4128b94`——`goalRoundLabel/goalRoundMarkers/goalRoundPlacements` + useChat 插入 + `goal-round-divider` 渲染，单测 9 项），goal 走查 **8/8** 断言分隔 + verifying + 目标卡，安装包 DOM 复核 **5/5**（`第 1/2 次迭代 · 继续`、`第 2 次 · 完成`、`goal-round-1` 分组、`reached · round 2/20 · 96:59`）。
+  - **11** 撤"部分"：`image` **10/10**——合成 PNG（`FLEX-42 SAYS HELLO`）粘贴→托盘→Send→模型原文读出（会话 945ba190）；前提 = 模型目录声明 `input:["text","image"]`（`~/.pi/agent/models.json`，否则 Pi 注入"不支持图片"占位）；docs/image-attachments.md §4 已同步。
+  - **16** 验收 8：`subagent` **9/9**——saveCustomAgent 建 walker-scribe → 真实 task 回合 14s → `ok (5.9s)` → 产出 `walker-out.txt` → 白名单未绕过（会话 85f9b816）；顺带修出 settings CRUD→worker loader 缓存失效真 bug（`3049ea4` = `registerCustomAgentsIpc(kernel)` + `reloadResources`）。
+  - **25** 验收 2：`FlexAgent-0.1.0-setup.exe`（222,703,248 B）`/S` 静默安装 → 安装版 ui **17/17** + 脱敏探针（`apiKeySet=true` 无原始 key、无 key 命名 IPC、model-keys.json 独立在盘）。
 
 ## 复核记录（2026-09-26 15:10）
 

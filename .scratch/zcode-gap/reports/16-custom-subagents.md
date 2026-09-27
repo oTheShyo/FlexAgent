@@ -30,7 +30,7 @@ Attempts: agent session 1 (creation error), agent session 2 (wrote `customAgents
 | 5 | 指定 model 用指定模型；未指定跟随主会话模型 | ✅ | resolveRoleModel（runtime.getModel）+ deps.getParentModel（父会话当前模型，非设置默认）；不可用诚实报错 |
 | 6 | maxTurns 生效 | ✅ | 事件流计数 + abort 强制；输出带 cap 标注 |
 | 7 | 修改定义生效时机明确（新会话生效），界面有提示 | ✅ | 注册表快照按扩展构建（每次 session attach 重建）→ 运行中会话不受影响；面板提示文案 |
-| 8 | 至少一个自定义子智能体完成真实任务 e2e（留证据） | ❌ 未执行 | 需 build + 真实模型 + worker 协议驱动（diag-multie2e 同款）；本会话任务基础设施三次全灭 + 上下文预算，未跑。机制已由任务 03 的 e2e（46/46）+ 本票注册表/白名单/解析单测覆盖 |
+| 8 | 至少一个自定义子智能体完成真实任务 e2e（留证据） | ✅ | **2026-09-27 补跑** `diag-closure-walkthrough.mjs subagent` **9/9**（会话 85f9b816）：saveCustomAgent 建 `walker-scribe`（read,write/maxTurns=6）→ 新会话加载 → 真实 `task` 14s 回合、allow-once 1 次 → 报告 `walker-scribe — ok (5.9s)` → 产出 `walker-out.txt`=`COPY: PROBE-IN-123`，无 shell 泄漏。顺带修出真 bug：settings CRUD 不通知 worker，loader 缓存使角色 enum 不即时——修复 = `registerCustomAgentsIpc(kernel)` save/delete/enable 后 `reloadResources` |
 
 ## 门禁
 
@@ -40,7 +40,7 @@ Attempts: agent session 1 (creation error), agent session 2 (wrote `customAgents
 
 ## 诚实缺口
 
-- **Box 8 未勾**：真实任务 e2e 未跑（基础设施 + 预算）；机制覆盖见上。
+- ~~Box 8 未勾~~ → 2026-09-27 真机 e2e 9/9 已补（上表第 8 行）。
 - **@ 补全 UI** 未做：属于 18 号（上下文引用补全）的范围；本票的 @ 语义靠 enum + 描述名册 + 模型文本寻址成立。
 - **MCP 工具**：自定义角色可显式声明 MCP 工具名（通过 TOOL_RE 校验、进白名单），但子会话的 resourceLoader 以 noExtensions 构建——MCP 工具对子会话当前不存在，声明即预留（docs/roles.ts 注明显式声明规则）；真正给子会话放行 MCP 需改 resourceLoader 构建，超出本票。
 - 平行兼容（parallelWith）字段已落档/CRUD，但 parallel 校验对自定义角色的声明消费未显式测试（canRunInParallel 读该字段，机制复用内置）。

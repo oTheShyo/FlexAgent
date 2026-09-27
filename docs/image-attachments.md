@@ -57,5 +57,8 @@ Composer（粘贴/拖拽）
 
 - 单测：`tests/imageAttachments.test.ts`（base64 解码长度、类型白名单、`data:` 前缀、
   非 base64、数量与大小上限、非对象输入不抛异常）。
-- 未做端到端真模型调用：本机 API key 限制在 qwen / deepseek / glm 系列，是否真的支持
-  图片输入未实测。通路已按内核契约打通，真机验证留给有可用多模态模型时补。
+- 端到端真模型调用已补（2026-09-27，`scripts/diag-closure-walkthrough.mjs image` 10/10）：
+  合成 PNG（唯一文字 `FLEX-42 SAYS HELLO`）粘贴进 composer → 附件托盘 → 发送 →
+  模型原文读出该短语。**前提**：模型目录条目要声明 `"input": ["text", "image"]`
+  （`~/.pi/agent/models.json`），否则 Pi 对该模型注入"不支持图片"占位并省略图片块；
+  本次为 `claude-sonnet-4-6` 声明后经 `setModel` 切换验证通过。
