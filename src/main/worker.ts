@@ -1017,22 +1017,33 @@ async function maybeRunGoalStep(host: HostSession): Promise<boolean> {
     if (pendingRound !== undefined) {
       // A verification just ran: its verdict is the last assistant message.
       const lastAssistant = await lastAssistantText(host)
-      const { status, message, state } = recordVerification(sessionId, lastAssistant, hasEvidence)
+      // Evidence belongs to the judged turn, not this verify turn: a round
+      // only begins when shouldVerifyOnSettle saw file changes, so evidence
+      // for this verdict is true by construction (the verify turn itself
+      // only reads).
+      const { status, message, state } = recordVerification(sessionId, lastAssistant, true)
       if (state !== undefined) {
         emitGoalUpdate(sessionId, state, message)
       }
       if (status === 'reached' || status === 'capped') return false
-      // Still active: the next step rides in the message; the next round
-      // begins on the NEXT settle (this one is spent). Continue by prompting
-      // the verify prompt below only when no round is pending any more.
+      // Not met yet — the spec's auto-continue: prompt the next WORK turn
+      // with the verdict's next step. This settle cannot start another
+      // verification itself (the verify turn changed no files); the work
+      // turn it launches settles with evidence, and that settle begins the
+      // next round via shouldVerifyOnSettle below.
       const after = readGoal(sessionId)
       if (after === undefined || !canVerify(after, Date.now())) return false
-      const step = shouldVerifyOnSettle(sessionId, hasEvidence)
-      if (step.verify && step.prompt !== undefined) {
-        await host.session.prompt(step.prompt)
-        return true
-      }
-      return false
+      const lastRound = after.iterations[after.iterations.length - 1]
+      const step = lastRound?.nextStep
+      // Explicitly "not a verification request": this prompt lands in a
+      // transcript saturated with verify prompts, and without the guard the
+      // model answers with another VERDICT line — no work, no evidence, stall.
+      await host.session.prompt(
+        step !== undefined && step.length > 0
+          ? `The goal is not verified yet. Do this next step now: ${step} — perform the work yourself (this is not a verification request), then stop.`
+          : `The goal is not verified yet. Keep working toward it: ${after.text} — perform the work yourself (this is not a verification request), then stop.`
+      )
+      return true
     }
 
     // No pending round: start the next verification.
@@ -1061,23 +1072,16 @@ async function maybeRunGoalStep(host: HostSession): Promise<boolean> {
 /** The last finalized assistant text, read from the live session transcript. */
 async function lastAssistantText(host: HostSession): Promise<string> {
   try {
-    const entries = (host.session as unknown as { entries?: unknown[] }).entries
-    if (!Array.isArray(entries)) return ''
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const entry = entries[index] as { role?: string; text?: string; content?: unknown }
-      if (entry?.role !== 'assistant') continue
-      if (typeof entry.text === 'string' && entry.text.length > 0) return entry.text
-      if (Array.isArray(entry.content)) {
-        const text = entry.content
-          .map((part) =>
-            typeof part === 'object' && part !== null && 'text' in part
-              ? String((part as { text: unknown }).text)
-              : ''
-          )
-          .filter((part) => part.length > 0)
-          .join('\n')
-        if (text.length > 0) return text
-      }
+    // AgentSession.messages is the canonical transcript view — the same list
+    // buildMessages() reads. Verdict parsing must see the verification reply,
+    // so this walks backwards to the last assistant text that exists.
+    const messages = host.session.messages
+    if (!Array.isArray(messages)) return ''
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const msg = messages[index] as { role?: string; content?: unknown }
+      if (msg?.role !== 'assistant') continue
+      const text = messageText(msg).trim()
+      if (text.length > 0) return text
     }
     return ''
   } catch {
@@ -3058,8 +3062,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'reloadResources': {
       // User-level skills changed on disk (approved skill write or direct
-      // skill_manage write). Loaders bake skills in at construction, so the
-      // next attach rebuilds and picks them up.
+      // skill_manage write), or a custom subagent definition changed via the
+      // settings CRUD. Both are baked into the extension-factory closure at
+      // loader construction, so the next attach rebuilds and picks them up.
       resourceLoaders.clear()
       return undefined
     }

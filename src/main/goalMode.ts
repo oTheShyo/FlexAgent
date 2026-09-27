@@ -150,7 +150,7 @@ export function buildVerifyPrompt(goal: GoalState): string {
     `Rules:`,
     `- Judge only by evidence produced in this session: files actually changed, command output, test results.`,
     `- A plan, a todo list, or a statement that the work "should" or "is expected to" be done is NOT evidence of completion.`,
-    `- If outstanding todo/plan items exist, finishing them takes priority over reporting.`,
+    `- Verification is read-only: never create, edit, or delete files, and never run state-changing commands. If work remains, report it as NEXT: and the session will do the work.`,
     ``,
     `Reply with EXACTLY one line first, then a short justification:`,
     `VERDICT: COMPLETE   — the goal is met, with the evidence named`,

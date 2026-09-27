@@ -13,7 +13,7 @@
  * when the run state is idle again.
  */
 import { join } from 'path'
-import { readFileSync } from 'fs'
+import { readFileSync, renameSync, writeFileSync } from 'fs'
 import type {
   GoalCommand,
   GoalState,
@@ -32,7 +32,6 @@ import {
 } from './goalMode'
 
 export { canVerify } from './goalMode'
-import { writeFileAtomically } from './marketplaceAtomic'
 
 const GOALS_FILE = join(process.env.FLEXAGENT_HOME ?? defaultHome(), 'goals.json')
 
@@ -54,9 +53,17 @@ function readGoals(): Record<string, GoalState> {
 }
 
 function writeGoals(goals: Record<string, GoalState>): void {
-  void writeFileAtomically(GOALS_FILE, JSON.stringify({ goals }, null, 2)).catch(() => {
+  try {
+    // Synchronous by contract: readGoal() reads synchronously, so the goal
+    // runner's read-after-write (record the verdict, then drive the next
+    // round from that same state) must not race an async flush — an async
+    // write here reads back the previous goal and silently stalls the loop.
+    const tmp = `${GOALS_FILE}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify({ goals }, null, 2))
+    renameSync(tmp, GOALS_FILE)
+  } catch {
     // Best-effort: an unwritable file must not take the turn down.
-  })
+  }
 }
 
 export function readGoal(sessionId: string): GoalState | undefined {
