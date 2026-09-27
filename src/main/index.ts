@@ -154,7 +154,7 @@ app.whenReady().then(() => {
   })
   registerMarketplaceIpc(marketplaceService)
   registerPermissionRuleIpc(registry)
-  registerCustomAgentsIpc()
+  registerCustomAgentsIpc(kernel)
   void pluginService.pushResourceSpec()
   createWindow()
 

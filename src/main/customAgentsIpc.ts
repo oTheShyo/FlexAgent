@@ -21,6 +21,7 @@ import {
 } from './agents/customAgents'
 import type { AgentDiagnostic } from './agents/customAgents'
 import type { AgentRole } from './agents/roles'
+import type { KernelHost } from './kernel'
 
 function toDiagnostic(diag: AgentDiagnostic): CustomAgentDiagnostic {
   return { file: diag.file, code: diag.code, message: diag.message, severity: diag.severity }
@@ -48,24 +49,36 @@ function snapshot(): CustomAgentsSnapshot {
   }
 }
 
-export function registerCustomAgentsIpc(): void {
+export function registerCustomAgentsIpc(kernel: KernelHost): void {
+  // The multi-agent extension snapshots the agent registry when the worker
+  // builds a session's resource loader, and loaders are cached per cwd — a
+  // CRUD write that skips this would stay invisible to the task tool until an
+  // unrelated reload. Awaiting the reload (instead of firing and forgetting)
+  // also orders it ahead of any session attach the caller issues next.
+  const invalidate = async (): Promise<void> => {
+    await kernel.request({ type: 'reloadResources' })
+  }
+
   ipcMain.handle(IPC.listCustomAgents, () => snapshot())
 
-  ipcMain.handle(IPC.saveCustomAgent, (_event, input: CustomAgentDefinitionInput) => {
+  ipcMain.handle(IPC.saveCustomAgent, async (_event, input: CustomAgentDefinitionInput) => {
     if (isBuiltinName(input.name)) {
       throw new Error(`built-in role "${input.name}" cannot be modified`)
     }
     saveCustomAgent(input)
+    await invalidate()
     return snapshot()
   })
 
-  ipcMain.handle(IPC.deleteCustomAgent, (_event, input: { name: string }) => {
+  ipcMain.handle(IPC.deleteCustomAgent, async (_event, input: { name: string }) => {
     deleteCustomAgent(input.name)
+    await invalidate()
     return snapshot()
   })
 
-  ipcMain.handle(IPC.setCustomAgentEnabled, (_event, input: { name: string; enabled: boolean }) => {
+  ipcMain.handle(IPC.setCustomAgentEnabled, async (_event, input: { name: string; enabled: boolean }) => {
     setCustomAgentEnabled(input.name, input.enabled)
+    await invalidate()
     return snapshot()
   })
 }
