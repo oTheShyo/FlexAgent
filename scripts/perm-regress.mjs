@@ -109,6 +109,68 @@ console.log(
 
 console.log(`\nchain: ${cases.length + 1 - failed}/${cases.length + 1} PASS`)
 
+// Ticket 14 — hook decisions belong in this harness because they are the one
+// place third-party code can move a permission verdict. Bundled from source, so
+// these assertions run against the shipped gate's neighbours, not a copy of it.
+// The asymmetry is the point: a hook may tighten a decision, never widen one.
+const hookBundle = join(OUT, 'hookDecisions.mjs')
+await build({
+  entryPoints: ['src/main/hookDecisions.ts'],
+  outfile: hookBundle,
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'node20',
+  logLevel: 'error'
+})
+const hookDecisions = await import(pathToFileURL(hookBundle).href)
+
+const HOOK_CASES = [
+  {
+    name: 'hook allow cannot lift a hard deny',
+    run: () => hookDecisions.hookAllowIsOverridable({ command: 'rm -rf dist' }).ok === false
+  },
+  {
+    name: 'hook allow cannot cross the credential boundary',
+    run: () =>
+      hookDecisions.hookAllowIsOverridable({ file_path: join(PERM_HOME, '.ssh', 'id_rsa') }).ok ===
+      false
+  },
+  {
+    name: 'hook allow stands for an ordinary command',
+    run: () => hookDecisions.hookAllowIsOverridable({ command: 'npm test' }).ok === true
+  },
+  {
+    name: 'deny outranks ask and allow',
+    run: () => hookDecisions.aggregatePermissionDecisions(['allow', 'ask', 'deny']) === 'deny'
+  },
+  {
+    name: 'ask outranks allow',
+    run: () => hookDecisions.aggregatePermissionDecisions(['allow', 'ask']) === 'ask'
+  },
+  {
+    name: 'no vote leaves the chain to decide',
+    run: () => hookDecisions.aggregatePermissionDecisions([]) === undefined
+  },
+  {
+    name: 'a hook cannot loop the model forever',
+    run: () => hookDecisions.nextStopBlocks(hookDecisions.MAX_STOP_BLOCKS - 1).forced === true
+  },
+  {
+    name: 'a stop block below the cap continues the turn',
+    run: () => hookDecisions.nextStopBlocks(0).continuable === true
+  }
+]
+
+console.log(`\nhook decisions (${HOOK_CASES.length} cases):`)
+let hookFailures = 0
+for (const item of HOOK_CASES) {
+  const ok = item.run()
+  if (!ok) hookFailures += 1
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${item.name}`)
+}
+failed += hookFailures
+
 // Structure first: these fail if the layering this work rests on is refactored
 // away, which the behavioural cases below cannot see.
 console.log(`\ngate structure (${SOURCE_ASSERTIONS.length} anchors):`)
@@ -128,6 +190,6 @@ const ruleFailures = await runRuleAssertions(
 )
 failed += ruleFailures
 
-const total = cases.length + 1 + SOURCE_ASSERTIONS.length + RULE_CASES.length
+const total = cases.length + 1 + HOOK_CASES.length + SOURCE_ASSERTIONS.length + RULE_CASES.length
 console.log(`\n${total - failed}/${total} PASS`)
 process.exit(failed === 0 ? 0 : 1)

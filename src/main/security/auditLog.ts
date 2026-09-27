@@ -30,7 +30,12 @@ const LOG_FILE = join(AUDIT_HOME, 'permissions.jsonl')
 const ROTATED_FILE = join(AUDIT_HOME, 'permissions.1.jsonl')
 const MAX_BYTES = 4 * 1024 * 1024
 
-export type AuditKind = 'permission' | 'redaction' | 'child-permission'
+/**
+ * `hook` entries (ticket 14) record the enforcement events a hook took part in:
+ * a Stop block and, above all, the ceiling — a turn ended despite a hook still
+ * saying "not yet" is exactly the kind of thing that needs a durable trace.
+ */
+export type AuditKind = 'permission' | 'redaction' | 'child-permission' | 'hook'
 
 export interface AuditEntry {
   ts: number

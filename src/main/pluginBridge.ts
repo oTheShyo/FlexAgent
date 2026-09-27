@@ -4,6 +4,11 @@ import type { PluginHookContext, PluginResourceSpec } from '../shared/kernel-pro
 import type { HookEntry, HookSourceDiagnosticCode } from './hookSources'
 import type { HookTemplateContext } from './userConfig'
 import type { HookRunOptions, HookRunPlugin, HookRunResult } from './hooks/hookRunner'
+import {
+  aggregatePermissionDecisions,
+  parseHookDecision,
+  type HookPermissionVote
+} from './hookDecisions'
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -223,8 +228,8 @@ export function matchesHookMatcher(
  * (worker `beforeToolCall` / prompt handler) instead of `pi.on`.
  */
 export interface RegisteredHookCheck {
-  event: 'PreToolUse' | 'UserPromptSubmit'
-  /** Tool-name filter for PreToolUse: exact `a|b` list, regex, or `*`/undefined = all. */
+  event: EnforcedHookEvent
+  /** Tool-name filter: exact `a|b` list, regex, or `*`/undefined = all. */
   matcher?: string
   entry: HookEntry
   plugin: HookRunPlugin | undefined
@@ -245,6 +250,10 @@ export interface PluginHookDeps {
   preToolUseChecks: RegisteredHookCheck[]
   /** Mutated by registerPluginHooks; read by runPromptSubmitHooks at each prompt. */
   promptSubmitChecks: RegisteredHookCheck[]
+  /** Mutated by registerPluginHooks; read by runStopHooks when a turn settles (ticket 14). */
+  stopChecks: RegisteredHookCheck[]
+  /** Mutated by registerPluginHooks; read where the chain would ask the user (ticket 14). */
+  permissionRequestChecks: RegisteredHookCheck[]
 }
 
 function buildHookStdin(
@@ -274,6 +283,15 @@ function buildHookStdin(
     input.toolResponse = payload.result
     input.is_error = payload.isError === true
   }
+  // Stop (ticket 14): without the turn's last message a hook can only guess
+  // whether the work is finished, which is the whole judgement it exists for.
+  if (sourceEvent === 'Stop') {
+    input.stop_hook_active = payload.stop_hook_active === true
+    if (typeof payload.last_assistant_message === 'string') {
+      input.last_assistant_message = payload.last_assistant_message
+      input.lastAssistantMessage = payload.last_assistant_message
+    }
+  }
   return `${JSON.stringify(input)}\n`
 }
 
@@ -286,11 +304,106 @@ export interface HookCheckResult {
   diagnostics: string[]
 }
 
+/** Events the worker awaits at an enforcement point rather than firing and forgetting. */
+export type EnforcedHookEvent = 'PreToolUse' | 'UserPromptSubmit' | 'Stop' | 'PermissionRequest'
+
+/** One check's outcome: the raw run plus the block/context reading of its output. */
+interface SingleHookOutcome {
+  result: HookRunResult
+  blocked: boolean
+  reason?: string
+  /** Context the hook asked to add (UserPromptSubmit). */
+  context?: string
+  /** Skipped by matcher or failed interpolation — not an outcome at all. */
+  skipped: boolean
+}
+
+async function runOneHookCheck(
+  deps: PluginHookDeps,
+  check: RegisteredHookCheck,
+  input: {
+    event: EnforcedHookEvent
+    payload: Record<string, unknown>
+    matchValue: string | undefined
+    cwd: string
+  },
+  diagnostics: string[]
+): Promise<SingleHookOutcome> {
+  const skipped: SingleHookOutcome = {
+    result: {
+      status: 'ok',
+      exitCode: 0,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      durationMs: 0,
+      blockRequested: false,
+      diagnostics: []
+    },
+    blocked: false,
+    skipped: true
+  }
+  if (check.matcher !== undefined && !matchesHookMatcher(input.matchValue, check.matcher)) {
+    return skipped
+  }
+  const templateContext: HookTemplateContext = {
+    values: check.hookContext?.userConfig ?? {},
+    sensitiveKeys: check.hookContext?.sensitiveKeys ?? [],
+    ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
+    projectDir: input.cwd
+  }
+  let command: string
+  let args: string[] | undefined
+  try {
+    command = deps.interpolate(check.entry.command, templateContext)
+    if (check.entry.args !== undefined) {
+      args = check.entry.args.map((arg) => deps.interpolate(arg, templateContext))
+    }
+  } catch (error) {
+    diagnostics.push(
+      `${check.event} hook interpolation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+    return skipped
+  }
+  const result = await deps.runHook({
+    type: check.entry.type,
+    command,
+    ...(args !== undefined ? { args } : {}),
+    ...(check.entry.shell !== undefined ? { shell: check.entry.shell } : {}),
+    cwd: input.cwd,
+    stdin: buildHookStdin(input.event, input.payload, input.cwd),
+    ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
+    ...(check.entry.timeoutMs !== undefined ? { timeoutMs: check.entry.timeoutMs } : {})
+  })
+  for (const diag of result.diagnostics) {
+    diagnostics.push(`${check.event} hook: ${diag.message}`)
+  }
+  const blocked =
+    result.blockRequested ||
+    result.output?.continue === false ||
+    result.output?.decision === 'block'
+  const reason =
+    result.blockReason ??
+    (typeof result.output?.reason === 'string' ? result.output.reason : undefined) ??
+    (typeof result.output?.stopReason === 'string' ? result.output.stopReason : undefined)
+  const raw = result.output?.additionalContext ?? result.output?.additional_context
+  return {
+    result,
+    blocked,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(typeof raw === 'string' && raw.trim().length > 0 ? { context: raw } : {}),
+    skipped: false
+  }
+}
+
 async function runHookChecks(
   deps: PluginHookDeps,
   checks: RegisteredHookCheck[],
   input: {
-    event: 'PreToolUse' | 'UserPromptSubmit'
+    event: EnforcedHookEvent
     payload: Record<string, unknown>
     matchValue: string | undefined
     cwd: string
@@ -299,57 +412,12 @@ async function runHookChecks(
   const diagnostics: string[] = []
   const contexts: string[] = []
   for (const check of checks) {
-    if (check.matcher !== undefined && !matchesHookMatcher(input.matchValue, check.matcher)) {
-      continue
+    const outcome = await runOneHookCheck(deps, check, input, diagnostics)
+    if (outcome.skipped) continue
+    if (outcome.blocked) {
+      return { blocked: true, reason: outcome.reason ?? 'blocked by hook', diagnostics }
     }
-    const templateContext: HookTemplateContext = {
-      values: check.hookContext?.userConfig ?? {},
-      sensitiveKeys: check.hookContext?.sensitiveKeys ?? [],
-      ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
-      projectDir: input.cwd
-    }
-    let command: string
-    let args: string[] | undefined
-    try {
-      command = deps.interpolate(check.entry.command, templateContext)
-      if (check.entry.args !== undefined) {
-        args = check.entry.args.map((arg) => deps.interpolate(arg, templateContext))
-      }
-    } catch (error) {
-      diagnostics.push(
-        `${check.event} hook interpolation failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      )
-      continue
-    }
-    const result = await deps.runHook({
-      type: check.entry.type,
-      command,
-      ...(args !== undefined ? { args } : {}),
-      ...(check.entry.shell !== undefined ? { shell: check.entry.shell } : {}),
-      cwd: input.cwd,
-      stdin: buildHookStdin(input.event, input.payload, input.cwd),
-      ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
-      ...(check.entry.timeoutMs !== undefined ? { timeoutMs: check.entry.timeoutMs } : {})
-    })
-    for (const diag of result.diagnostics) {
-      diagnostics.push(`${check.event} hook: ${diag.message}`)
-    }
-    const blocked =
-      result.blockRequested ||
-      result.output?.continue === false ||
-      result.output?.decision === 'block'
-    if (blocked) {
-      const reason =
-        result.blockReason ??
-        (typeof result.output?.reason === 'string' ? result.output.reason : undefined) ??
-        (typeof result.output?.stopReason === 'string' ? result.output.stopReason : undefined) ??
-        'blocked by hook'
-      return { blocked: true, reason, diagnostics }
-    }
-    const raw = result.output?.additionalContext ?? result.output?.additional_context
-    if (typeof raw === 'string' && raw.trim().length > 0) contexts.push(raw)
+    if (outcome.context !== undefined) contexts.push(outcome.context)
   }
   return {
     blocked: false,
@@ -380,6 +448,87 @@ export async function runPromptSubmitHooks(
     matchValue: undefined,
     cwd: input.cwd
   })
+}
+
+/**
+ * Stop (ticket 14): the model is about to end its turn. A hook may block with a
+ * reason — "no test command and no result yet" — and the worker sends the model
+ * round again with that reason. The ceiling on consecutive blocks lives in
+ * `hookDecisions.ts`, because the loop that enforces it must be testable
+ * without spawning a process.
+ */
+export async function runStopHooks(
+  deps: PluginHookDeps,
+  input: { cwd: string; lastAssistantText?: string }
+): Promise<HookCheckResult> {
+  return runHookChecks(deps, deps.stopChecks, {
+    event: 'Stop',
+    payload: {
+      stop_hook_active: true,
+      ...(input.lastAssistantText !== undefined
+        ? { last_assistant_message: input.lastAssistantText }
+        : {})
+    },
+    matchValue: undefined,
+    cwd: input.cwd
+  })
+}
+
+/**
+ * PermissionRequest (ticket 14): fires only where the chain would have asked
+ * the human, and answers on their behalf. Every check runs — unlike the block
+ * semantics there is no early return, because a refusal from the third hook
+ * must be able to outrank an allowance from the first.
+ */
+export async function runPermissionRequestHooks(
+  deps: PluginHookDeps,
+  input: { toolName: string; args: unknown; toolCallId: string; cwd: string }
+): Promise<{
+  decision: HookPermissionVote | undefined
+  reason?: string
+  diagnostics: string[]
+}> {
+  const diagnostics: string[] = []
+  const votes: (HookPermissionVote | undefined)[] = []
+  let firstReason: string | undefined
+
+  for (const check of deps.permissionRequestChecks) {
+    const outcome = await runOneHookCheck(
+      deps,
+      check,
+      {
+        event: 'PermissionRequest',
+        payload: {
+          toolName: input.toolName,
+          args: input.args,
+          toolCallId: input.toolCallId
+        },
+        matchValue: input.toolName,
+        cwd: input.cwd
+      },
+      diagnostics
+    )
+    if (outcome.skipped) continue
+    const { decision, reason } = parseHookDecision(outcome.result.output)
+    // A hook that blocks outright (exit 2, or an explicit block decision) meant
+    // to refuse, whether or not it also wrote JSON: an exit code is not an
+    // afterthought, and reading it as "no vote" would let the tool through.
+    if (outcome.blocked && (decision === undefined || decision === 'deny')) {
+      votes.push('deny')
+      if (firstReason === undefined) firstReason = outcome.reason ?? reason
+      continue
+    }
+    votes.push(decision)
+    if (decision !== undefined && reason !== undefined && firstReason === undefined) {
+      firstReason = reason
+    }
+  }
+
+  return {
+    decision: aggregatePermissionDecisions(votes),
+    ...(firstReason !== undefined ? { reason: firstReason } : {}),
+    diagnostics
+  }
 }
 
 export function registerPluginHooks(
@@ -428,7 +577,15 @@ export function registerPluginHooks(
     for (const entry of parsed.entries) {
       // Enforcement-capable events (ticket 13): registered as checks the worker
       // awaits at the enforcement points, not fire-and-forget kernel events.
-      if (entry.event === 'PreToolUse' || entry.event === 'UserPromptSubmit') {
+      // Enforcement-capable events: registered as checks the worker awaits at
+      // the enforcement points, not fire-and-forget kernel events. Ticket 14
+      // added Stop and PermissionRequest to the two from ticket 13.
+      if (
+        entry.event === 'PreToolUse' ||
+        entry.event === 'UserPromptSubmit' ||
+        entry.event === 'Stop' ||
+        entry.event === 'PermissionRequest'
+      ) {
         const check: RegisteredHookCheck = {
           event: entry.event,
           ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
@@ -436,8 +593,20 @@ export function registerPluginHooks(
           plugin: pluginInfo,
           ...(hookContext !== undefined ? { hookContext } : {})
         }
-        if (entry.event === 'PreToolUse') deps.preToolUseChecks.push(check)
-        else deps.promptSubmitChecks.push(check)
+        switch (entry.event) {
+          case 'PreToolUse':
+            deps.preToolUseChecks.push(check)
+            break
+          case 'UserPromptSubmit':
+            deps.promptSubmitChecks.push(check)
+            break
+          case 'Stop':
+            deps.stopChecks.push(check)
+            break
+          default:
+            deps.permissionRequestChecks.push(check)
+            break
+        }
         registered += 1
         continue
       }

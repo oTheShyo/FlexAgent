@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Example hook for ticket 13 — demonstrates both enforcement-capable events:
-//   PreToolUse      veto a Write/Edit to any path containing DO-NOT-WRITE
-//   UserPromptSubmit inject context on every prompt, block prompts with BLOCK-DEMO
+// Example hook — demonstrates all four enforcement-capable events:
+//   PreToolUse        veto a Write/Edit to any path containing DO-NOT-WRITE (13)
+//   UserPromptSubmit  inject context on every prompt, block BLOCK-DEMO (13)
+//   Stop              block the end of a turn that never reported a test (14)
+//   PermissionRequest auto-answer a prompt, or refuse one outright (14)
 //
 // Contract (see docs/plugin-backend.md): the kernel writes one JSON payload on
 // stdin; the hook answers on stdout. Exit 0 = allow (stdout may carry JSON),
@@ -33,6 +35,52 @@ process.stdin.on('end', () => {
         }) + '\n'
       )
       process.exit(2)
+    }
+    process.exit(0)
+  }
+
+  // Ticket 14: the model is about to end its turn. Nothing here is enforced by
+  // the hook itself — it answers, and the worker decides (cap: 3 blocks).
+  if (event === 'Stop') {
+    const lastMessage = String(input.last_assistant_message ?? '')
+    if (lastMessage.length > 0 && !/test|spec|npm run/i.test(lastMessage)) {
+      process.stdout.write(
+        JSON.stringify({
+          decision: 'block',
+          reason: 'Example hook: report the test command and its result before ending the turn'
+        }) + '\n'
+      )
+      process.exit(2)
+    }
+    process.exit(0)
+  }
+
+  // Ticket 14: fires only where the chain would have asked the human. Never
+  // answers `allow` for a command that looks destructive — and it does not need
+  // to, because an allow cannot lift a hard-denied shape anyway.
+  if (event === 'PermissionRequest') {
+    const toolInput = input.tool_input ?? input.toolInput ?? {}
+    const command = String(toolInput.command ?? '')
+    if (/rm\s+-rf|git\s+push.*--force/i.test(command)) {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'Example hook: destructive commands are never auto-approved'
+          }
+        }) + '\n'
+      )
+      process.exit(0)
+    }
+    if (typeof toolInput.path === 'string' && toolInput.path.includes('/scratch/')) {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            permissionDecision: 'allow',
+            permissionDecisionReason: 'Example hook: writes under /scratch/ are pre-approved'
+          }
+        }) + '\n'
+      )
     }
     process.exit(0)
   }

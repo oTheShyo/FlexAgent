@@ -512,24 +512,33 @@ PI `ToolDefinition.parameters` 要求 `TSchema`；typebox 1.3.27（PI 嵌套依�
 
 ---
 
-## 8. Hook 事件（ticket 13 已交付）
+## 8. Hook 事件（ticket 13 已交付，ticket 14 补齐 Stop / PermissionRequest）
 
-两类事件按执行能力分治：
+四类事件按执行能力分治：
 
 | 事件 | 注册路径 | block 语义 |
 | -- | -- | -- |
 | `PreToolUse` | worker `beforeToolCall` 同步检查（权限放行后 hooks 终裁） | **强制 veto**：拦截工具调用，reason 经 denials 通道进 transcript（模型可见） |
 | `UserPromptSubmit` | worker prompt handler 同步检查（仅 `started` 路径；steering/queued 不触发） | **强制阻断**：主模型不被调用，reason 以 `INVALID_INPUT` 返给渲染端 + `hook_block` 事件 |
+| `Stop`（14） | worker `agent_settled`：模型准备结束回合时 | **续跑**：hook 返回 block + reason → 以该 reason 再发一轮；**连续 3 次后强制结束**并写审计（`kind:'hook'`, `outcome:'forced-end'`） |
+| `PermissionRequest`（14） | worker `beforeToolCall`：仅在权限链**将要询问用户**时 | **自动决策**：`allow` / `deny`；聚合顺序 deny > ask > allow。`allow` 不能越过 HARD_DENY 与凭据路径边界 |
 | `SessionStart` / `SessionEnd` / `PreCompact` / `PostCompact` / `PostToolUse` | `pi.on` 透传（kernel 事件映射 `HOOK_EVENT_MAP`） | block 仅观测（`hook_block_ignored` 诊断），不拦截 |
+
+### 8.0 两类新事件的边界（ticket 14）
+
+- **Stop 的续跑上限**：`MAX_STOP_BLOCKS = 3`（`hookDecisions.nextStopBlocks`）。计数按“连续”计——一次未被 block 的 settle 归零，新的人类 prompt 也归零（新意图不该被上一轮的死结卡住）。到达上限时不再 prompt，但**必定留痕**：审计 JSONL 一条 `kind:'hook'` + `observeEvent`。
+- **PermissionRequest 的不对称**：hook 可以**收紧**，不可以**放宽**。一次 `deny` 压过任意多个 `allow`（一个谨慎的 hook 值三个放行的）；`ask` 压过 `allow`（hook 说“我不担这个责”）；无投票 = 权限链照旧问人。即便 hook 投了 `allow`，仍要过 `hookAllowIsOverridable`：命中 `hardDenyFor` 的命令形状、或命中凭据/敏感路径（`~/.ssh`、私钥、云凭据、`.env` 等）一律拒绝——那是能力边界，不是策略默认值，hook 不比用户自己的 rules 文件更可信。
+- **触发时机**：只有 `outcome !== 'allow'` 且非 `deny` 的分支（即“准备 emit permission_request”）才跑 hook；已经被门 deny 的调用根本到不了这里，这正是 HARD_DENY 不需要额外防护的原因。
 
 ### 8.1 stdin 契约（`pluginBridge.buildHookStdin`）
 
-hook 进程从 stdin 收到一行 JSON：`hook_event_name`（双写驼峰）、`cwd`、`timestamp`；`PreToolUse` 附 `tool_name`/`tool_input`/`tool_use_id`（args 为权限门同款脱敏显示形）；`UserPromptSubmit` 附 `prompt`（用户原文）；`PostToolUse` 附 `tool_response`/`is_error`。
+hook 进程从 stdin 收到一行 JSON：`hook_event_name`（双写驼峰）、`cwd`、`timestamp`；`PreToolUse` 附 `tool_name`/`tool_input`/`tool_use_id`（args 为权限门同款脱敏显示形）；`UserPromptSubmit` 附 `prompt`（用户原文）；`PostToolUse` 附 `tool_response`/`is_error`；`Stop` 附 `stop_hook_active` 与 `last_assistant_message`；`PermissionRequest` 附 `tool_name`/`tool_input`/`tool_use_id`。
 
 ### 8.2 输出契约（`hooks/hookRunner.runHook`）
 
 - **放行**：exit 0；stdout 可选 JSON（`additionalContext` 等字段，坏 JSON 忽略不致命）。
 - **veto**：exit 2 + stdout JSON `{"decision":"block","reason":"..."}`；reason 解析优先（JSON `reason`/`stopReason` > stderr > 原始 stdout），该文本即模型看到的拒绝理由。
+- **PermissionRequest 决策**（14）：exit 0 + stdout JSON `{"hookSpecificOutput":{"permissionDecision":"allow"|"deny"|"ask","permissionDecisionReason":"..."}}`；也接受扁平的 `permissionDecision` / `decision`（`block` 视为 `deny`）。**看不懂的输出 = 弃权，不等于放行**（`hookDecisions.parseHookDecision`）。
 - 其他非零退出：`failed`/`killed` 诊断，不 block。超时默认 60s（`timeoutMs`/`timeout` 可配，超时 taskkill 树杀）、输出上限 32KB、spawn 失败 → `spawn_error` 不崩 session。
 
 ### 8.3 matcher 语义（`matchesHookMatcher`）
@@ -540,10 +549,14 @@ hook 进程从 stdin 收到一行 JSON：`hook_event_name`（双写驼峰）、`
 
 - **beforeToolCall**（worker）：权限门放行后运行匹配的 `PreToolUse` checks；veto → `denials.set` + `hook_veto` 事件（事件日志 `observeEvent`）+ `{block:true, reason}` 返还内核。
 - **prompt handler**（worker）：`started` 路径运行 `UserPromptSubmit` checks；阻断 → 请求拒绝（不进 run_state）+ `hook_block` 事件；`additionalContext` 以 append-only 方式拼进发出给模型的 prompt（用户原文不改写）。
+- **agent_settled**（worker，14）：goal 自动续跑与计划草稿之后运行 `Stop` checks（同一线程一轮只允许一种续跑，因此串行且互斥）；block → 计数 + 审计 + 以 reason 再 prompt 一轮；到达上限 → 结束并留痕。
+- **permission ask 分支**（worker，14）：所有 `PermissionRequest` checks **都跑完**（无短路，否则第三个 hook 的 deny 追不回第一个的 allow），聚合后 deny → denials 通道 + 审计；allow → 先过 `hookAllowIsOverridable` 再放行，被拦时同样留审计。
 - 全程 `hook`/`hook_veto`/`hook_block`/`hook_context` 事件进事件日志（`observeEvent` → JSONL）。
 
 ### 8.5 示例与验收
 
 - 示例 hook：`examples/hooks/hooks.json` + `examples/hooks/veto-demo.mjs`（演示两类事件：DO-NOT-WRITE 路径 veto、BLOCK-DEMO prompt 阻断、additionalContext 注入）。
 - 一键演示：`node scripts/demo-hooks.mjs`（5 项 PASS/FAIL，驱动真实协议）。
-- 单测：`tests/hookChecks.test.ts`（18 项：matcher 语义、runHook 真子进程 allow/veto/timeout/spawn_error/非 JSON、stdin 载荷形状、first-block-wins、additionalContext 收集、插值失败诊断）。
+- 单测：`tests/hookChecks.test.ts`（matcher 语义、runHook 真子进程 allow/veto/timeout/spawn_error/非 JSON、stdin 载荷形状、first-block-wins、additionalContext 收集、插值失败诊断，及 14 新增的 Stop / PermissionRequest 用例）。
+- 单测：`tests/hookDecisions.test.ts`（14 的纯判定：投票解析与聚合、HARD_DENY/凭据边界的反向用例、Stop 上限）。
+- 回归：`node scripts/perm-regress.mjs` 内置 8 条 hook 决策断言（同一份源码 esbuild 打包，测的是发布路径而非副本）。

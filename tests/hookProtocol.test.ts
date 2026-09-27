@@ -220,6 +220,8 @@ function registerHooksFrom(
       return hookRunner.runHook(options)
     },
     preToolUseChecks: [],
+    stopChecks: [],
+    permissionRequestChecks: [],
     promptSubmitChecks: []
   }
 

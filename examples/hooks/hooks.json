@@ -22,6 +22,29 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node examples/hooks/veto-demo.mjs",
+            "timeoutMs": 15000
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node examples/hooks/veto-demo.mjs",
+            "timeoutMs": 15000
+          }
+        ]
+      }
     ]
   }
 }

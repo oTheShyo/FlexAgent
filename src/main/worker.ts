@@ -41,7 +41,17 @@ import type {
   DefaultResourceLoader as DefaultResourceLoaderType,
   SessionManager as SessionManagerType
 } from '@earendil-works/pi-coding-agent'
-import { createPluginBridgeFactory, runPreToolUseHooks, runPromptSubmitHooks, type PluginHookDeps, type McpToolBridgeDef, type McpToolBridgeResult } from './pluginBridge'
+import {
+  createPluginBridgeFactory,
+  runPermissionRequestHooks,
+  runPreToolUseHooks,
+  runPromptSubmitHooks,
+  runStopHooks,
+  type PluginHookDeps,
+  type McpToolBridgeDef,
+  type McpToolBridgeResult
+} from './pluginBridge'
+import { MAX_STOP_BLOCKS, hookAllowIsOverridable, nextStopBlocks } from './hookDecisions'
 import { parseHooksContent } from './hookSources'
 import { perfStart } from './perf'
 import { interpolateHookTemplate } from './userConfig'
@@ -153,8 +163,17 @@ const hookDeps: PluginHookDeps = {
   interpolate: interpolateHookTemplate,
   runHook: trackedRunHook,
   preToolUseChecks: [],
-  promptSubmitChecks: []
+  promptSubmitChecks: [],
+  stopChecks: [],
+  permissionRequestChecks: []
 }
+
+/**
+ * Consecutive Stop-hook blocks per session (ticket 14). A hook that says "not
+ * done yet" forever is a hang with extra steps, so the third consecutive block
+ * ends the turn whether the hook agrees or not.
+ */
+const stopBlocks = new Map<string, number>()
 
 async function settleHookRuns(): Promise<void> {
   await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50))
@@ -907,7 +926,82 @@ function emit(sessionId: SessionId, event: WorkerKernelEvent): void {
  * Never throws into the event handler: a goal failure must not take the
  * session down. Errors surface as goal_update with the message.
  */
-async function maybeRunGoalStep(host: HostSession): Promise<void> {
+/**
+ * Stop hooks (ticket 14): the turn is over as far as the model is concerned,
+ * but a hook may say otherwise with a reason. Send it back round with the
+ * reason — up to `MAX_STOP_BLOCKS` consecutive times, then end the turn anyway
+ * and record that the ceiling was hit.
+ *
+ * Returns true when it prompted, so the caller knows a run is in flight again.
+ */
+async function maybeContinueOnStop(host: HostSession): Promise<boolean> {
+  if (hookDeps.stopChecks.length === 0) return false
+  try {
+    const last = await lastAssistantText(host)
+    const result = await runStopHooks(hookDeps, { cwd: host.cwd, lastAssistantText: last })
+    for (const line of result.diagnostics) {
+      try {
+        observeEvent(host.sessionId, { kind: 'hook', event: 'Stop', message: line })
+      } catch {
+        // Observability is best-effort.
+      }
+    }
+    if (!result.blocked) {
+      stopBlocks.delete(host.sessionId)
+      return false
+    }
+    const reason = result.reason ?? 'blocked by Stop hook'
+    const step = nextStopBlocks(stopBlocks.get(host.sessionId) ?? 0)
+    stopBlocks.set(host.sessionId, step.count)
+    recordAudit({
+      kind: 'hook',
+      sessionId: host.sessionId,
+      tool: 'Stop',
+      outcome: step.forced ? 'forced-end' : 'block',
+      via: 'hook',
+      mode: host.mode,
+      reason: `stop block ${step.count}/${MAX_STOP_BLOCKS}: ${reason}`
+    })
+    try {
+      observeEvent(host.sessionId, {
+        kind: 'hook',
+        event: 'Stop',
+        message: step.forced
+          ? `turn ended after ${step.count} blocks (ceiling): ${reason}`
+          : `turn continued after block ${step.count}: ${reason}`
+      })
+    } catch {
+      // Observability is best-effort.
+    }
+    if (!step.continuable) {
+      stopBlocks.delete(host.sessionId)
+      return false
+    }
+    await host.session.prompt(
+      [
+        'A Stop hook blocked the end of your turn:',
+        reason,
+        '',
+        'Address that, then finish the turn.'
+      ].join('\n')
+    )
+    return true
+  } catch (err) {
+    try {
+      observeEvent(host.sessionId, {
+        kind: 'hook',
+        event: 'Stop',
+        message: err instanceof Error ? err.message : String(err)
+      })
+    } catch {
+      // Observability is best-effort.
+    }
+    return false
+  }
+}
+
+/** Goal verification (ticket 05). Returns true when it started another run. */
+async function maybeRunGoalStep(host: HostSession): Promise<boolean> {
   try {
     const sessionId = host.sessionId
     // Evidence = what this run actually produced. A turn with no file changes
@@ -927,17 +1021,18 @@ async function maybeRunGoalStep(host: HostSession): Promise<void> {
       if (state !== undefined) {
         emitGoalUpdate(sessionId, state, message)
       }
-      if (status === 'reached' || status === 'capped') return
+      if (status === 'reached' || status === 'capped') return false
       // Still active: the next step rides in the message; the next round
       // begins on the NEXT settle (this one is spent). Continue by prompting
       // the verify prompt below only when no round is pending any more.
       const after = readGoal(sessionId)
-      if (after === undefined || !canVerify(after, Date.now())) return
+      if (after === undefined || !canVerify(after, Date.now())) return false
       const step = shouldVerifyOnSettle(sessionId, hasEvidence)
       if (step.verify && step.prompt !== undefined) {
         await host.session.prompt(step.prompt)
+        return true
       }
-      return
+      return false
     }
 
     // No pending round: start the next verification.
@@ -946,7 +1041,9 @@ async function maybeRunGoalStep(host: HostSession): Promise<void> {
       const starting = readGoal(sessionId)
       if (starting !== undefined) emitGoalUpdate(sessionId, starting, 'Verifying the goal…')
       await host.session.prompt(step.prompt)
+      return true
     }
+    return false
   } catch (err) {
     // A goal failure must not take the session down.
     try {
@@ -957,6 +1054,7 @@ async function maybeRunGoalStep(host: HostSession): Promise<void> {
     } catch {
       // Observability is best-effort too.
     }
+    return false
   }
 }
 
@@ -1649,9 +1747,62 @@ function setupPermissionGate(host: HostSession): void {
       return { block: true, reason: verdict.reason }
     }
 
+    // PermissionRequest (ticket 14): only reached where the chain would have
+    // asked the human — the one place a hook answering for them is meaningful.
+    // Every check runs (no early return), then deny > ask > allow is folded.
+    let answeredByHook = false
     if (outcome === 'allow') {
       host.gate.noteAllowance()
     } else {
+      const vote = await runPermissionRequestHooks(hookDeps, {
+        toolName: name,
+        args,
+        toolCallId,
+        cwd: host.cwd
+      })
+      for (const line of vote.diagnostics) {
+        try {
+          observeEvent(host.sessionId, { kind: 'hook', event: 'PermissionRequest', message: line })
+        } catch {
+          // Observability is best-effort.
+        }
+      }
+      const auditHook = (outcome: string, reason: string): void => {
+        recordAudit({
+          kind: 'hook',
+          sessionId: host.sessionId,
+          tool: name,
+          outcome,
+          via: 'hook',
+          mode: host.mode,
+          reason
+        })
+      }
+      if (vote.decision === 'deny') {
+        const reason = vote.reason ?? 'denied by PermissionRequest hook'
+        auditHook('deny', reason)
+        host.denials.set(toolCallId, { name, reason })
+        const summary = describeDenials(host.denials.values())
+        return { block: true, reason: summary !== undefined ? `${reason} — ${summary}` : reason }
+      }
+      if (vote.decision === 'allow') {
+        // A hook may tighten, never widen: an allow cannot lift a hard-denied
+        // command shape or the credential boundary. Those are capability limits,
+        // not policy defaults, and a hook is not more trusted than the user's
+        // own rules file.
+        const guard = hookAllowIsOverridable(args)
+        if (!guard.ok) {
+          auditHook('deny', guard.reason)
+          host.denials.set(toolCallId, { name, reason: guard.reason })
+          return { block: true, reason: guard.reason }
+        }
+        auditHook('allow', vote.reason ?? 'allowed by PermissionRequest hook')
+        host.gate.noteAllowance()
+        answeredByHook = true
+      }
+    }
+
+    if (outcome !== 'allow' && !answeredByHook) {
       // waitMs starts when the dialog is published, not when the gate began —
       // classifier latency inside evaluate is system time and belongs in execMs
       // attribution, not the user's wait (observability §3.2).
@@ -1925,8 +2076,14 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
       // next verification round — automatically, without the user saying
       // "continue". Both fire only from here: one worker thread means a
       // verification IS a turn, and prompting mid-run would interleave.
-      void maybeRunGoalStep(host)
-      void maybeDraftPlan(host)
+      // One worker thread, one continuation per settle: goal verification, plan
+      // drafting and Stop blocks all continue by prompting, and prompting twice
+      // would interleave two runs on the same session.
+      void (async () => {
+        if (await maybeRunGoalStep(host)) return
+        await maybeDraftPlan(host)
+        await maybeContinueOnStop(host)
+      })()
       break
     }
     case 'auto_retry_start': {
@@ -2532,6 +2689,9 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     case 'prompt': {
       const host = requireSession(req.sessionId)
       const text = req.text
+      // A new human turn is a new intent: Stop blocks are counted per turn, not
+      // per session, so an old ceiling cannot refuse the next thing asked.
+      stopBlocks.delete(req.sessionId)
       // Published for the before_agent_start that follows this prompt; consumed
       // there. Set before anything can await, so the run always sees it.
       recallSlot = req.recall === undefined ? undefined : { hits: req.recall, at: Date.now() }
@@ -2802,6 +2962,7 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
       flushPendingMemoryWrites()
       host.session.dispose()
       sessions.delete(req.sessionId)
+      stopBlocks.delete(req.sessionId)
       return undefined
     }
     case 'warmup': {

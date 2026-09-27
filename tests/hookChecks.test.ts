@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { runHook } from '../src/main/hooks/hookRunner'
 import {
   matchesHookMatcher,
+  runPermissionRequestHooks,
+  runStopHooks,
   runPreToolUseHooks,
   runPromptSubmitHooks,
   type HookCheckResult,
@@ -42,7 +44,9 @@ function makeDeps(runHookImpl: (options: HookRunOptions) => Promise<HookRunResul
     interpolate: (template) => template,
     runHook: runHookImpl,
     preToolUseChecks: [],
-    promptSubmitChecks: []
+    promptSubmitChecks: [],
+    stopChecks: [],
+    permissionRequestChecks: []
   }
 }
 
@@ -275,5 +279,150 @@ describe('runPromptSubmitHooks', () => {
     const result = await runPromptSubmitHooks(deps, { prompt: 'x', cwd: process.cwd() })
     expect(result.blocked).toBe(false)
     expect(result.diagnostics.some((line) => line.includes('interpolation failed'))).toBe(true)
+  })
+})
+
+// Ticket 14: Stop and PermissionRequest, the two events that gained teeth.
+
+describe('runStopHooks', () => {
+  it('is a no-op with no registered checks', async () => {
+    const deps = makeDeps(async () => {
+      throw new Error('runHook must not be called')
+    })
+    const result = await runStopHooks(deps, { cwd: process.cwd() })
+    expect(result.blocked).toBe(false)
+  })
+
+  it('blocks with the reason when the hook says not yet', async () => {
+    const deps = makeDeps(async () =>
+      fakeResult({
+        output: { decision: 'block', reason: 'no test command and no result yet' }
+      })
+    )
+    deps.stopChecks.push(check({ event: 'Stop', entry: hookEntry({ event: 'Stop' }) }))
+    const result = await runStopHooks(deps, { cwd: process.cwd(), lastAssistantText: 'done' })
+    expect(result.blocked).toBe(true)
+    expect(result.reason).toBe('no test command and no result yet')
+  })
+
+  it('passes the last assistant message so a hook can judge the turn', async () => {
+    let seenStdin = ''
+    const deps = makeDeps(async (options) => {
+      seenStdin = options.stdin ?? ''
+      return fakeResult({})
+    })
+    deps.stopChecks.push(check({ event: 'Stop', entry: hookEntry({ event: 'Stop' }) }))
+    await runStopHooks(deps, { cwd: process.cwd(), lastAssistantText: 'I finished' })
+    const payload = JSON.parse(seenStdin) as Record<string, unknown>
+    expect(payload.hook_event_name).toBe('Stop')
+    expect(payload.last_assistant_message).toBe('I finished')
+  })
+})
+
+describe('runPermissionRequestHooks', () => {
+  function permCheck(): RegisteredHookCheck {
+    return check({
+      event: 'PermissionRequest',
+      entry: hookEntry({ event: 'PermissionRequest' })
+    })
+  }
+
+  it('does not run at all when nothing is registered', async () => {
+    const deps = makeDeps(async () => {
+      throw new Error('runHook must not be called')
+    })
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBeUndefined()
+  })
+
+  it('reads the documented hookSpecificOutput shape', async () => {
+    const deps = makeDeps(async () =>
+      fakeResult({ output: { hookSpecificOutput: { permissionDecision: 'allow' } } })
+    )
+    deps.permissionRequestChecks.push(permCheck())
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBe('allow')
+  })
+
+  it('a denial from the second hook outranks an allowance from the first', async () => {
+    const deps = makeDeps(async (options) => {
+      const first = options.command === 'first'
+      return fakeResult({
+        output: first
+          ? { permissionDecision: 'allow' }
+          : { permissionDecision: 'deny', reason: 'not on a Friday' }
+      })
+    })
+    deps.permissionRequestChecks.push(
+      check({ entry: hookEntry({ command: 'first' }) }),
+      check({ entry: hookEntry({ command: 'second' }) })
+    )
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBe('deny')
+    expect(result.reason).toBe('not on a Friday')
+  })
+
+  it('ask outranks allow — a hook that wants the human gets them', async () => {
+    const deps = makeDeps(async (options) =>
+      fakeResult({
+        output:
+          options.command === 'first'
+            ? { permissionDecision: 'allow' }
+            : { permissionDecision: 'ask' }
+      })
+    )
+    deps.permissionRequestChecks.push(
+      check({ entry: hookEntry({ command: 'first' }) }),
+      check({ entry: hookEntry({ command: 'second' }) })
+    )
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBe('ask')
+  })
+
+  it('an unreadable output is no vote, never an allow', async () => {
+    const deps = makeDeps(async () => fakeResult({ output: { whatever: true } }))
+    deps.permissionRequestChecks.push(permCheck())
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBeUndefined()
+  })
+
+  it('a hook that blocks outright without JSON meant to refuse', async () => {
+    const deps = makeDeps(async () =>
+      fakeResult({ blockRequested: true, blockReason: 'refused by policy' })
+    )
+    deps.permissionRequestChecks.push(permCheck())
+    const result = await runPermissionRequestHooks(deps, {
+      toolName: 'Bash',
+      args: {},
+      toolCallId: 't1',
+      cwd: process.cwd()
+    })
+    expect(result.decision).toBe('deny')
+    expect(result.reason).toBe('refused by policy')
   })
 })
