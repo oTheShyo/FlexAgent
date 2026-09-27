@@ -18,11 +18,13 @@ import type {
 } from '../types'
 import { codexApi } from '../api'
 import { pathBasename } from '../lib/paths'
+import type { ImageAttachment } from '../types'
 import { ModeSwitcher } from './ModeSwitcher'
 import {
   composePrompt,
   describeRejections,
   formatBytes,
+  imagesOf,
   stageAttachments
 } from './composerAttachments'
 import type { StagedAttachment } from './composerAttachments'
@@ -73,7 +75,7 @@ export interface ComposerProps {
    * user typed; the references are opened on the main process, where a file
    * mention can be turned into the file's contents.
    */
-  onSend: (text: string, references: PromptReference[]) => void
+  onSend: (text: string, references: PromptReference[], images: ImageAttachment[]) => void
   /** Aborts the run in progress; wired into the send-button slot while running. */
   onStop: () => void
   disabled?: boolean
@@ -268,10 +270,25 @@ function AttachmentTray({ attachments, notice, busy, onRemove }: AttachmentTrayP
           {attachments.map((attachment) => (
             <li key={attachment.id}>
               <span
-                title={`${attachment.name} · ${formatBytes(attachment.size)} · contents are inlined into the message`}
+                title={
+                  attachment.kind === 'image'
+                    ? `${attachment.name} · ${formatBytes(attachment.size)} · sent as an image the model can see`
+                    : `${attachment.name} · ${formatBytes(attachment.size)} · contents are inlined into the message`
+                }
+                data-testid={
+                  attachment.kind === 'image' ? 'composer-image-attachment' : undefined
+                }
                 className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface-sunken)] py-1 pl-2 pr-1 text-xs text-[var(--text-secondary)]"
               >
-                <FileIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
+                {attachment.kind === 'image' && attachment.data !== undefined ? (
+                  <img
+                    src={`data:${attachment.mimeType ?? 'image/png'};base64,${attachment.data}`}
+                    alt=""
+                    className="h-4 w-4 shrink-0 rounded object-cover"
+                  />
+                ) : (
+                  <FileIcon className="h-3 w-3 shrink-0 text-[var(--text-subtle)]" />
+                )}
                 <span className="max-w-[180px] truncate font-mono">{attachment.name}</span>
                 <span className="shrink-0 text-[var(--text-subtle)]">
                   {formatBytes(attachment.size)}
@@ -961,7 +978,9 @@ function Composer({
     // file a mention points at has to happen where the filesystem is — so the
     // block is built there, and what is sent here is still the user's draft.
     const prompt = composePrompt(text.trim(), attachments)
-    onSend(prompt, toPromptReferences(references))
+    // Ticket 11: images ride beside the text. Inlining them would double-count
+    // them against the context and hand the model base64 instead of a picture.
+    onSend(prompt, toPromptReferences(references), imagesOf(attachments))
     setText('')
     setAttachments([])
     setAttachmentNotice(null)

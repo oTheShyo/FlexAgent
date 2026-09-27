@@ -1,16 +1,20 @@
+import { IMAGE_ATTACHMENT_LIMITS, type ImageAttachment } from '../types'
+
 /**
  * Composer attachments: staging, validation and prompt inlining.
  *
- * The contract has no attachment field (`PromptInput` is
- * `{ sessionId, text, mode }`), so there is no transport for an upload and no
- * path the kernel would read on its own. The honest thing a renderer can do is
- * stage the dropped files for real, validate them, read the text ones here and
- * inline their contents into the prompt behind an explicit delimiter.
- * Anything that cannot be inlined is rejected with a visible reason instead of
- * quietly pasting a filename that would mean nothing to the agent.
+ * Text has no transport of its own — `PromptInput` carries no attachment field —
+ * so text files are read here and inlined behind an explicit delimiter. Images
+ * are different (ticket 11): the kernel accepts `prompt(text, { images })`, so a
+ * screenshot can travel as pixels instead of as a filename the model cannot
+ * open. They ride as their own field and are never inlined.
+ *
+ * Anything that cannot be sent is rejected with a visible reason instead of
+ * quietly dropping it: an attachment that silently contributes nothing looks
+ * exactly like one that worked.
  */
 
-/** Files per message. */
+/** Files per message (text and images together). */
 export const MAX_ATTACHMENTS = 5
 /** Per-file cap for inlined text. */
 export const MAX_TEXT_BYTES = 64 * 1024
@@ -91,7 +95,13 @@ export interface StagedAttachment {
   id: string
   name: string
   size: number
-  text: string
+  kind: 'text' | 'image'
+  /** Text attachments only: the file's contents. */
+  text?: string
+  /** Image attachments only: base64 payload, no `data:` prefix. */
+  data?: string
+  /** Image attachments only. */
+  mimeType?: string
 }
 
 export interface AttachmentRejection {
@@ -128,15 +138,25 @@ function isTextLike(file: File): boolean {
 /** Returns null when the file is acceptable, otherwise the reason to show. */
 function rejectionFor(file: File): string | null {
   if (file.name.length === 0) return 'file name is unreadable'
-  if (file.size === 0) return 'empty file (nothing to inline)'
-  if (file.type.startsWith('image/')) return 'images cannot be attached yet'
+  if (file.size === 0) return 'empty file (nothing to send)'
   if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
-    return 'media files cannot be attached yet'
+    return 'media files cannot be attached'
+  }
+  // Images (ticket 11): the model reads pixels, so the type has to be one it is
+  // actually handed — an unsupported image is named, never silently converted.
+  if (file.type.startsWith('image/')) {
+    if (!IMAGE_ATTACHMENT_LIMITS.allowedMimeTypes.includes(file.type as never)) {
+      return `unsupported image type "${file.type}" (allowed: ${IMAGE_ATTACHMENT_LIMITS.allowedMimeTypes.join(', ')})`
+    }
+    if (file.size > IMAGE_ATTACHMENT_LIMITS.maxBytesPerImage) {
+      return `too large (${formatBytes(file.size)}, limit ${formatBytes(IMAGE_ATTACHMENT_LIMITS.maxBytesPerImage)})`
+    }
+    return null
   }
   if (file.size > MAX_TEXT_BYTES) {
     return `too large (${formatBytes(file.size)}, limit ${formatBytes(MAX_TEXT_BYTES)})`
   }
-  if (!isTextLike(file)) return 'only text files can be attached'
+  if (!isTextLike(file)) return 'only text files and images can be attached'
   return null
 }
 
@@ -164,7 +184,16 @@ export async function stageAttachments(
 ): Promise<StageResult> {
   const accepted: StagedAttachment[] = []
   const rejected: AttachmentRejection[] = []
-  let totalBytes = existing.reduce((sum, entry) => sum + entry.size, 0)
+
+  // Text and images are tracked separately: 192 KB is a sane ceiling for text
+  // pasted into a prompt and an absurd one for a screenshot.
+  let textBytes = existing
+    .filter((entry) => entry.kind === 'text')
+    .reduce((sum, entry) => sum + entry.size, 0)
+  let imageBytes = existing
+    .filter((entry) => entry.kind === 'image')
+    .reduce((sum, entry) => sum + entry.size, 0)
+  let imageCount = existing.filter((entry) => entry.kind === 'image').length
   let count = existing.length
 
   for (const file of files) {
@@ -177,13 +206,51 @@ export async function stageAttachments(
       rejected.push({ name: file.name, reason: `attachment limit is ${MAX_ATTACHMENTS}` })
       continue
     }
-    if (totalBytes + file.size > MAX_TOTAL_BYTES) {
+    const isImage = file.type.startsWith('image/')
+    if (isImage && imageCount >= IMAGE_ATTACHMENT_LIMITS.maxImages) {
+      rejected.push({
+        name: file.name,
+        reason: `image limit is ${IMAGE_ATTACHMENT_LIMITS.maxImages} per message`
+      })
+      continue
+    }
+    if (isImage && imageBytes + file.size > IMAGE_ATTACHMENT_LIMITS.maxTotalBytes) {
+      rejected.push({
+        name: file.name,
+        reason: `would exceed the ${formatBytes(IMAGE_ATTACHMENT_LIMITS.maxTotalBytes)} image limit per message`
+      })
+      continue
+    }
+    if (!isImage && textBytes + file.size > MAX_TOTAL_BYTES) {
       rejected.push({
         name: file.name,
         reason: `would exceed the ${formatBytes(MAX_TOTAL_BYTES)} per-message limit`
       })
       continue
     }
+
+    if (isImage) {
+      let data: string
+      try {
+        data = await readAsBase64(file)
+      } catch {
+        rejected.push({ name: file.name, reason: 'could not be read' })
+        continue
+      }
+      accepted.push({
+        id: makeId(file),
+        name: file.name,
+        size: file.size,
+        kind: 'image',
+        data,
+        mimeType: file.type
+      })
+      imageBytes += file.size
+      imageCount += 1
+      count += 1
+      continue
+    }
+
     let text: string
     try {
       text = await file.text()
@@ -195,12 +262,39 @@ export async function stageAttachments(
       rejected.push({ name: file.name, reason: 'looks binary despite its extension' })
       continue
     }
-    accepted.push({ id: makeId(file), name: file.name, size: file.size, text })
-    totalBytes += file.size
+    accepted.push({ id: makeId(file), name: file.name, size: file.size, kind: 'text', text })
+    textBytes += file.size
     count += 1
   }
 
   return { accepted, rejected }
+}
+
+/** Read a file as base64 without a `data:` prefix — what the kernel expects. */
+async function readAsBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  // Chunked: spreading a 5 MB array into fromCharCode blows the call stack.
+  const CHUNK = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK))
+  }
+  return btoa(binary)
+}
+
+/**
+ * The images to ship alongside the prompt. Text attachments are inlined into
+ * the text; images are not — a base64 blob in the prompt body would be read as
+ * noise by the model and counted twice against the context.
+ */
+export function imagesOf(attachments: readonly StagedAttachment[]): ImageAttachment[] {
+  return attachments
+    .filter((entry) => entry.kind === 'image' && typeof entry.data === 'string')
+    .map((entry) => ({
+      data: entry.data as string,
+      mimeType: entry.mimeType ?? 'image/png',
+      ...(entry.name.length > 0 ? { name: entry.name } : {})
+    }))
 }
 
 /**
@@ -209,7 +303,8 @@ export async function stageAttachments(
  */
 export function buildAttachmentBlock(attachments: readonly StagedAttachment[]): string {
   return attachments
-    .map((entry) => `--- ${entry.name} ---\n${entry.text.trimEnd()}\n--- end ${entry.name} ---`)
+    .filter((entry) => entry.kind === 'text' && typeof entry.text === 'string')
+    .map((entry) => `--- ${entry.name} ---\n${(entry.text ?? '').trimEnd()}\n--- end ${entry.name} ---`)
     .join('\n')
 }
 
@@ -230,7 +325,8 @@ export function composePrompt(
 ): string {
   const parts: string[] = []
   if (text.length > 0) parts.push(text)
-  if (attachments.length > 0) parts.push(buildAttachmentBlock(attachments))
+  const inlined = buildAttachmentBlock(attachments)
+  if (inlined.length > 0) parts.push(inlined)
   if (referenceBlock !== undefined && referenceBlock.trim().length > 0) parts.push(referenceBlock)
   if (parts.length === 0) return ''
   return parts.join('\n\n')

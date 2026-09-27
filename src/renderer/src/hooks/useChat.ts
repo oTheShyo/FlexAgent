@@ -6,6 +6,7 @@ import {
   type ContractErrorCode,
   type FileChange,
   type GoalStateSummary,
+  type ImageAttachment,
   type PlanState,
   type RespondPlanInput,
   type KernelEvent,
@@ -90,7 +91,12 @@ export interface UseChatResult {
   respondQuestion: (questionId: string, answer: string) => Promise<void>
   /** Stop one question's countdown for good. */
   stopQuestionTimer: (questionId: string) => Promise<void>
-  send: (text: string, mode?: PromptMode, references?: PromptReference[]) => Promise<void>
+  send: (
+    text: string,
+    mode?: PromptMode,
+    references?: PromptReference[],
+    images?: ImageAttachment[]
+  ) => Promise<void>
   /** Ticket 27: files offered by the Composer `@` popup, for this session. */
   listWorkspaceFiles: (sessionId: string, query: string) => Promise<string[]>
   /** Ticket 27: another session's transcript, read without opening it. */
@@ -891,10 +897,17 @@ export function useChat(): UseChatResult {
   }, [])
 
   const send = useCallback(
-    async (text: string, mode?: PromptMode, references?: PromptReference[]): Promise<void> => {
+    async (
+      text: string,
+      mode?: PromptMode,
+      references?: PromptReference[],
+      images?: ImageAttachment[]
+    ): Promise<void> => {
       const sessionId = activeIdRef.current
       const trimmed = text.trim()
-      if (!sessionId || trimmed.length === 0) return
+      const hasImages = images !== undefined && images.length > 0
+      // Ticket 11: a screenshot with no caption is still a complete message.
+      if (!sessionId || (trimmed.length === 0 && !hasImages)) return
       // Ticket 05: /goal commands never reach the model — they configure the
       // session's goal on the worker thread. The reply lands in the transcript
       // as a notice, and the goal state updates from the event.
@@ -915,7 +928,8 @@ export function useChat(): UseChatResult {
           sessionId,
           text: trimmed,
           mode,
-          ...(references !== undefined && references.length > 0 ? { references } : {})
+          ...(references !== undefined && references.length > 0 ? { references } : {}),
+          ...(hasImages ? { images: images as ImageAttachment[] } : {})
         })
       } catch (err) {
         setItems((prev) => [...prev, errorItemFrom(err)])

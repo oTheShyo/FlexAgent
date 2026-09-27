@@ -2776,9 +2776,19 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
           ? {
               streamingBehavior:
                 req.disposition === 'queued' ? ('followUp' as const) : ('steer' as const),
-              preflightResult
+              preflightResult,
+              // Ticket 11: the kernel takes images alongside the text, and
+              // resizes them itself against the model's input limits.
+              ...(req.images !== undefined && req.images.length > 0
+                ? { images: req.images.map((image) => ({ type: 'image' as const, ...image })) }
+                : {})
             }
-          : { preflightResult }
+          : {
+              preflightResult,
+              ...(req.images !== undefined && req.images.length > 0
+                ? { images: req.images.map((image) => ({ type: 'image' as const, ...image })) }
+                : {})
+            }
         host.session.prompt(outgoing, opts).then(
           () => {
             if (!settled) {

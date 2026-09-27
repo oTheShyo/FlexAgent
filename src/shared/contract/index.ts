@@ -336,7 +336,48 @@ export interface PromptInput {
   mode?: PromptMode
   /** Ticket 27. Additive; a caller that omits it behaves exactly as before. */
   references?: PromptReference[]
+  /** Ticket 11. Images ride as their own field: the model reads pixels, not paths. */
+  images?: ImageAttachment[]
 }
+
+/**
+ * An image attached to a prompt (ticket 11).
+ *
+ * The kernel takes `prompt(text, { images })`, so a screenshot can reach the
+ * model as pixels instead of as a filename it cannot open. The payload is
+ * base64 without a `data:` prefix — that is what the kernel expects, and it
+ * keeps the wire format free of a second, redundant encoding of the type.
+ */
+export interface ImageAttachment {
+  /** Base64 payload, no `data:` prefix. */
+  data: string
+  /** `image/png`, `image/jpeg`, `image/webp` or `image/gif`. */
+  mimeType: string
+  /** Original file name, for the transcript and the audit trail. */
+  name?: string
+}
+
+/**
+ * Caps for image attachments (ticket 11). Enforced on both sides: the renderer
+ * rejects before the user writes a prompt around an image it cannot send, and
+ * the main process rejects again because a renderer is not a security boundary.
+ * Every rejection names the limit — a silent crop or drop would leave the user
+ * believing the model saw something it never received.
+ */
+export const IMAGE_ATTACHMENT_LIMITS = {
+  /** Images per message. */
+  maxImages: 4,
+  /** Per-image cap, base64 payload included. */
+  maxBytesPerImage: 5 * 1024 * 1024,
+  /**
+   * Combined cap across one message. Deliberately below `maxImages ×
+   * maxBytesPerImage`: one message is one IPC payload and one context window,
+   * and "four screenshots at the limit" is not a message anyone meant to send.
+   */
+  maxTotalBytes: 12 * 1024 * 1024,
+  /** What the model can actually be handed. Everything else is refused by name. */
+  allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+} as const
 
 export type PromptDisposition = 'started' | 'steering' | 'queued'
 

@@ -12,6 +12,7 @@ import {
   type ContractErrorCode,
   type CustomModelRef,
   type CustomModelSaveInput,
+  type ImageAttachment,
   type InstallPluginInput,
   type PermissionMode,
   type PermissionRuleSet,
@@ -48,6 +49,7 @@ import type { PluginService } from './plugins'
 import type { UserMcpService } from './userMcp'
 import { listPluginMcpServerOverrides, setPluginMcpServerOverride } from './pluginMcpOverrides'
 import type { UserModelsService } from './userModels'
+import { validateImages } from './imageAttachments'
 import type { KernelSettingsService, NetworkConfig } from './kernelSettings'
 import { writeRoleBinding } from './modelRouting'
 import type { NetworkStatus } from '../shared/kernel-protocol'
@@ -582,7 +584,14 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       if (!input || typeof input.sessionId !== 'string') {
         throw new ContractError('INVALID_INPUT', 'sessionId is required')
       }
-      assertText(input.text)
+      // Ticket 11: a screenshot with no caption is a complete message, so the
+      // text requirement is satisfied by an image. An empty prompt with nothing
+      // attached is still refused — that one has nothing to say.
+      if (!Array.isArray(input.images) || input.images.length === 0) {
+        assertText(input.text)
+      } else if (typeof input.text !== 'string') {
+        throw new ContractError('INVALID_INPUT', 'text must be a string')
+      }
       registry.require(input.sessionId)
       const mode = input.mode === 'followUp' ? 'followUp' : 'steer'
       const rec = registry.require(input.sessionId)
@@ -607,6 +616,7 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       // could not be attached comes back as notices rather than being dropped,
       // because a mention that contributes nothing is otherwise invisible.
       let promptContext: string | undefined
+      let images: ImageAttachment[] | undefined
       let notices: string[] | undefined
       if (input.references !== undefined && input.references.length > 0) {
         try {
@@ -621,13 +631,25 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
           ]
         }
       }
+      // Ticket 11: images are validated here, not in the renderer. A rejected
+      // image is reported as a notice — the turn still goes out with what the
+      // user typed, but they are told the screenshot did not make it.
+      if (Array.isArray(input.images) && input.images.length > 0) {
+        const checked = validateImages(input.images)
+        if (checked.accepted.length > 0) images = checked.accepted
+        if (checked.rejected.length > 0) {
+          const lines = checked.rejected.map((entry) => `${entry.name} — ${entry.reason}`)
+          notices = [...(notices ?? []), `Not attached (${lines.length}): ${lines.join('; ')}`]
+        }
+      }
       const ack = (await kernel.request({
         type: 'prompt',
         sessionId: input.sessionId,
         text: input.text,
         disposition,
         ...(recall !== undefined ? { recall } : {}),
-        ...(promptContext !== undefined ? { promptContext } : {})
+        ...(promptContext !== undefined ? { promptContext } : {}),
+        ...(images !== undefined ? { images } : {})
       })) as { disposition?: string } | undefined
       registry.touch(input.sessionId)
       return {

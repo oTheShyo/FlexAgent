@@ -1,5 +1,6 @@
 import type {
   ContractErrorCode,
+  ImageAttachment,
   KernelEvent,
   McpServerStatusEntry,
   PermissionMode,
@@ -162,6 +163,12 @@ export type WorkerRequest =
        * prompt: a hook should judge what the user typed, not what we added.
        */
       promptContext?: string
+      /**
+       * Ticket 11 (additive): images attached to this prompt, already validated
+       * in main. They ride as a field rather than in the text because a path is
+       * not a picture — the model cannot open a file the user pasted.
+       */
+      images?: ImageAttachment[]
     }
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'goalCommand'; sessionId: SessionId; raw: string }

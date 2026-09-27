@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type {
+  ImageAttachment,
   PermissionDecision,
   PromptMode,
   PromptReference,
@@ -180,7 +181,12 @@ export default function App({ children }: AppProps) {
   const [queuedBySession, setQueuedBySession] = useState<Record<string, string[]>>({})
 
   const handleSend = useCallback(
-    (text: string, mode?: PromptMode, references?: PromptReference[]): void => {
+    (
+      text: string,
+      mode?: PromptMode,
+      references?: PromptReference[],
+      images?: ImageAttachment[]
+    ): void => {
       const sessionId = activeSessionId
       // An explicit mode is a caller that already chose steer vs followUp, so
       // only the plain send path is eligible to wait for the run to finish.
@@ -191,7 +197,7 @@ export default function App({ children }: AppProps) {
         }))
         return
       }
-      void send(text, mode, references)
+      void send(text, mode, references, images)
     },
     [send, activeSessionId, isStreaming]
   )
@@ -863,7 +869,9 @@ export default function App({ children }: AppProps) {
 
           {activePageName === null && (
             <Composer
-              onSend={(text, references) => handleSend(text, undefined, references)}
+              onSend={(text, references, images) =>
+                handleSend(text, undefined, references, images)
+              }
               listWorkspaceFiles={
                 activeSessionId === null
                   ? undefined
