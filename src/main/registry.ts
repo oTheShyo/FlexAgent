@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from '
 import { join } from 'path'
 import type { RunState, SessionId, SessionSummary } from '../shared/contract'
 import { ContractError } from '../shared/contract'
+import { toSessionSummary } from './sessionSummary'
 import { isScratchCwd } from './workspace'
 
 export interface RegistryRecord {
@@ -132,7 +133,7 @@ export class SessionRegistry {
   list(): SessionSummary[] {
     return [...this.records.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map(toSummary)
+      .map(toSessionSummary)
   }
 
   get(id: SessionId): RegistryRecord | undefined {
@@ -146,7 +147,7 @@ export class SessionRegistry {
   }
 
   summary(id: SessionId): SessionSummary {
-    return toSummary(this.require(id))
+    return toSessionSummary(this.require(id))
   }
 
   create(id: SessionId, cwd: string, title?: string): RegistryRecord {
@@ -259,18 +260,5 @@ export class SessionRegistry {
     if (!rec) return
     rec.updatedAt = Date.now()
     this.persist()
-  }
-}
-
-function toSummary(rec: RegistryRecord): SessionSummary {
-  return {
-    id: rec.id,
-    title: rec.title,
-    cwd: rec.cwd,
-    createdAt: rec.createdAt,
-    updatedAt: rec.updatedAt,
-    runState: rec.runState,
-    archived: rec.archived === true,
-    ...(rec.derivedFrom !== undefined ? { derivedFrom: rec.derivedFrom } : {})
   }
 }

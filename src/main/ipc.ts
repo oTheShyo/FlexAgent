@@ -234,16 +234,11 @@ export function registerIpcHandlers(
         perf.mark('kernel.request')
         if (result?.piSessionFile) registry.attachPiSession(id, result.piSessionFile)
         perf.mark('registry.attachPiSession')
-        const stored = registry.require(id)
         perf.done('ipc.createSession', { sessionId: id })
-        return {
-          id: stored.id,
-          title: stored.title,
-          cwd: stored.cwd,
-          createdAt: stored.createdAt,
-          updatedAt: stored.updatedAt,
-          runState: stored.runState
-        }
+        // One source of truth for a session summary (ticket 17 regression): a
+        // hand-built literal here silently dropped `archived`/`derivedFrom`,
+        // and the renderer replaces its list row with whatever comes back.
+        return registry.summary(id)
       } catch (err) {
         registry.remove(id)
         throw err
@@ -269,7 +264,7 @@ export function registerIpcHandlers(
       // The parent keeps running: forking never touches its host or transcript.
       const newId = randomUUID()
       const title = `${source.title} · fork`
-      const rec = registry.fork(newId, source.id, title)
+      registry.fork(newId, source.id, title)
       try {
         const result = (await kernel.request({
           type: 'forkSession',
@@ -279,16 +274,9 @@ export function registerIpcHandlers(
           messagePrefix: input.messagePrefix
         })) as { piSessionFile?: string } | undefined
         if (result?.piSessionFile) registry.attachPiSession(newId, result.piSessionFile)
-        const stored = registry.require(newId)
-        return {
-          id: stored.id,
-          title: stored.title,
-          cwd: stored.cwd,
-          createdAt: stored.createdAt,
-          updatedAt: stored.updatedAt,
-          runState: stored.runState,
-          derivedFrom: stored.derivedFrom
-        }
+        // Same single source as everywhere else: the sidebar renders the fork
+        // badge off this object, so a dropped `derivedFrom` is a visible bug.
+        return registry.summary(newId)
       } catch (err) {
         registry.remove(newId)
         throw err
@@ -382,14 +370,11 @@ export function registerIpcHandlers(
       perf.mark('kernel.request')
       perf.done('ipc.openSession', { sessionId, messages: detail?.messages?.length ?? 0 })
       return {
-        summary: {
-          id: rec.id,
-          title: rec.title,
-          cwd: rec.cwd,
-          createdAt: rec.createdAt,
-          updatedAt: rec.updatedAt,
-          runState: rec.runState
-        },
+        // Ticket 17 regression: this literal used to omit `archived` and
+        // `derivedFrom`, and the renderer swaps its list row for this summary —
+        // so merely opening a forked chat erased its fork badge, and an
+        // archived chat fell back into the main list.
+        summary: registry.summary(sessionId),
         messages: detail?.messages ?? []
       }
     })
