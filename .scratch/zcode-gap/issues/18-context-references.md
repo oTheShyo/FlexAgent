@@ -53,14 +53,14 @@
 ## 验收状态
 
 - [x] 划选助手回复/工具结果出现浮层，点击后引用进输入框；流式中划选固定当刻内容
-- [ ] @ 触发列出工作区文件，选择后引用进入输入框；大仓库打开不卡（有上限/分页）
-  - 补全与键盘导航可用；**列表来源与内容读取都缺后端**（见 `## Blocked by (new)`）。fixture 不扫描磁盘，所以「打开不卡」暂时没有对手，但也没有被真正验证过。
+- [x] @ 触发列出工作区文件，选择后引用进入输入框；大仓库打开不卡（有上限/分页）
+  - 2026-09-27 核验（接 27 落库 `8206c92` 后）：fixture 已删，renderer 走 `codexApi.listWorkspaceFiles` → main `workspaceFiles.ts` 有界扫描（深度/条目/结果上限 + 按 root 缓存 + 失效）；`scripts/qa-workspace-files.mjs` **26/26 绿**（真实临时树、跳过 node_modules/.git、缓存与失效）。补全与键盘导航此前已可用。
 - [x] `#` 可搜索历史会话并引用带入
   - 但只带片段/标题，**不带完整上下文**。Picking 的会话标题 + 命中片段会进 prompt。
 - [x] 引用条数/单条长度/总字数上限，超限明确提示，已有引用与草稿不受影响
-- [ ] 带引用发送后，模型上下文中确实包含被引用内容（端到端验证）
-  - 已验证到 renderer 边界：`composePrompt()` 的输出里，草稿、附件、引用块逐字都在（脚本 `scripts/qa-context-refs.mjs` 断言）。
-  - 未验证：`codexApi.prompt()` 之后的 kernel 侧。`PromptInput` 只有 `{sessionId, text, mode}`，引用没有独立字段，只能塞进 `text`；kernel 会把它当普通用户文本（`@` 提及的 path token 同理）。
+- [x] 带引用发送后，模型上下文中确实包含被引用内容（端到端验证）
+  - 2026-09-27 真机 e2e 补齐（此前只验到 renderer 边界）：CDP 走真实 `codex.prompt({references:[{kind:'file',path}]})` → main `renderReferences` 内联 → 转录 user 消息实测 **7/7**——`<reference kind="file">` 块存在、块内是文件正文（marker 原文在场）、不是只有路径（脚本 `.scratch/probe-ref-e2e.mjs`，新会话 ba96ffc5，2s 回合）。转录 user 消息即 kernel 交模型的正文，故「模型上下文包含被引用内容」成立。
+  - 历史注记（2026-09-26）：renderer 边界由 `scripts/qa-context-refs.mjs` 15 项断言覆盖；`PromptInput.references` 走契约到 main（27 号落地），kernel 只收 string——main 渲染后的文本就是模型所见。
 - [x] 列表数据来源有防抖/缓存，不会每次按键全量扫描磁盘
   - 防抖与缓存都在位；数据源是 fixture，磁盘扫描这件事今天并不存在。
 

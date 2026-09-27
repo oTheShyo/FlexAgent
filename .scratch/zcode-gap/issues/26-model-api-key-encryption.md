@@ -7,7 +7,7 @@
 
 **Blocked by:** 20a（已 done，2026-09-26）
 
-**Status:** done (落库 `5efef6b`, 2026-09-26 15:50)
+**Status:** done (落库 `5efef6b`, 2026-09-26 15:50；2026-09-27 验收区按实际设计改写并逐箱核验，见下)
 
 ## 实际做法与工单原文的差别（重要，别照旧文字找）
 
@@ -55,15 +55,17 @@ PI 的 `ModelRuntime` 在 **worker_thread 里直接 `ModelConfig.load` 整个文
 2. **`apiKey === undefined` 表示保留已存密钥**，不得写成空串或密文空串。
 3. **写后回读核对**，把结果回报 UI —— 写错让用户看到，不要静默。
 
-## 验收
+## 验收（2026-09-27 改写并逐箱核验——原文按"信封写进 models.json"的旧设想写，与上表实际设计矛盾，故按实际口径判定并在每条注明出处）
 
-- [ ] 新写入的模型 `apiKey` 在磁盘上是信封形态（`<alg>|<base64>`），grep 不到明文
-- [ ] 旧明文文件首次读取照常可用，并在下一次保存时迁移为密文；迁移有日志
-- [ ] 迁移失败保底：明确报错，不清空配置、不丢模型
-- [ ] 解密失败报出字段名（哪个模型、哪个字段），不静默降级为空
-- [ ] 明文不进 JSONL / 诊断日志 —— 与既有脱敏层协同，写一条负向用例（把 key 塞进日志能被抓到）
-- [ ] 模型列表、切换、推理强度选择在加密后全部正常（含 `reasoning` / `compat` 字段未被破坏）
-- [ ] 单元覆盖存 / 取 / 迁移 / 失败四条路径，并做负向验证（退回旧实现断言必须 FAIL）
+- [x] 新写入的模型 key 在磁盘上不含明文 — 实际形态：`models.json` 只存 `${FLEXAGENT_KEY_<PROVIDER>}` 引用，真 key 封存在 `~/.flexagent/model-keys.json` 的 `ss1|` 信封里。`.scratch/probe-keyshape.mjs` **5/5**：models.json 全 provider 分类为 引用/用户模板（0 个原文 key 嫌疑），model-keys.json 逐值 isEnvelope，信封头 `ss1`（不打印任何 key 值）。
+- [x] 旧明文文件首次读取照常可用，并迁移为密文；迁移有日志 — `kernel.applyModelKeys` 每次读前跑 `migratePlaintextKeys`（读路径迁移，不等用户编辑）；`scripts/qa-model-key-vault.mjs` 29/29 中 `the migration names the provider it moved` / `the migrated file has no plaintext` / `the migrated key is readable` / `a second pass moves nothing` 四连；用户自写的 `$VAR`/`!cmd` 模板不动（`adoptPlaintextKey` 明示）。
+- [x] 迁移/写入失败保底：明确报错，不清空配置、不丢模型 — 存储损坏时 `readStore` 抛 `KERNEL_INTERNAL: Model key store is unreadable … not overwriting it`（坏文件不被覆盖）；qa-model-key-vault `the broken entry is reported` / `it is not handed over as a key` / `the provider is named for cleanup`；`qa-model-settings` 20/20 证明存取往返后 `models.json` 逐字节还原、既有 provider 不变。
+- [x] 解密失败报出字段名（哪个 provider），不静默降级为空 — `decryptSecret(value, \`model key for "<provider>"\`)`；失败进 `ModelKeysRead.unreadable` 按名上报（probe-keyshape：应用外解不开 `ss1` 信封 → `unreadable=[USTC]`、0 个假可读）；qa 断言 `its error log names the provider, not the key` 且 `does not interpolate the key`。
+- [x] 明文不进 JSONL / 诊断日志 — 负向用例在 `scripts/diag-security.mjs` **32/32**：`sk-proj-` 类 key 经 `redactSecrets` 后消失、audit 自身字段 `sk-zzz` 不出现在 JSONL（`audit masks secrets inside its own fields`）；模型 key 走进程通道不走环境（`qa-model-key-vault: it injects through the runtime, not the environment`），env 不被 bash 子进程继承。
+- [x] 模型列表、切换、推理强度选择在加密后全部正常（`reasoning`/`compat` 等字段未被破坏） — `qa-model-routing.mjs` **34/34**、`qa-model-settings.mjs` **20/20**（列表/表单/会话内切换无需重启/composer picker 列出新模型/删除还原基线）；当日真机 probe：`listCustomModels` 10/10 `apiKeySet=true` 且无原始 key，image 走查内 `setModel` 切换后完成一次带鉴权的多模态回合（会话 945ba190）。
+- [x] 覆盖存 / 取 / 迁移 / 失败四条路径，并做负向验证（退回旧实现断言必须 FAIL） — 形式修正：这四条由集成级脚本 `scripts/qa-model-key-vault.mjs`（29/29，真实 fs + vault）覆盖，非 vitest 单测（Electron safeStorage 不在 vitest 射程内）。负向验证已做并写进落库信息（`5efef6b`）：*reverting the save path to writing the key straight through fails five of them, including the one that greps the file for the plaintext*。
+
+> 2026-09-27 附带修复（同批验收中发现的既有脚本破损，非本票引入）：`qa-credential-vault.mjs` 收尾 `rmSync(undefined)` 崩溃（解构字符串）→ 24/24 exit 0；`qa-context-refs.mjs` 被 11 号票引入的值导入 `../types` 目录解析打断 → 加 `module.registerHooks` 解析垫片，15/15 恢复；`qa-model-settings.mjs` 的 composer picker 选择器被 07 号票的 plan-mode 按钮截胡 → 改用 `composer-model-chip` testid，20/20。
 
 ## 风险
 

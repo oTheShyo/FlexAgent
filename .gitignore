@@ -24,3 +24,7 @@ scripts/diag-model-*.mjs
 # next to the source, and `.impeccable/` is review-tool output.
 electron.vite.config.*.mjs
 .impeccable/
+# Diagnostic walkthroughs leave probes, state, and generated images next to the
+# tracked .scratch/zcode-gap tickets; keep the tree visible but the debris out.
+/.scratch/*
+!/.scratch/zcode-gap/

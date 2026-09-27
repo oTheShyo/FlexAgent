@@ -134,6 +134,10 @@
   - **11** 撤"部分"：`image` **10/10**——合成 PNG（`FLEX-42 SAYS HELLO`）粘贴→托盘→Send→模型原文读出（会话 945ba190）；前提 = 模型目录声明 `input:["text","image"]`（`~/.pi/agent/models.json`，否则 Pi 注入"不支持图片"占位）；docs/image-attachments.md §4 已同步。
   - **16** 验收 8：`subagent` **9/9**——saveCustomAgent 建 walker-scribe → 真实 task 回合 14s → `ok (5.9s)` → 产出 `walker-out.txt` → 白名单未绕过（会话 85f9b816）；顺带修出 settings CRUD→worker loader 缓存失效真 bug（`3049ea4` = `registerCustomAgentsIpc(kernel)` + `reloadResources`）。
   - **25** 验收 2：`FlexAgent-0.1.0-setup.exe`（222,703,248 B）`/S` 静默安装 → 安装版 ui **17/17** + 脱敏探针（`apiKeySet=true` 无原始 key、无 key 命名 IPC、model-keys.json 独立在盘）。
+- **第二波具名残留收口**（2026-09-27 晚间，六票之外复扫发现 01/18/26 的 done 状态下也压着未勾箱）：
+  - **01** 6/6 核验收口：根目录未跟踪 0、`.gitignore` 补 `/.scratch/*`+`!/.scratch/zcode-gap/` 后 `git status` 全净、子系统前缀提交成体系、HEAD 含全部子系统文件与 docs/scripts、`npm run check` 绿。
+  - **18** 两箱闭环：`@` 真实文件列举接 27 落库后核验（`qa-workspace-files` **26/26**，renderer `listWorkspaceFiles` 接线在位）；端到端引用补真机 e2e **7/7**（CDP 真 `prompt({references})` → 转录 user 消息含 `<reference kind="file">` 块与文件正文，脚本 `.scratch/probe-ref-e2e.mjs`）。
+  - **26** 验收区 7 箱按实际"引用+信封"设计改写并全勾：`probe-keyshape` **5/5**（盘上零原文 key，`ss1` 信封）、`qa-model-key-vault` **29/29**（迁移/坏项/日志）、`qa-model-routing` **34/34**、`qa-model-settings` **20/20**、`diag-security` **32/32**（脱敏负向）；负向验证见 `5efef6b` 落库信息（退回明文直写挂 5 项）。附带修好三个既有破损脚本：`qa-credential-vault` 收尾崩溃（24/24 exit 0）、`qa-context-refs` 目录解析（`registerHooks` 垫片，15/15）、`qa-model-settings` picker 选择器（`composer-model-chip`，20/20）。
 
 ## 复核记录（2026-09-26 15:10）
 
