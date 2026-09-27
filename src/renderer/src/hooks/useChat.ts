@@ -6,6 +6,8 @@ import {
   type ContractErrorCode,
   type FileChange,
   type GoalStateSummary,
+  type PlanState,
+  type RespondPlanInput,
   type KernelEvent,
   type ModelConfig,
   type ModelOption,
@@ -80,6 +82,10 @@ export interface UseChatResult {
   goal: GoalStateSummary | null
   /** The message a goal_update carried, for the transcript. */
   goalMessage: string | null
+  /** Pending or settled plan for the active session (ticket 07); null = none. */
+  plan: PlanState | null
+  /** Approve / request changes / cancel. Rejections carry the feedback. */
+  respondPlan: (input: Omit<RespondPlanInput, 'sessionId'>) => Promise<void>
   /** Answer it. Stops the countdown as a side effect of settling it. */
   respondQuestion: (questionId: string, answer: string) => Promise<void>
   /** Stop one question's countdown for good. */
@@ -231,6 +237,7 @@ export function useChat(): UseChatResult {
   const [pendingQuestion, setPendingQuestion] = useState<QuestionNotice | null>(null)
   const [goal, setGoal] = useState<GoalStateSummary | null>(null)
   const [goalMessage, setGoalMessage] = useState<string | null>(null)
+  const [plan, setPlan] = useState<PlanState | null>(null)
 
   const unsubRef = useRef<(() => void) | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -473,6 +480,11 @@ export function useChat(): UseChatResult {
         setGoalMessage(event.message)
         break
       }
+      case 'plan_update': {
+        setPlan(event.plan)
+        setItems((prev) => [...prev, { kind: 'notice', text: event.message }])
+        break
+      }
       case 'file_changes': {
         setFiles(event.files)
         break
@@ -517,6 +529,7 @@ export function useChat(): UseChatResult {
       setPendingPermission(null)
       setGoal(null)
       setGoalMessage(null)
+      setPlan(null)
       setHistoryLoading(true)
       try {
         const detail = await codexApi.openSession(sessionId)
@@ -530,6 +543,13 @@ export function useChat(): UseChatResult {
           .getGoal?.(sessionId)
           .then((state) => {
             setGoal(state ?? null)
+          })
+          .catch(() => {})
+        // Ticket 07: same reasoning — the plan outlives the event stream.
+        void codexApi
+          .getPlan?.(sessionId)
+          .then((state) => {
+            setPlan(state ?? null)
           })
           .catch(() => {})
         unsubRef.current = codexApi.subscribe(sessionId, handleEvent)
@@ -703,6 +723,26 @@ export function useChat(): UseChatResult {
       }
     },
     [activeSessionId, refreshSessions, openSession]
+  )
+
+  /**
+   * Plan decision (ticket 07). The worker owns the consequences — approving
+   * flips the mode and starts execution, rejecting sends the feedback back for
+   * a revision — so this only forwards the click and reports the outcome.
+   */
+  const respondPlan = useCallback(
+    async (input: Omit<RespondPlanInput, 'sessionId'>): Promise<void> => {
+      const sessionId = activeIdRef.current
+      if (sessionId === null) return
+      try {
+        const result = await codexApi.respondPlan({ sessionId, ...input })
+        if (result.state !== undefined) setPlan(result.state)
+        setItems((prev) => [...prev, { kind: 'notice', text: result.message }])
+      } catch (err) {
+        setItems((prev) => [...prev, errorItemFrom(err)])
+      }
+    },
+    []
   )
 
   const newChat = useCallback(
@@ -1036,6 +1076,8 @@ export function useChat(): UseChatResult {
     pendingQuestion,
     goal,
     goalMessage,
+    plan,
+    respondPlan,
     respondQuestion,
     stopQuestionTimer,
     createSession,

@@ -107,6 +107,55 @@ export interface GoalCommandResult {
   message: string
 }
 
+// ─── Plan mode (ticket 07) ───────────────────────────────────────────────────
+
+/** One step of the agent's proposed plan, in the order it listed them. */
+export interface PlanStep {
+  /** 1-based. */
+  index: number
+  text: string
+}
+
+/**
+ * A plan waits for a human: `draft`. From there it is approved (writes unlock
+ * and execution starts), rejected (the agent revises with the feedback), or
+ * cancelled (dropped; planning continues without one on screen).
+ */
+export type PlanStatus = 'draft' | 'approved' | 'rejected' | 'cancelled'
+
+export interface PlanState {
+  sessionId: string
+  /** The assistant message the plan was derived from, verbatim. */
+  text: string
+  /** Parsed checklist; empty when the prose had no list structure. */
+  steps: PlanStep[]
+  status: PlanStatus
+  createdAt: number
+  updatedAt: number
+  /** What the user asked to change when rejecting. */
+  note?: string
+  /**
+   * Writes refused by the permission layer while this plan waited for a
+   * decision. Proof the block was real, not just a prompt asking nicely.
+   */
+  blockedWrites?: number
+}
+
+export interface RespondPlanInput {
+  sessionId: SessionId
+  decision: 'approve' | 'reject' | 'cancel'
+  /** Required for `reject`: what should change. */
+  note?: string
+}
+
+export interface RespondPlanResult {
+  state?: PlanState
+  /** Human-readable outcome, including why a decision was refused. */
+  message: string
+  /** Mode the session runs in after the decision (approve moves it out of plan). */
+  mode?: PermissionMode
+}
+
 export interface SessionDetail {
   summary: SessionSummary
   /** Full visible transcript for this session (UI-only messages included). */
@@ -1528,6 +1577,12 @@ export type KernelEvent =
    * goal state; the full history lives in the session's goal.
    */
   | (EventMeta & { type: 'goal_update'; goal: GoalStateSummary; message: string })
+  /**
+   * Plan mode (ticket 07): a draft plan is on the table, or a decision landed.
+   * The UI shows the step list with approve / revise / cancel; the transcript
+   * gets the message so the outcome survives a session reload.
+   */
+  | (EventMeta & { type: 'plan_update'; plan: PlanState; message: string })
   /** Async failure during a run. Run may still settle afterward. */
   | (EventMeta & {
       type: 'error'
@@ -1607,6 +1662,13 @@ export interface CodexApi {
   goalCommand(input: GoalCommandInput): Promise<GoalCommandResult>
   /** Current goal state for the session; undefined = no goal. */
   getGoal(sessionId: SessionId): Promise<GoalStateSummary | undefined>
+
+  // ─── Plan mode (ticket 07) ─────────────────────────────────────────────────
+
+  /** The session's current plan; undefined = none. */
+  getPlan(sessionId: SessionId): Promise<PlanState | undefined>
+  /** Approve, reject (with feedback), or cancel the pending plan. */
+  respondPlan(input: RespondPlanInput): Promise<RespondPlanResult>
 
   /**
    * Submit user text. Resolves when accepted (not when the run finishes).
@@ -1825,6 +1887,8 @@ export const IPC = {
   forkSession: 'codex:forkSession',
   goalCommand: 'codex:goalCommand',
   getGoal: 'codex:getGoal',
+  getPlan: 'codex:getPlan',
+  respondPlan: 'codex:respondPlan',
   prompt: 'codex:prompt',
   abort: 'codex:abort',
   respondPermission: 'codex:respondPermission',

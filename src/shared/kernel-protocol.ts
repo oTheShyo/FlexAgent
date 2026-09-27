@@ -166,6 +166,14 @@ export type WorkerRequest =
   | { requestId: string; type: 'abort'; sessionId: SessionId }
   | { requestId: string; type: 'goalCommand'; sessionId: SessionId; raw: string }
   | { requestId: string; type: 'getGoal'; sessionId: SessionId }
+  | { requestId: string; type: 'getPlan'; sessionId: SessionId }
+  | {
+      requestId: string
+      type: 'respondPlan'
+      sessionId: SessionId
+      decision: 'approve' | 'reject' | 'cancel'
+      note?: string
+    }
   | { requestId: string; type: 'respondPermission'; sessionId: SessionId; toolCallId: ToolCallId; decision: 'allowOnce' | 'allowSession' | 'deny' }
   | { requestId: string; type: 'respondQuestion'; sessionId: SessionId; questionId: string; answer: string }
   | { requestId: string; type: 'stopQuestionTimer'; sessionId: SessionId; questionId: string }

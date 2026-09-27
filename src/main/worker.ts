@@ -23,7 +23,8 @@ import {
   type ThinkingLevel,
   type ToolCallId,
   type UsageReport,
-  type GoalStateSummary
+  type GoalStateSummary,
+  type PlanState
 } from '../shared/contract'
 import type {
   ApplyModelKeysResult,
@@ -73,6 +74,16 @@ import {
   recordVerification,
   shouldVerifyOnSettle
 } from './goalRunner'
+import {
+  PLAN_EXECUTION_MODE,
+  approvePlan,
+  buildPlanPrompt,
+  buildRejectionPrompt,
+  cancelPlan,
+  goalBlocksPlan,
+  rejectPlan
+} from './planMode'
+import { clearPlan, draftPlan, readPlan, recordBlockedWrite, setPlan } from './planRunner'
 import { createAskUserExtension, type AskUserAnswer, type AskUserRequest } from './askUser'
 import { observeEvent, observeLlmCall } from './observability'
 import { PermissionGate, PermissionMemory, describeDenials } from './permissionGate'
@@ -995,6 +1006,46 @@ function ok(requestId: string, result?: unknown): void {
   port!.postMessage({ requestId, type: 'ok', result } satisfies WorkerResponse)
 }
 
+/**
+ * Plan mode (ticket 07): when a run settles in plan mode, whatever the agent
+ * just wrote IS its proposal. Turn it into the draft on the table so the user
+ * has something concrete to approve rather than a prose trail to re-read.
+ */
+async function maybeDraftPlan(host: HostSession): Promise<void> {
+  if (host.mode !== 'plan') return
+  try {
+    const text = await lastAssistantText(host)
+    const plan = draftPlan(host.sessionId, text, Date.now())
+    if (plan === null) return
+    emitPlanUpdate(
+      host.sessionId,
+      plan,
+      plan.steps.length > 0
+        ? `Plan ready — ${plan.steps.length} step(s) awaiting approval.`
+        : 'Plan ready — awaiting approval.'
+    )
+  } catch (err) {
+    try {
+      observeEvent(host.sessionId, {
+        kind: 'plan',
+        message: err instanceof Error ? err.message : String(err)
+      })
+    } catch {
+      // Observability is best-effort.
+    }
+  }
+}
+
+function emitPlanUpdate(sessionId: SessionId, plan: unknown, message: string): void {
+  emit(sessionId, {
+    type: 'plan_update',
+    plan: plan as PlanState,
+    message,
+    sessionId,
+    ts: Date.now()
+  })
+}
+
 function requireSession(sessionId: SessionId): HostSession {
   const host = sessions.get(sessionId)
   if (!host) throw new ContractError('SESSION_NOT_FOUND', `Unknown session: ${sessionId}`)
@@ -1583,6 +1634,18 @@ function setupPermissionGate(host: HostSession): void {
 
     if (verdict.outcome === 'deny') {
       host.denials.set(toolCallId, { name, reason: verdict.reason })
+      // Plan mode (ticket 07): the block is the product. Surface the count so
+      // the user can see writes were actually refused, not merely unrequested.
+      if (host.mode === 'plan') {
+        const plan = recordBlockedWrite(host.sessionId)
+        if (plan !== undefined) {
+          emitPlanUpdate(
+            host.sessionId,
+            plan,
+            `Blocked a write attempt (${plan.blockedWrites ?? 1}) — plan mode is read-only.`
+          )
+        }
+      }
       return { block: true, reason: verdict.reason }
     }
 
@@ -1863,6 +1926,7 @@ async function handleAgentEvent(host: HostSession, raw: { type?: string; [k: str
       // "continue". Both fire only from here: one worker thread means a
       // verification IS a turn, and prompting mid-run would interleave.
       void maybeRunGoalStep(host)
+      void maybeDraftPlan(host)
       break
     }
     case 'auto_retry_start': {
@@ -2640,10 +2704,34 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'setPermissionMode': {
       const host = sessions.get(req.sessionId)
+      // Mutual exclusion (ticket 07): plan mode waits for a human, goal mode
+      // stops waiting for one. Refusing here rather than in the UI means the
+      // rule holds for every caller, not only the one that renders a tooltip.
+      if (req.mode === 'plan') {
+        const goal = host === undefined ? undefined : readGoal(req.sessionId)
+        const conflict = goalBlocksPlan(goal?.text)
+        if (conflict !== null) throw new ContractError('INVALID_INPUT', conflict)
+      }
       // Persist the global default even when no session exists yet, so a mode
       // chosen before the first chat still applies to it.
       writeDefaultPermissionMode(req.mode)
-      if (host) host.mode = req.mode
+      if (host) {
+        // Leaving plan mode by hand drops the pending plan: an unapproved plan
+        // must not still be "the plan" once writes are allowed again.
+        if (host.mode === 'plan' && req.mode !== 'plan') {
+          const stale = readPlan(req.sessionId)
+          if (stale !== undefined && stale.status === 'draft') {
+            emitPlanUpdate(
+              req.sessionId,
+              setPlan(req.sessionId, cancelPlan(stale, Date.now())),
+              'Plan cancelled — left plan mode without approving it.'
+            )
+          }
+        }
+        // Applied to the live host, so the next tool call already sees it:
+        // the gate reads host.mode per call, there is no cached decision.
+        host.mode = req.mode
+      }
       return req.mode
     }
     case 'listPermissionRules': {
@@ -2660,6 +2748,48 @@ async function handleRequest(req: WorkerRequest): Promise<unknown> {
     }
     case 'getGoal': {
       return readGoal(req.sessionId)
+    }
+    case 'getPlan': {
+      return readPlan(req.sessionId)
+    }
+    case 'respondPlan': {
+      const host = requireSession(req.sessionId)
+      const plan = readPlan(req.sessionId)
+      if (plan === undefined || plan.status !== 'draft') {
+        throw new ContractError('INVALID_INPUT', 'there is no plan awaiting a decision')
+      }
+      const now = Date.now()
+
+      if (req.decision === 'cancel') {
+        const cancelled = setPlan(req.sessionId, cancelPlan(plan, now))
+        emitPlanUpdate(req.sessionId, cancelled, 'Plan cancelled.')
+        return { state: cancelled, message: 'Plan cancelled.', mode: host.mode }
+      }
+
+      if (req.decision === 'reject') {
+        const note = (req.note ?? '').trim()
+        if (note.length === 0) {
+          throw new ContractError('INVALID_INPUT', 'rejecting a plan needs the feedback to revise it')
+        }
+        const rejected = setPlan(req.sessionId, rejectPlan(plan, note, now))
+        emitPlanUpdate(req.sessionId, rejected, `Changes requested: ${note}`)
+        // Stay in plan mode: the revision is another read-only turn, and the
+        // next settle replaces this plan with the revised draft.
+        void host.session.prompt(buildRejectionPrompt(note)).catch(() => {
+          // A failed revision prompt must not wedge the session.
+        })
+        return { state: rejected, message: 'Changes requested.', mode: host.mode }
+      }
+
+      // Approve: the plan becomes the next turn and writes unlock.
+      const approved = setPlan(req.sessionId, approvePlan(plan, now))
+      host.mode = PLAN_EXECUTION_MODE
+      writeDefaultPermissionMode(PLAN_EXECUTION_MODE)
+      emitPlanUpdate(req.sessionId, approved, 'Plan approved — executing it now.')
+      void host.session.prompt(buildPlanPrompt(plan)).catch(() => {
+        // A failed execution prompt must not wedge the session.
+      })
+      return { state: approved, message: 'Plan approved.', mode: PLAN_EXECUTION_MODE }
     }
     case 'disposeSession': {
       const host = sessions.get(req.sessionId)

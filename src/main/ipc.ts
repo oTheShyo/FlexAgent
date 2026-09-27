@@ -325,6 +325,43 @@ export function registerIpcHandlers(
     })
   )
 
+  ipcMain.handle(IPC.getPlan, (_e, sessionId: unknown) =>
+    guard(async () => {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new ContractError('INVALID_INPUT', 'sessionId is required')
+      }
+      registry.require(sessionId)
+      return (await kernel.request({ type: 'getPlan', sessionId })) as unknown | undefined
+    })
+  )
+
+  ipcMain.handle(
+    IPC.respondPlan,
+    (_e, input: { sessionId?: unknown; decision?: unknown; note?: unknown }) =>
+      guard(async () => {
+        if (input === null || typeof input !== 'object') {
+          throw new ContractError('INVALID_INPUT', 'expected { sessionId, decision }')
+        }
+        if (typeof input.sessionId !== 'string' || !input.sessionId) {
+          throw new ContractError('INVALID_INPUT', 'sessionId must be a non-empty string')
+        }
+        const { decision } = input
+        if (decision !== 'approve' && decision !== 'reject' && decision !== 'cancel') {
+          throw new ContractError('INVALID_INPUT', "decision must be 'approve', 'reject' or 'cancel'")
+        }
+        if (decision === 'reject' && typeof input.note !== 'string') {
+          throw new ContractError('INVALID_INPUT', 'reject requires a note')
+        }
+        registry.require(input.sessionId)
+        return (await kernel.request({
+          type: 'respondPlan',
+          sessionId: input.sessionId,
+          decision,
+          ...(typeof input.note === 'string' ? { note: input.note } : {})
+        })) as unknown
+      })
+  )
+
   ipcMain.handle(IPC.openSession, (_e, sessionId: unknown) =>
     guard(async () => {
       const perf = perfStart()

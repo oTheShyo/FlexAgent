@@ -56,6 +56,9 @@ import {
   type GoalCommandInput,
   type GoalCommandResult,
   type GoalStateSummary,
+  type PlanState,
+  type RespondPlanInput,
+  type RespondPlanResult,
   type RemovePermissionRuleInput,
   type SavePermissionRuleInput,
   type PromptInput,
@@ -192,6 +195,10 @@ const codex: CodexApi = {
   goalCommand: (input: GoalCommandInput) => invoke<GoalCommandResult>(IPC.goalCommand, input),
 
   getGoal: (sessionId: SessionId) => invoke<GoalStateSummary | undefined>(IPC.getGoal, sessionId),
+
+  getPlan: (sessionId: SessionId) => invoke<PlanState | undefined>(IPC.getPlan, sessionId),
+
+  respondPlan: (input: RespondPlanInput) => invoke<RespondPlanResult>(IPC.respondPlan, input),
 
   prompt: (input: PromptInput) => invoke(IPC.prompt, input),
 

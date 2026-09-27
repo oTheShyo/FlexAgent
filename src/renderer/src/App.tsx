@@ -86,6 +86,8 @@ export default function App({ children }: AppProps) {
     pendingQuestion,
     goal,
     goalMessage,
+    plan,
+    respondPlan,
     respondQuestion,
     stopQuestionTimer,
     send,
@@ -692,6 +694,13 @@ export default function App({ children }: AppProps) {
 
   const permission = usePermissionMode(activeSessionId)
 
+  // Ticket 07: surface a refused mode switch (goal mode vs plan mode) instead
+  // of letting it disappear into the hook's error string.
+  const [modeConflict, setModeConflict] = useState<string | null>(null)
+  useEffect(() => {
+    if (permission.error !== null) setModeConflict(permission.error)
+  }, [permission.error])
+
   // The scratch workspace is the absence of a project, not a project named
   // "scratch" — so it never reaches the composer chip or the sidebar grouping.
   const activeProjectCwd =
@@ -722,6 +731,8 @@ export default function App({ children }: AppProps) {
         goal={goal}
         goalMessage={goalMessage}
         onGoalCommand={(raw) => void send(raw)}
+        plan={plan}
+        onRespondPlan={(input) => void respondPlan(input)}
       />
     ) : historyLoading === true ? (
       <ChatSkeleton />
@@ -804,6 +815,26 @@ export default function App({ children }: AppProps) {
 
           {connectionState === 'degraded' && connectionMessage !== undefined && (
             <ConnectionBanner message={connectionMessage} onRetry={handleRetryConnection} />
+          )}
+
+          {/* Ticket 07: planning and a running goal are opposite postures, so the
+              switch is refused in the worker. Without this banner the refusal is
+              silent — setMode() only holds an error string nobody rendered. */}
+          {modeConflict !== null && (
+            <div
+              role="status"
+              data-testid="mode-conflict-banner"
+              className="border-b border-[var(--border)] bg-[var(--surface-sunken)] px-4 py-2 text-xs text-[var(--text-secondary)]"
+            >
+              <span className="mr-2">{modeConflict}</span>
+              <button
+                type="button"
+                className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] hover:bg-[var(--surface)]"
+                onClick={() => setModeConflict(null)}
+              >
+                Dismiss
+              </button>
+            </div>
           )}
 
           <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--content-bg)]">

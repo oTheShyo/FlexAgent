@@ -12,6 +12,8 @@ import {
   type ForkSessionInput,
   type GoalCommandResult,
   type GoalStateSummary,
+  type PlanState,
+  type RespondPlanResult,
   type CustomModelEntry,
   type CustomModelRef,
   type CustomModelSaveInput,
@@ -903,6 +905,18 @@ export class MockCodexApi implements CodexApi {
 
   async getGoal(_sessionId: string): Promise<GoalStateSummary | undefined> {
     return undefined
+  }
+
+  async getPlan(_sessionId: string): Promise<PlanState | undefined> {
+    return undefined
+  }
+
+  async respondPlan(_input: {
+    sessionId: string
+    decision: 'approve' | 'reject' | 'cancel'
+    note?: string
+  }): Promise<RespondPlanResult> {
+    throw new ContractError('INVALID_INPUT', 'mock api has no plan mode')
   }
 
   async pickDirectory(): Promise<string | null> {

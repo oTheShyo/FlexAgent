@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { ChatItem, ModelRetryState } from '../hooks/useChat'
-import type { ChatMessage, GoalStateSummary } from '../types'
+import type { ChatMessage, GoalStateSummary, PlanState } from '../types'
 import { LoadingIndicator } from './LoadingIndicator'
 import { GoalCard } from './GoalCard'
+import { PlanCard } from './PlanCard'
 import { Markdown } from './Markdown'
 import { CheckIcon, CopyIcon, ForkIcon, RegenerateIcon } from './icons'
 import SelectionToolbar from './SelectionToolbar'
@@ -37,6 +38,10 @@ export interface ChatViewProps {
   goalMessage?: string | null
   /** Goal controls (ticket 06): send a /goal command as the user would. */
   onGoalCommand?: (raw: string) => void
+  /** Plan mode (ticket 07): the session's plan, or null. */
+  plan?: PlanState | null
+  /** Approve / request changes / cancel the plan. */
+  onRespondPlan?: (input: { decision: 'approve' | 'reject' | 'cancel'; note?: string }) => void
 }
 
 const AssistantContent = memo(function AssistantContent({
@@ -436,7 +441,9 @@ export function ChatView({
   onFork,
   goal = null,
   goalMessage = null,
-  onGoalCommand
+  onGoalCommand,
+  plan = null,
+  onRespondPlan
 }: ChatViewProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastItem = items.length > 0 ? items[items.length - 1] : null
@@ -535,6 +542,11 @@ export function ChatView({
               <span className="block text-[var(--text-subtle)]">{goalMessage}</span>
             )}
           </p>
+        </div>
+      )}
+      {plan !== null && onRespondPlan !== undefined && (
+        <div className="px-4 pt-3">
+          <PlanCard plan={plan} onRespond={onRespondPlan} />
         </div>
       )}
       {items.length === 0 ? (
