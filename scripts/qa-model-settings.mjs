@@ -323,7 +323,9 @@ async function main() {
   const pickerHasIt = await evaluate(
     cdp,
     `(async () => {
-      const chip = document.querySelector('[data-testid="composer"] button[aria-haspopup="menu"]')
+      // The composer's first haspopup button is the plan-mode chip (ticket 07
+      // landed after this script); the model menu hangs off its own testid.
+      const chip = document.querySelector('[data-testid="composer-model-chip"]')
       if (!chip) return 'no-chip'
       chip.click()
       await new Promise((r) => setTimeout(r, 400))

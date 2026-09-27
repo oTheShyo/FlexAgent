@@ -278,7 +278,10 @@ async function main() {
       HTTP_TOKEN
   )
 
-  for (const { root } of [home, hermetic.root]) rmSync(root, { recursive: true, force: true })
+  // Both entries are plain paths (`home` is a string; `hermetic.root` is the
+  // root string from freshHome) — destructuring them as { root } yielded
+  // undefined and crashed teardown after every check had already passed.
+  for (const root of [home, hermetic.root]) rmSync(root, { recursive: true, force: true })
 
   const broken = results.filter((r) => !r.ok)
   console.log(`\n${results.length - broken.length}/${results.length} passed`)

@@ -18,6 +18,30 @@
  * red. A check that still passes without the limit is not a test.
  */
 import { setTimeout as delay } from 'node:timers/promises'
+import { registerHooks } from 'node:module'
+
+// Renderer sources import sibling types as bare directory specifiers
+// ('../types'), which the bundler resolves to types/index.ts but Node ESM
+// does not. Type-only imports are stripped before resolution, so only value
+// imports (e.g. IMAGE_ATTACHMENT_LIMITS) ever reach this hook.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const relative = specifier.startsWith('./') || specifier.startsWith('../')
+    const hasExt = /\.[cm]?[jt]sx?$/.test(specifier)
+    if (relative && !hasExt) {
+      // Bundler-style specifiers Node ESM rejects: a bare file stem
+      // ('../reasoningEffort') or a directory ('../types').
+      for (const candidate of [`${specifier}.ts`, `${specifier}/index.ts`]) {
+        try {
+          return nextResolve(candidate, context)
+        } catch {
+          // try the next candidate
+        }
+      }
+    }
+    return nextResolve(specifier, context)
+  }
+})
 
 const results = []
 function check(name, ok, detail = '') {
