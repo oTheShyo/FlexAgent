@@ -84,7 +84,7 @@ export function buildSandboxEnv(input: {
     for (const [key, value] of Object.entries(input.parent ?? process.env)) {
       if (value !== undefined) all[key] = value
     }
-    return { ...all, ...(input.overlay ?? {}) }
+    return { ...all, ...input.overlay }
   }
 
   const minimal: Record<string, string> = {}
@@ -93,7 +93,7 @@ export function buildSandboxEnv(input: {
     const value = parent[key]
     if (typeof value === 'string' && value.length > 0) minimal[key] = value
   }
-  return { ...minimal, ...(input.overlay ?? {}) }
+  return { ...minimal, ...input.overlay }
 }
 
 /**

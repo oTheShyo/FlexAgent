@@ -122,7 +122,7 @@ export function readModelKeys(): ModelKeysRead {
 /** Seal one provider's key. An empty plaintext removes the entry instead. */
 export function putModelKey(provider: string, plaintext: string): void {
   const store = readStore()
-  const keys = { ...(store.keys ?? {}) }
+  const keys = { ...store.keys }
   if (plaintext.trim().length === 0) delete keys[provider]
   else keys[provider] = encryptSecret(plaintext.trim())
   writeStore({ keys })
@@ -130,7 +130,7 @@ export function putModelKey(provider: string, plaintext: string): void {
 
 export function dropModelKey(provider: string): void {
   const store = readStore()
-  const keys = { ...(store.keys ?? {}) }
+  const keys = { ...store.keys }
   if (keys[provider] === undefined) return
   delete keys[provider]
   writeStore({ keys })

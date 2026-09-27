@@ -5,8 +5,7 @@ import {
   buildSandboxEnv,
   isPathAllowed,
   mergeCapabilities,
-  resolveSandboxCwd,
-  sandboxRoots
+  resolveSandboxCwd
 } from '../sandbox'
 import type { PluginCapabilities } from '../../shared/contract'
 
@@ -318,7 +317,7 @@ export async function runHook(options: HookRunOptions): Promise<HookRunResult> {
 
   const overlay = {
     ...createHookEnvOverlay(options.plugin, options.cwd),
-    ...(options.env ?? {})
+    ...options.env
   }
   const env =
     caps === undefined

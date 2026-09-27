@@ -13,8 +13,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'path'
 import { pluginsStorageRoot } from './pluginRegistry'
 
-const OVERRIDES_FILE = join(pluginsStorageRoot(), 'mcp-server-overrides.json')
-
 export type PluginMcpServerOverrides = Record<string, { enabled: boolean }>
 
 function overridesPath(): string {
