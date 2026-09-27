@@ -17,6 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { ContractError } from '../../shared/contract'
 import { READ_TOOLS, ROLES, WRITE_TOOLS, withContract, type AgentRole } from './roles'
 
 export const AGENTS_HOME =
@@ -394,6 +395,21 @@ export function isBuiltinName(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(ROLES, name)
 }
 
+/**
+ * Security: the name is joined into a path, so it must be validated as the
+ * raw string — never as the comment-stripped scalar `stripScalar` produces
+ * during parsing, or `slug #/../../x` passes validation and writes outside
+ * AGENTS_HOME.
+ */
+export function assertSafeAgentName(raw: string): void {
+  if (typeof raw !== 'string' || !NAME_RE.test(raw) || raw.includes('..')) {
+    throw new ContractError(
+      'INVALID_INPUT',
+      `invalid subagent name ${JSON.stringify(raw)}: expected a lowercase slug (letters, digits, "-", "_")`
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Settings-page CRUD (main process only; never called from the worker)
 // ---------------------------------------------------------------------------
@@ -431,6 +447,7 @@ export function saveCustomAgent(
   def: CustomAgentInput,
   dir: string = AGENTS_HOME
 ): { role: AgentRole; diagnostics: AgentDiagnostic[] } {
+  assertSafeAgentName(def.name)
   const file = join(dir, `${def.name}.md`)
   const reserved = new Set(Object.keys(ROLES))
   const existing = definitionFiles(dir).filter(
@@ -451,8 +468,9 @@ export function saveCustomAgent(
 }
 
 export function deleteCustomAgent(name: string, dir: string = AGENTS_HOME): void {
+  assertSafeAgentName(name)
   if (isBuiltinName(name)) {
-    throw new Error(`built-in role "${name}" cannot be deleted`)
+    throw new ContractError('INVALID_INPUT', `built-in role "${name}" cannot be deleted`)
   }
   const file = join(dir, `${name}.md`)
   if (!existsSync(file)) throw new Error(`no subagent definition named "${name}"`)
@@ -464,8 +482,9 @@ export function setCustomAgentEnabled(
   enabled: boolean,
   dir: string = AGENTS_HOME
 ): AgentRole {
+  assertSafeAgentName(name)
   if (isBuiltinName(name)) {
-    throw new Error(`built-in role "${name}" cannot be modified`)
+    throw new ContractError('INVALID_INPUT', `built-in role "${name}" cannot be modified`)
   }
   const file = join(dir, `${name}.md`)
   if (!existsSync(file)) throw new Error(`no subagent definition named "${name}"`)

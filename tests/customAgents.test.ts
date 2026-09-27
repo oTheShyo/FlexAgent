@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -193,5 +193,87 @@ describe('loadAgentRegistry', () => {
     expect(registry.all.map((role) => role.name)).toContain('off-x')
     expect(isBuiltinName('researcher')).toBe(true)
     expect(isBuiltinName('on-x')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R1 (path traversal): the renderer-supplied name is joined into
+// `AGENTS_HOME/<name>.md`, so every traversal shape must throw BEFORE the fs
+// call that would honour it. `slug #/../../x` is the subtle one — NAME_RE only
+// ever sees the scalar after stripScalar has trimmed the `#` comment, while
+// the path is built from the raw string.
+// ---------------------------------------------------------------------------
+const HOSTILE_NAMES = [
+  '../../evil',
+  'a/b',
+  'a\\b',
+  '..',
+  'slug #/../../x',
+  'evil\u0000agent',
+  'C:\\evil'
+]
+
+/** Sandbox nested two levels deep so even a pre-fix write stays inside `base`. */
+function agentSandbox(): { base: string; dir: string } {
+  const base = freshDir()
+  const dir = join(base, 'agents', 'home')
+  mkdirSync(dir, { recursive: true })
+  return { base, dir }
+}
+
+function definitionFileNames(root: string): string[] {
+  return readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((entry) =>
+    entry.endsWith('.md')
+  )
+}
+
+describe('hostile agent names (R1 path traversal)', () => {
+  it('saveCustomAgent rejects every traversal shape before writing anything', () => {
+    const { base, dir } = agentSandbox()
+    for (const name of HOSTILE_NAMES) {
+      expect(
+        () =>
+          saveCustomAgent({ name, description: 'd', tools: ['read'], enabled: true, persona: 'p' }, dir),
+        `name ${JSON.stringify(name)}`
+      ).toThrow(/invalid subagent name/)
+    }
+    expect(definitionFileNames(base)).toEqual([])
+  })
+
+  it('saveCustomAgent rejects the comment-strip bypass that passes NAME_RE after stripping', () => {
+    const { base, dir } = agentSandbox()
+    expect(() =>
+      saveCustomAgent(
+        { name: 'slug #/../../x', description: 'd', tools: ['read'], enabled: true, persona: 'p' },
+        dir
+      )
+    ).toThrow(/invalid subagent name/)
+    expect(definitionFileNames(base)).toEqual([])
+  })
+
+  it('deleteCustomAgent rejects traversal names without removing files outside the directory', () => {
+    const { base, dir } = agentSandbox()
+    const victim = join(base, 'victim.md')
+    const content = VALID_DEF.replace('code-reviewer-x', 'victim-x')
+    writeFileSync(victim, content, 'utf8')
+    for (const name of HOSTILE_NAMES) {
+      expect(() => deleteCustomAgent(name, dir), `name ${JSON.stringify(name)}`).toThrow(
+        /invalid subagent name/
+      )
+    }
+    expect(readFileSync(victim, 'utf8')).toBe(content)
+  })
+
+  it('setCustomAgentEnabled rejects traversal names without rewriting files outside the directory', () => {
+    const { base, dir } = agentSandbox()
+    const victim = join(base, 'victim.md')
+    const content = VALID_DEF.replace('code-reviewer-x', 'victim-x')
+    writeFileSync(victim, content, 'utf8')
+    for (const name of HOSTILE_NAMES) {
+      expect(() => setCustomAgentEnabled(name, false, dir), `name ${JSON.stringify(name)}`).toThrow(
+        /invalid subagent name/
+      )
+    }
+    expect(readFileSync(victim, 'utf8')).toBe(content)
   })
 })
