@@ -534,6 +534,7 @@ async function click(cdp) {
   check('点一下分叉就落地了一个新会话', newId !== null, newId ?? 'never appeared')
   if (newId === null) return done()
 
+  let forkFile = null
   try {
     // The registry gains the row before the kernel file exists (the same
     // "registered but not attached yet" window the address book warns about),
@@ -554,6 +555,7 @@ async function click(cdp) {
       record === null ? 'timeout waiting for piSessionFile' : `${Date.now() - attachedStarted}ms`
     )
     if (record === null) return done()
+    forkFile = record.piSessionFile
 
     check('新会话的记录来自源会话', record.derivedFrom === SOURCE_ID, record.derivedFrom)
     check('标题是派生标题', record.title === `${source.title} · fork`, record.title)
@@ -603,9 +605,15 @@ async function click(cdp) {
     check('原会话仍在侧栏里，没被顶掉', parentStillListed === true)
   } finally {
     // ── teardown: never leave a throwaway fork behind, even on a failed check ──
+    if (forkFile !== null) {
+      check('删除前：分叉转录仍在盘上', existsSync(forkFile), forkFile.split('\\').pop())
+    }
     await ev(cdp, `window.electron.codex.deleteSession(${JSON.stringify(newId)}).catch(() => {})`)
     const after = await ev(cdp, 'window.electron.codex.listSessions().then(l => l.map(s => s.id))')
     check('清理：新会话已删除', !after.includes(newId))
+    if (forkFile !== null) {
+      check('清理：删除会话带走了转录文件（29）', !existsSync(forkFile), forkFile.split('\\').pop())
+    }
     check('清理：会话总数回到点击前', after.length === before.length, `${before.length} → ${after.length}`)
     // A row can outlive its file when deletion races the attach, and a crashed
     // earlier run leaves a file with no row at all. Sweep anything this source
@@ -632,8 +640,11 @@ async function drop(cdp, sessionId) {
   const after = await ev(cdp, 'window.electron.codex.listSessions().then(l => l.map(s => s.id))')
   check('会话已从注册表删除', !after.includes(sessionId))
   if (rec.piSessionFile) {
-    if (existsSync(rec.piSessionFile)) rmSync(rec.piSessionFile)
-    check('转录文件已删除', !existsSync(rec.piSessionFile), rec.piSessionFile.split('\\').pop())
+    // Ticket 29 evidence: the file must already be gone because deleteSession
+    // removed it — rmSync here is janitor only when that check failed.
+    const survived = existsSync(rec.piSessionFile)
+    check('删除会话带走了转录文件（29）', !survived, rec.piSessionFile.split('\\').pop())
+    if (survived) rmSync(rec.piSessionFile)
   }
   done()
 }

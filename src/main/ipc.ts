@@ -80,6 +80,7 @@ import { RECALL_BUDGET, extractRecallQueries, searchSessionRecords } from './ski
 import { listWorkspaceFiles, invalidateWorkspaceFiles } from './workspaceFiles'
 import { renderReferences } from './promptReferences'
 import { dropRulesForSession } from './permissionRules'
+import { deleteSessionRecord, fsTranscriptIo, rollbackRowTranscript } from './sessionDeletion'
 import type { SessionSearchHit } from '../shared/contract'
 
 interface IpcFailure {
@@ -208,6 +209,10 @@ export function registerIpcHandlers(
   customModels: UserModelsService,
   network: KernelSettingsService
 ): void {
+  const transcriptIo = fsTranscriptIo((file, exceptId) =>
+    registry.sharedTranscriptOwners(file, exceptId)
+  )
+
   ipcMain.handle(IPC.listSessions, () => guard(() => registry.list()))
 
   ipcMain.handle(IPC.createSession, (_e, input: { cwd?: unknown; title?: unknown }) =>
@@ -240,6 +245,9 @@ export function registerIpcHandlers(
         // and the renderer replaces its list row with whatever comes back.
         return registry.summary(id)
       } catch (err) {
+        // Ticket 29: a transcript attached before the failure must not outlive
+        // its row — follow the pointer while it still exists.
+        rollbackRowTranscript(registry.get(id)?.piSessionFile, id, transcriptIo)
         registry.remove(id)
         throw err
       }
@@ -278,6 +286,7 @@ export function registerIpcHandlers(
         // badge off this object, so a dropped `derivedFrom` is a visible bug.
         return registry.summary(newId)
       } catch (err) {
+        rollbackRowTranscript(registry.get(newId)?.piSessionFile, newId, transcriptIo)
         registry.remove(newId)
         throw err
       }
@@ -385,19 +394,25 @@ export function registerIpcHandlers(
       if (typeof sessionId !== 'string' || !sessionId) {
         throw new ContractError('INVALID_INPUT', 'sessionId is required')
       }
-      registry.require(sessionId)
-      try {
-        await kernel.request({ type: 'disposeSession', sessionId })
-      } catch {
-        /* best-effort dispose */
-      }
-      terminals.disposeSession(sessionId)
-      registry.remove(sessionId)
-      // Ticket 28: the chat is gone, so its rules can never match again. Removing
-      // them is tidiness — the gate already refuses to match a session rule
-      // outside its own session — but leaving them would fill the settings list
-      // with entries that look live and are not.
-      await dropRulesForSession(sessionId)
+      const rec = registry.require(sessionId)
+      // Capture before dispose: the worker's auto-restart must not turn a
+      // "nobody holds it" rejection into "a live worker refused" after the fact.
+      const kernelAlive = kernel.isAlive()
+      await deleteSessionRecord(sessionId, rec.piSessionFile, {
+        ...transcriptIo,
+        disposeKernel: async (id) => {
+          await kernel.request({ type: 'disposeSession', sessionId: id })
+        },
+        kernelAlive,
+        removeTerminal: (id) => terminals.disposeSession(id),
+        removeRow: (id) => registry.remove(id),
+        // Ticket 28: the chat is gone, so its rules can never match again —
+        // leaving them would fill the settings list with entries that look
+        // live and are not.
+        dropRules: async (id) => {
+          await dropRulesForSession(id)
+        }
+      })
     })
   )
 

@@ -137,6 +137,16 @@ export class KernelHost {
     })
   }
 
+  /**
+   * Capture liveness *before* issuing a request whose failure semantics differ
+   * between "nobody holds it" (worker dead) and "it refused to let go" (worker
+   * alive): the auto-restart makes a post-failure check lie in the window
+   * between crash and respawn.
+   */
+  isAlive(): boolean {
+    return this.worker !== null
+  }
+
   /** Stamp `seq` (and normalize `ts`) then push to all windows. */
   fanOut(sessionId: SessionId, partial: WorkerKernelEvent | Omit<KernelEvent, 'seq'>): KernelEvent {
     const next = this.seq.get(sessionId) ?? 0

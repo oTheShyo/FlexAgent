@@ -4,7 +4,7 @@
 
 **Blocked by:** 12（会话重命名/归档后端，删除语义已在那里），17（分叉，`parentSession` 血缘会指向被删文件）
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## 发现过程
 
@@ -35,11 +35,11 @@ await dropRulesForSession(sessionId)                          // 连权限规则
 
 ## 验收
 
-- [ ] 删除会话后，其 PI 转录文件确实不在盘上（有走查证据）
-- [ ] dispose 失败时不误删：给出可复现的失败注入，断言文件仍在且会话仍可用
-- [ ] 删除父会话后，已存在的分叉子会话仍能冷加载
-- [ ] 全库搜索：除删除路径外，没有别的地方因为缺指针而留下孤儿转录（含分叉文件）
-- [ ] 边界与保留策略落档（`docs/`），说清楚"删除到底删了什么"
+- [x] 删除会话后，其 PI 转录文件确实不在盘上（有走查证据）— 真机 `scripts/diag-delete-session.mjs stage` 8/8 + `verify` 9/9 + `diag-session-fork.mjs click` 22/22，三处均实测"文件随行一起消失"
+- [x] dispose 失败时不误删：给出可复现的失败注入，断言文件仍在且会话仍可用 — `tests/sessionDeletion.test.ts`：worker 活 + dispose 失败 → `SESSION_BUSY`，断言零副作用（未 unlink、行/终端/规则未动）
+- [x] 删除父会话后，已存在的分叉子会话仍能冷加载 — 真机删 F1（F2 之父）后重启，`verify`：F2 冷加载带回 46 条消息；单测层删父留子 + `header.parentSession` 断言
+- [x] 全库搜索：除删除路径外，没有别的地方因为缺指针而留下孤儿转录（含分叉文件）— `registry.remove` 全库仅 3 处且全部接线 `rollbackRowTranscript`/`deleteSessionRecord`，见 `docs/session-deletion.md`
+- [x] 边界与保留策略落档（`docs/`），说清楚"删除到底删了什么" — `docs/session-deletion.md`
 
 ## 复现
 

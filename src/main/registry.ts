@@ -221,6 +221,19 @@ export class SessionRegistry {
   }
 
   /**
+   * Rows other than `exceptId` pointing at the same transcript. Deletion
+   * (ticket 29) must not unlink a file another row still needs — attach is
+   * per-row and nothing stops two rows from naming one file.
+   */
+  sharedTranscriptOwners(file: string, exceptId: SessionId): SessionId[] {
+    const owners: SessionId[] = []
+    for (const rec of this.records.values()) {
+      if (rec.id !== exceptId && rec.piSessionFile === file) owners.push(rec.id)
+    }
+    return owners
+  }
+
+  /**
    * Register a fork (ticket 17): same workspace as the source, a derived
    * title, and the lineage marker. The transcript prefix itself is the
    * forked session's history; nothing else is copied.
