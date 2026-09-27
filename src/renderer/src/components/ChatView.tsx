@@ -9,6 +9,7 @@ import { CheckIcon, CopyIcon, ForkIcon, RegenerateIcon } from './icons'
 import SelectionToolbar from './SelectionToolbar'
 import { useChatSelection } from '../hooks/useChatSelection'
 import type { SelectionSnapshot, SelectionSource } from '../hooks/useChatSelection'
+import { goalRoundLabel } from '../lib/goalCard'
 
 export interface ChatViewProps {
   items: ChatItem[]
@@ -339,6 +340,8 @@ function chatRowKey(item: ChatItem, index: number): string {
       return `error-${index}`
     case 'notice':
       return `notice-${index}`
+    case 'goal-round':
+      return `goal-round-${item.round}-${item.phase}`
   }
 }
 
@@ -426,6 +429,22 @@ const ChatRow = memo(function ChatRow({
           <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
             {item.text}
           </div>
+        </div>
+      )
+    case 'goal-round':
+      return (
+        <div
+          className="flex items-center gap-3 py-1.5"
+          data-selection-source="goal-round"
+          data-testid="goal-round-divider"
+          data-round={item.round}
+          data-phase={item.phase}
+        >
+          <div className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
+          <span className="shrink-0 text-[11px] text-[var(--text-subtle)]">
+            {goalRoundLabel(item.round, item.phase)}
+          </span>
+          <div className="h-px flex-1 bg-[var(--border)]" aria-hidden="true" />
         </div>
       )
   }

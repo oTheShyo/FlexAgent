@@ -23,6 +23,7 @@ import {
   type ThinkingLevel
 } from '../types'
 import { codexApi } from '../api'
+import { goalRoundMarkers, goalRoundPlacements } from '../lib/goalCard'
 
 export type PermissionRequest = Extract<KernelEvent, { type: 'permission_request' }>
 
@@ -42,6 +43,7 @@ export type ChatItem =
   | { kind: 'error'; code: ContractErrorCode; message: string }
   /** A system note in the transcript, e.g. "question went unanswered". */
   | { kind: 'notice'; text: string }
+  | { kind: 'goal-round'; round: number; phase: 'continue' | 'done' }
 
 /**
  * A question the agent is waiting on (issue 10). Carries its own deadline so
@@ -164,6 +166,41 @@ function errorItemFrom(err: unknown): ChatItem {
     code: 'KERNEL_INTERNAL',
     message: err instanceof Error ? err.message : String(err)
   }
+}
+
+function insertGoalRoundMarkers(
+  items: ChatItem[],
+  goal: GoalStateSummary | null
+): ChatItem[] {
+  const { continues, doneRound } = goalRoundPlacements(goal)
+  const have = new Set(
+    items.flatMap((it) => (it.kind === 'goal-round' ? [`${it.round}:${it.phase}`] : []))
+  )
+  const pending = continues.filter((p) => !have.has(`${p.round}:continue`))
+  if (pending.length === 0 && (doneRound === null || have.has(`${doneRound}:done`))) {
+    return items
+  }
+  const out: ChatItem[] = []
+  let index = 0
+  for (const item of items) {
+    while (
+      index < pending.length &&
+      item.kind === 'message' &&
+      item.message.createdAt >= pending[index].beforeCreatedAt
+    ) {
+      out.push({ kind: 'goal-round', round: pending[index].round, phase: 'continue' })
+      index += 1
+    }
+    out.push(item)
+  }
+  while (index < pending.length) {
+    out.push({ kind: 'goal-round', round: pending[index].round, phase: 'continue' })
+    index += 1
+  }
+  if (doneRound !== null && !have.has(`${doneRound}:done`)) {
+    out.push({ kind: 'goal-round', round: doneRound, phase: 'done' })
+  }
+  return out
 }
 
 function finalizePartials(prev: ChatItem[]): ChatItem[] {
@@ -484,6 +521,16 @@ export function useChat(): UseChatResult {
       case 'goal_update': {
         setGoal(event.goal)
         setGoalMessage(event.message)
+        const wanted = goalRoundMarkers(event.goal)
+        setItems((prev) => {
+          const have = new Set(
+            prev.flatMap((it) =>
+              it.kind === 'goal-round' ? [`${it.round}:${it.phase}`] : []
+            )
+          )
+          const missing = wanted.filter((m) => !have.has(`${m.round}:${m.phase}`))
+          return missing.length > 0 ? [...prev, ...missing] : prev
+        })
         break
       }
       case 'plan_update': {
@@ -549,6 +596,7 @@ export function useChat(): UseChatResult {
           .getGoal?.(sessionId)
           .then((state) => {
             setGoal(state ?? null)
+            setItems((prev) => insertGoalRoundMarkers(prev, state ?? null))
           })
           .catch(() => {})
         // Ticket 07: same reasoning — the plan outlives the event stream.

@@ -9,6 +9,7 @@
  */
 
 import type { GoalIteration } from '../../../main/goalMode'
+import type { GoalStateSummary } from '../../../shared/contract'
 
 export type GoalAdjustment = 'replace' | 'pause' | 'clear' | 'resume' | 'none'
 
@@ -78,4 +79,67 @@ export function formatElapsed(startedAt: number, now: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * A transcript divider between auto-resume iterations (ticket 06): which
+ * round it marks and whether the round is entering work (`continue`) or the
+ * goal just closed (`done`).
+ */
+export interface GoalRoundMarker {
+  kind: 'goal-round'
+  round: number
+  phase: 'continue' | 'done'
+}
+
+export function goalRoundLabel(round: number, phase: 'continue' | 'done'): string {
+  return `第 ${round} 次迭代 · ${phase === 'continue' ? '继续' : '完成'}`
+}
+
+/**
+ * All round dividers a goal state implies, in order: every round opens with
+ * `继续`, a completed verdict closes with `完成`. Callers append only what
+ * the transcript does not already carry, so pause/resume events that merely
+ * re-report state add nothing, and a missed begin event is repaired the
+ * moment any later state arrives.
+ */
+export function goalRoundMarkers(
+  goal: GoalStateSummary | null | undefined
+): GoalRoundMarker[] {
+  if (goal === null || goal === undefined) return []
+  const markers: GoalRoundMarker[] = []
+  for (const it of goal.iterations) {
+    markers.push({ kind: 'goal-round', round: it.round, phase: 'continue' })
+    if (it.verdict === 'complete') {
+      markers.push({ kind: 'goal-round', round: it.round, phase: 'done' })
+    }
+  }
+  return markers
+}
+
+/**
+ * Reload path: where each round's `继续` divider belongs in an existing
+ * message list — before the first message at or after the round's
+ * startedAt, i.e. ahead of that round's verification run. The `完成`
+ * divider, when the goal was reached, sits at the very end.
+ */
+export interface GoalRoundPlacement {
+  round: number
+  startedAt: number
+  beforeCreatedAt: number
+}
+
+export function goalRoundPlacements(
+  goal: GoalStateSummary | null | undefined
+): { continues: GoalRoundPlacement[]; doneRound: number | null } {
+  if (goal === null || goal === undefined) {
+    return { continues: [], doneRound: null }
+  }
+  const continues = goal.iterations.map((it) => ({
+    round: it.round,
+    startedAt: it.startedAt,
+    beforeCreatedAt: it.startedAt
+  }))
+  const last = goal.iterations[goal.iterations.length - 1]
+  return { continues, doneRound: last?.verdict === 'complete' ? last.round : null }
 }
