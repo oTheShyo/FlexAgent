@@ -1,5 +1,5 @@
 /**
- * One-command demo of both ticket-13 hook events.
+ * One-command demo of all four enforcement-capable hook events.
  *
  *   node scripts/demo-hooks.mjs
  *
@@ -8,6 +8,8 @@
  * documented decision contract: exit 0 = allow (stdout may carry JSON),
  * exit 2 = veto (stdout JSON carries the reason). Exercises the hooks and the
  * protocol end-to-end; the in-kernel wiring is covered by tests/hookChecks.test.ts.
+ *
+ * Ticket 13: PreToolUse, UserPromptSubmit. Ticket 14: Stop, PermissionRequest.
  */
 
 import { spawn } from 'node:child_process'
@@ -103,6 +105,61 @@ results.push([
   'UserPromptSubmit block (prompt contains BLOCK-DEMO)',
   await runHookOnce('UserPromptSubmit', { prompt: 'please BLOCK-DEMO this' }),
   (r) => r.code === 2 && r.output?.decision === 'block' && typeof r.output?.reason === 'string'
+])
+
+// ── ticket 14: Stop (continue the turn) ──────────────────────────────────────
+// The hook only answers; the worker owns the cap and the audit trail.
+
+results.push([
+  'Stop continue (turn ended without reporting a test)',
+  await runHookOnce('Stop', { last_assistant_message: 'Done — I changed two files.' }),
+  (r) => r.code === 2 && r.output?.decision === 'block' && typeof r.output?.reason === 'string'
+])
+
+results.push([
+  'Stop allow (turn reported the test command and result)',
+  await runHookOnce('Stop', {
+    last_assistant_message: 'Ran npm run test — 228 passed.'
+  }),
+  (r) => r.code === 0
+])
+
+// ── ticket 14: PermissionRequest (auto-decide what would have asked) ─────────
+
+results.push([
+  'PermissionRequest deny (destructive command)',
+  await runHookOnce('PermissionRequest', {
+    toolName: 'Bash',
+    tool_name: 'Bash',
+    tool_input: { command: 'rm -rf build' },
+    toolCallId: 'demo-4',
+    tool_use_id: 'demo-4'
+  }),
+  (r) => r.code === 0 && r.output?.hookSpecificOutput?.permissionDecision === 'deny'
+])
+
+results.push([
+  'PermissionRequest allow (write under /scratch/)',
+  await runHookOnce('PermissionRequest', {
+    toolName: 'Write',
+    tool_name: 'Write',
+    tool_input: { path: '/scratch/out.txt' },
+    toolCallId: 'demo-5',
+    tool_use_id: 'demo-5'
+  }),
+  (r) => r.code === 0 && r.output?.hookSpecificOutput?.permissionDecision === 'allow'
+])
+
+results.push([
+  'PermissionRequest abstains (no vote = the chain asks the human as before)',
+  await runHookOnce('PermissionRequest', {
+    toolName: 'Bash',
+    tool_name: 'Bash',
+    tool_input: { command: 'ls -la' },
+    toolCallId: 'demo-6',
+    tool_use_id: 'demo-6'
+  }),
+  (r) => r.code === 0 && r.output === undefined
 ])
 
 for (const [name, result, pass] of results) {
