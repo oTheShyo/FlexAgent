@@ -1,8 +1,17 @@
 {
   "name": "flex-agent",
   "version": "0.1.0",
-  "private": true,
-  "description": "FlexAgent desktop app (electron-vite + React + TypeScript + Tailwind)",
+  "description": "FlexAgent — a desktop coding agent with multi-agent roles, plugins, MCP, skills, and a sandboxed permission gate",
+  "license": "MIT",
+  "author": "oTheShyo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oTheShyo/FlexAgent.git"
+  },
+  "homepage": "https://github.com/oTheShyo/FlexAgent#readme",
+  "bugs": {
+    "url": "https://github.com/oTheShyo/FlexAgent/issues"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
