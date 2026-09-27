@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import type { PluginComponentKind, PluginDetail } from '../types'
+import type { PluginCapabilities, PluginComponentKind, PluginDetail } from '../types'
 import { ComponentKindIcon, PluginIcon } from './pluginIcons'
 import { Button, IconButton } from './ui'
 
@@ -10,6 +10,13 @@ export interface PluginDetailPanelProps {
   uninstallBusy: boolean
   onClose: () => void
   onUninstall: (id: string) => void
+  /**
+   * Ticket 22: grant a plugin the capabilities it declares, or take the grant
+   * back with `null`. Absent = the bridge has no such call, so the panel shows
+   * what the plugin runs with and offers no controls for changing it.
+   */
+  onSetCapabilities?: (id: string, capabilities: PluginCapabilities | null) => void
+  capabilityBusy?: boolean
 }
 
 const KIND_ORDER: PluginComponentKind[] = ['extension', 'skill', 'command', 'hook', 'mcp']
@@ -79,7 +86,9 @@ function PluginDetailPanel({
   loading,
   uninstallBusy,
   onClose,
-  onUninstall
+  onUninstall,
+  onSetCapabilities,
+  capabilityBusy = false
 }: PluginDetailPanelProps) {
   const [configOpen, setConfigOpen] = useState(false)
   const panelRef = useRef<HTMLElement>(null)
@@ -192,6 +201,67 @@ function PluginDetailPanel({
                   </MetaRow>
                 )}
               </section>
+
+              {detail.capabilities !== undefined && (
+                <section
+                  aria-label="Plugin capabilities"
+                  data-testid="plugin-capabilities"
+                >
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                    Capabilities
+                  </h3>
+                  <ul className="mt-1.5 space-y-1">
+                    {detail.capabilities.lines.map((line) => (
+                      <li
+                        key={line}
+                        className="flex items-start gap-1.5 text-[11px] leading-4 text-[var(--text-secondary)]"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--text-subtle)]"
+                        />
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                  {detail.capabilities.needsGrant && (
+                    <div className="mt-2 rounded-md border border-[var(--warning-border)] bg-[var(--warning-bg)] px-2.5 py-2">
+                      <p className="text-[11px] leading-4 text-[var(--warning-text)]">
+                        {detail.capabilities.granted
+                          ? 'You granted this. Its hooks run with these capabilities.'
+                          : 'This asks for more than its source gets by default. Until you grant it, it runs at the minimum — which may break its hooks.'}
+                      </p>
+                      {onSetCapabilities !== undefined && (
+                        <div className="mt-2 flex gap-2">
+                          {detail.capabilities.granted ? (
+                            <Button
+                              variant="secondary"
+                              disabled={capabilityBusy}
+                              data-testid="plugin-capability-revoke"
+                              onClick={() => onSetCapabilities(detail.id, null)}
+                            >
+                              Revoke
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="primary"
+                              disabled={capabilityBusy}
+                              data-testid="plugin-capability-grant"
+                              onClick={() => {
+                                if (detail !== null && detail.capabilities !== undefined) {
+                                  onSetCapabilities(detail.id, detail.capabilities.requested)
+                                }
+                              }}
+                            >
+                              Grant
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
 
               <section aria-label="Plugin components">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">

@@ -1,4 +1,14 @@
 import { spawn } from 'child_process'
+import { existsSync } from 'fs'
+import { normalize, resolve } from 'path'
+import {
+  buildSandboxEnv,
+  isPathAllowed,
+  mergeCapabilities,
+  resolveSandboxCwd,
+  sandboxRoots
+} from '../sandbox'
+import type { PluginCapabilities } from '../../shared/contract'
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000
 export const DEFAULT_HOOK_MAX_OUTPUT_BYTES = 32_768
@@ -8,6 +18,8 @@ export interface HookRunPlugin {
   dataPath: string
   id: string
   name: string
+  /** Ticket 22: what this plugin was granted. Absent = legacy, inherit. */
+  capabilities?: PluginCapabilities
 }
 
 export interface HookRunOptions {
@@ -21,12 +33,33 @@ export interface HookRunOptions {
   stdin?: string
   timeoutMs?: number
   maxOutputBytes?: number
+  /**
+   * Ticket 22. The capability set this run executes under. Absent means
+   * "before this existed" — full environment, caller's cwd — which keeps every
+   * existing hook working while new grants opt in.
+   */
+  capabilities?: PluginCapabilities
+  /** What the hook's own manifest asked for; refused when it exceeds the grant. */
+  declared?: Partial<PluginCapabilities>
 }
 
-export type HookRunStatus = 'ok' | 'failed' | 'timeout' | 'killed' | 'spawn_error'
+export type HookRunStatus =
+  | 'ok'
+  | 'failed'
+  | 'timeout'
+  | 'killed'
+  | 'spawn_error'
+  /** Ticket 22: asked for more than it was granted, so it never started. */
+  | 'sandbox_denied'
 
 export interface HookRunDiagnostic {
-  code: 'hook_timeout' | 'hook_spawn_error' | 'hook_exit_nonzero' | 'hook_output_invalid'
+  code:
+    | 'hook_timeout'
+    | 'hook_spawn_error'
+    | 'hook_exit_nonzero'
+    | 'hook_output_invalid'
+    | 'sandbox_denied'
+    | 'sandbox_boundary'
   message: string
 }
 
@@ -131,6 +164,78 @@ function parseHookStdout(stdout: string): {
   return { output: record }
 }
 
+/** True when `granted` covers everything `wanted` asks for. */
+function grantedCovers(wanted: PluginCapabilities, granted: PluginCapabilities): boolean {
+  if (wanted.network && !granted.network) return false
+  if (wanted.env === 'inherit' && granted.env !== 'inherit') return false
+  const rank: Record<PluginCapabilities['fs'], number> = {
+    none: 0,
+    'plugin-data': 1,
+    workspace: 2
+  }
+  return rank[wanted.fs] <= rank[granted.fs]
+}
+
+/**
+ * Whether a hook is about to reach into the workspace it was not granted
+ * (ticket 22).
+ *
+ * Deliberately narrow, because the broad version is not enforceable: a hook
+ * normally runs `/usr/bin/node` or `C:\\…\\node.exe`, which is outside every
+ * root we could name, so "the program must live inside the sandbox" would
+ * reject every hook that ever worked. What *can* be judged before the process
+ * exists is the opposite question — is something in the hook's command line a
+ * file that lies inside the workspace, when the workspace is not part of its
+ * grant? That is the crossing worth naming.
+ *
+ * `type: 'command'` is skipped: the string goes to a shell, and guessing which
+ * token is a path there would produce refusals nobody can act on.
+ */
+export function boundaryViolation(input: {
+  type: 'command' | 'process'
+  command: string
+  args?: string[]
+  cwd: string
+  workspaceCwd: string
+  capabilities: PluginCapabilities
+}): string | null {
+  if (input.capabilities.fs === 'workspace') return null
+  if (input.type !== 'process') return null
+  const workspace = normalize(resolve(input.workspaceCwd))
+  for (const token of [input.command, ...(input.args ?? [])]) {
+    if (!token.includes('/') && !token.includes('\\')) continue
+    let target: string
+    try {
+      target = resolve(input.cwd, token)
+    } catch {
+      continue
+    }
+    if (!existsSync(target)) continue
+    if (isPathAllowed(target, [workspace])) {
+      return `hook runs ${target}, inside the workspace its ${input.capabilities.fs} scope does not cover`
+    }
+  }
+  return null
+}
+
+/**
+ * The pre-sandbox environment (ticket 22): everything, plus the overlay.
+ *
+ * Kept for hooks that carry no capability set — one written before this
+ * existed. Silently narrowing the environment of a working hook would break it
+ * under the guise of securing it; the migration is opt-in per grant.
+ */
+function legacyEnv(options: HookRunOptions): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  if (options.env) {
+    for (const [key, value] of Object.entries(options.env)) env[key] = value
+  }
+  return env
+}
+
 function killHookProcess(child: ReturnType<typeof spawn>): void {
   if (process.platform === 'win32') {
     if (child.pid !== undefined) {
@@ -191,22 +296,71 @@ export async function runHook(options: HookRunOptions): Promise<HookRunResult> {
     Math.round(options.maxOutputBytes ?? DEFAULT_HOOK_MAX_OUTPUT_BYTES)
   )
   const startedAt = Date.now()
-  const overlay = createHookEnvOverlay(options.plugin, options.cwd)
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value
+
+  // Ticket 22: a hook that asks for more than it was granted does not run.
+  // Refusing here is the only place the answer can still be no — once the child
+  // exists, the parent has no say in what it reaches for.
+  const caps = options.capabilities
+  const wanted = mergeCapabilities(caps ?? { fs: 'workspace', env: 'inherit', network: false }, options.declared)
+  if (caps !== undefined && !grantedCovers(wanted, caps)) {
+    return baseResult({
+      status: 'sandbox_denied',
+      blockRequested: false,
+      durationMs: Date.now() - startedAt,
+      diagnostics: [
+        {
+          code: 'sandbox_denied',
+          message: `hook asks for ${JSON.stringify(wanted)} but was granted ${JSON.stringify(caps)}`
+        }
+      ]
+    })
   }
-  if (options.env) {
-    for (const [key, value] of Object.entries(options.env)) env[key] = value
+
+  const overlay = {
+    ...createHookEnvOverlay(options.plugin, options.cwd),
+    ...(options.env ?? {})
   }
-  for (const [key, value] of Object.entries(overlay)) env[key] = value
+  const env =
+    caps === undefined
+      ? { ...legacyEnv(options), ...overlay }
+      : buildSandboxEnv({ capabilities: caps, overlay })
+
+  // File scope decides where the child starts. It cannot decide where the child
+  // goes afterwards — see the note at the top of sandbox.ts.
+  const cwd =
+    caps === undefined
+      ? options.cwd
+      : resolveSandboxCwd({
+          capabilities: caps,
+          workspaceCwd: options.cwd,
+          ...(options.plugin !== undefined ? { pluginDataPath: options.plugin.dataPath } : {})
+        })
+
+  if (caps !== undefined) {
+    const boundary = boundaryViolation({
+      type: options.type,
+      command: options.command,
+      ...(options.args !== undefined ? { args: options.args } : {}),
+      cwd,
+      workspaceCwd: options.cwd,
+      capabilities: caps
+    })
+    if (boundary !== null) {
+      return baseResult({
+        status: 'sandbox_denied',
+        blockRequested: false,
+        durationMs: Date.now() - startedAt,
+        diagnostics: [{ code: 'sandbox_boundary', message: boundary }]
+      })
+    }
+  }
 
   return new Promise<HookRunResult>((resolvePromise) => {
     let child: ReturnType<typeof spawn>
     try {
       if (options.type === 'command') {
         child = spawn(options.command, {
-          cwd: options.cwd,
+          cwd,
           env,
           shell: options.shell ?? true,
           windowsHide: true,
@@ -214,7 +368,7 @@ export async function runHook(options: HookRunOptions): Promise<HookRunResult> {
         })
       } else {
         child = spawn(options.command, options.args ?? [], {
-          cwd: options.cwd,
+          cwd,
           env,
           shell: false,
           windowsHide: true,

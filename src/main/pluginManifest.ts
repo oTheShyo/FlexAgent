@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { dirname, extname, join, relative } from 'path'
 import { ContractError } from '../shared/contract'
 import type {
+  PluginCapabilities,
   PluginComponentInfo,
   PluginDiagnostic,
   PluginUserConfigSpec
@@ -42,6 +43,12 @@ export interface FlexPluginManifest {
   mcpServers?: FlexComponentDecl
   dependencies?: string[]
   userConfig?: Record<string, FlexUserConfigEntry>
+  /**
+   * Ticket 22 (additive): what this plugin needs. Anything beyond its source's
+   * baseline is shown to the user and has to be granted; without a grant the
+   * baseline applies and the plugin still runs.
+   */
+  capabilities?: Partial<PluginCapabilities>
 }
 
 export interface ComponentEnumeration {

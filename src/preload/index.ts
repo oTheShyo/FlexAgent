@@ -17,6 +17,7 @@ import {
   type InstallFromMarketplaceInput,
   type InstallPluginInput,
   type KernelEvent,
+  type SetPluginCapabilitiesInput,
   type MarketplaceApi,
   type MarketplaceInfo,
   type MarketplaceProgressEvent,
@@ -39,6 +40,7 @@ import {
   type SetNetworkInput,
   type UsageReport,
   type ModelOption,
+  type PluginCapabilityView,
   type PluginChangeEvent,
   type PluginDetail,
   type PluginId,
@@ -311,6 +313,9 @@ const codex: CodexApi = {
   installPlugin: (input: InstallPluginInput) => invoke<PluginSummary>(IPC.installPlugin, input),
 
   uninstallPlugin: (id: PluginId) => invoke<void>(IPC.uninstallPlugin, id),
+
+  setPluginCapabilities: (input: SetPluginCapabilitiesInput) =>
+    invoke<PluginCapabilityView>(IPC.setPluginCapabilities, input),
 
   subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void {
     const handler = (_event: IpcRendererEvent, payload: PluginChangeEvent): void => {

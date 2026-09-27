@@ -197,7 +197,11 @@ export class PluginRegistry {
             pluginId: rec.id,
             pluginName: rec.name,
             userConfig,
-            sensitiveKeys
+            sensitiveKeys,
+            sourceKind: rec.sourceKind,
+            ...(manifest.capabilities !== undefined
+              ? { declaredCapabilities: manifest.capabilities }
+              : {})
           }
         }
         const mcpResult = collectMcpServerConfigs({

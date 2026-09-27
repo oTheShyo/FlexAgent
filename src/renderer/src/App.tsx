@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type {
   ImageAttachment,
   PermissionDecision,
+  PluginCapabilities,
   PromptMode,
   PromptReference,
   ThinkingLevel
@@ -73,7 +74,8 @@ export default function App({ children }: AppProps) {
     toggleEnabled,
     openDetail,
     closeDetail,
-    uninstall
+    uninstall,
+    setCapabilities: setPluginCapabilities
   } = usePlugins()
   const {
     sessions,
@@ -537,6 +539,13 @@ export default function App({ children }: AppProps) {
     [toggleEnabled]
   )
 
+  const handleSetPluginCapabilities = useCallback(
+    (id: string, capabilities: PluginCapabilities | null): void => {
+      void setPluginCapabilities(id, capabilities)
+    },
+    [setPluginCapabilities]
+  )
+
   const handleInstallPlugin = useCallback((): void => {
     void installFromDirectory()
   }, [installFromDirectory])
@@ -937,6 +946,8 @@ export default function App({ children }: AppProps) {
             uninstallBusy={busyId !== null && busyId === (detail?.id ?? null)}
             onClose={closeDetail}
             onUninstall={handleUninstallPlugin}
+            onSetCapabilities={handleSetPluginCapabilities}
+            capabilityBusy={busyId !== null && busyId === (detail?.id ?? null)}
           />
           {pendingPermission && (
             <PermissionDialog

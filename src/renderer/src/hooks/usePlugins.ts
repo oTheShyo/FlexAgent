@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  PluginCapabilities,
   PluginChangeEvent,
   PluginDetail,
   PluginId,
@@ -21,6 +22,8 @@ export interface UsePluginsResult {
   openDetail: (id: PluginId) => Promise<void>
   closeDetail: () => void
   uninstall: (id: PluginId) => Promise<void>
+  /** Ticket 22: grant a plugin its declared capabilities, or `null` to revoke. */
+  setCapabilities: (id: PluginId, capabilities: PluginCapabilities | null) => Promise<void>
 }
 
 function errorMessageOf(err: unknown): string {
@@ -145,6 +148,24 @@ export function usePlugins(): UsePluginsResult {
     [clearBusy]
   )
 
+  const setCapabilities = useCallback(
+    async (id: PluginId, capabilities: PluginCapabilities | null): Promise<void> => {
+      setBusyId(id)
+      setError(null)
+      try {
+        const view = await pluginApi.setPluginCapabilities({ id, capabilities })
+        setDetail((current) =>
+          current !== null && current.id === id ? { ...current, capabilities: view } : current
+        )
+      } catch (err) {
+        setError(errorMessageOf(err))
+      } finally {
+        clearBusy()
+      }
+    },
+    [clearBusy]
+  )
+
   return {
     plugins,
     loading,
@@ -156,7 +177,8 @@ export function usePlugins(): UsePluginsResult {
     toggleEnabled,
     openDetail,
     closeDetail,
-    uninstall
+    uninstall,
+    setCapabilities
   }
 }
 

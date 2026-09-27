@@ -9,6 +9,8 @@ import {
   parseHookDecision,
   type HookPermissionVote
 } from './hookDecisions'
+import { defaultCapabilitiesFor, effectiveCapabilities, mergeCapabilities } from './sandbox'
+import type { PluginCapabilities } from '../shared/contract'
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -28,6 +30,9 @@ export interface PluginBridgeDiagnostic {
     | 'hook_spawn_error'
     | 'hook_exit_nonzero'
     | 'hook_output_invalid'
+    /** Ticket 22: refused before it started, or reported a boundary crossing. */
+    | 'sandbox_denied'
+    | 'sandbox_boundary'
   message: string
 }
 
@@ -234,6 +239,8 @@ export interface RegisteredHookCheck {
   entry: HookEntry
   plugin: HookRunPlugin | undefined
   hookContext?: PluginHookContext
+  /** Ticket 22: what this specific hook runs under. Absent = pre-sandbox legacy. */
+  capabilities?: PluginCapabilities
 }
 
 export interface PluginHookDeps {
@@ -243,6 +250,8 @@ export interface PluginHookDeps {
   ): {
     entries: HookEntry[]
     diagnostics: Array<{ code: HookSourceDiagnosticCode; message: string }>
+    /** Ticket 22: what this hooks file asks for, if it declares anything. */
+    capabilities?: Partial<PluginCapabilities>
   }
   interpolate(template: string, context: HookTemplateContext): string
   runHook(options: HookRunOptions): Promise<HookRunResult>
@@ -376,10 +385,14 @@ async function runOneHookCheck(
     cwd: input.cwd,
     stdin: buildHookStdin(input.event, input.payload, input.cwd),
     ...(check.plugin !== undefined ? { plugin: check.plugin } : {}),
+    ...(check.capabilities !== undefined ? { capabilities: check.capabilities } : {}),
+    ...(check.hookContext?.declaredCapabilities !== undefined
+      ? { declared: check.hookContext.declaredCapabilities }
+      : {}),
     ...(check.entry.timeoutMs !== undefined ? { timeoutMs: check.entry.timeoutMs } : {})
   })
   for (const diag of result.diagnostics) {
-    diagnostics.push(`${check.event} hook: ${diag.message}`)
+    diagnostics.push(`${check.event} hook [${diag.code}]: ${diag.message}`)
   }
   const blocked =
     result.blockRequested ||
@@ -565,7 +578,15 @@ export function registerPluginHooks(
               ? join(spec.pluginStorageRoot, 'data', hookContext.pluginId)
               : join(hookContext.pluginRoot, '.flex-plugin', 'data'),
             id: hookContext.pluginId,
-            name: hookContext.pluginName
+            name: hookContext.pluginName,
+            // Ticket 22: the grant decides the environment and the starting
+            // directory. A marketplace plugin nobody blessed gets its own data
+            // directory and no credential-bearing environment.
+            capabilities: effectiveCapabilities(
+              hookContext.pluginId,
+              hookContext.sourceKind ?? 'local',
+              hookContext.declaredCapabilities
+            )
           }
         : undefined
     if (pluginInfo) {
@@ -574,6 +595,15 @@ export function registerPluginHooks(
       } catch {
       }
     }
+    // Ticket 22: a plugin hook takes its grant; a project hooks file takes the
+    // local baseline merged with whatever it declared. Either way the hook runs
+    // in a child process with an allowlisted environment instead of inheriting
+    // every credential this process holds.
+    const hookCapabilities =
+      pluginInfo?.capabilities ??
+      mergeCapabilities(defaultCapabilitiesFor('local'), parsed.capabilities)
+    const hookDeclared = hookContext?.declaredCapabilities ?? parsed.capabilities
+
     for (const entry of parsed.entries) {
       // Enforcement-capable events (ticket 13): registered as checks the worker
       // awaits at the enforcement points, not fire-and-forget kernel events.
@@ -591,7 +621,8 @@ export function registerPluginHooks(
           ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
           entry,
           plugin: pluginInfo,
-          ...(hookContext !== undefined ? { hookContext } : {})
+          ...(hookContext !== undefined ? { hookContext } : {}),
+          capabilities: hookCapabilities
         }
         switch (entry.event) {
           case 'PreToolUse':
@@ -661,10 +692,15 @@ export function registerPluginHooks(
           cwd,
           stdin: buildHookStdin(sourceEvent, payload, cwd),
           ...(pluginInfo !== undefined ? { plugin: pluginInfo } : {}),
+          capabilities: hookCapabilities,
+          ...(hookDeclared !== undefined ? { declared: hookDeclared } : {}),
           ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {})
         })
         for (const diag of result.diagnostics) {
-          diagnostics.push({ code: diag.code, message: `${entry.event} hook: ${diag.message}` })
+          diagnostics.push({
+            code: diag.code,
+            message: `${entry.event} hook [${diag.code}]: ${diag.message}`
+          })
         }
         const outputContinue = result.output?.continue
         const outputDecision = result.output?.decision

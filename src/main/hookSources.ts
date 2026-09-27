@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from 'fs'
 import { isAbsolute, join, relative, resolve } from 'path'
+import type { PluginCapabilities } from '../shared/contract'
 
 export type HookSourceDiagnosticCode =
   | 'plugin_hook_read_failed'
@@ -38,6 +39,12 @@ export interface HookEntry {
 export interface HookParseResult {
   entries: HookEntry[]
   diagnostics: HookSourceDiagnostic[]
+  /**
+   * Ticket 22 (additive): what this hooks file asks for, declared next to the
+   * hooks themselves. A file that declares nothing keeps the baseline for its
+   * source — the migration path is opt-in per file, not a flag day.
+   */
+  capabilities?: Partial<PluginCapabilities>
 }
 
 export const STANDARD_HOOKS_PATH = join('hooks', 'hooks.json')
@@ -169,13 +176,14 @@ export function parseHooksContent(content: string, sourcePath: string): HookPars
 export function extractHookEntries(raw: unknown, sourcePath: string): HookParseResult {
   const diagnostics: HookSourceDiagnostic[] = []
   const entries: HookEntry[] = []
+  const declared = isRecord(raw) && isRecord(raw.capabilities) ? readCapabilities(raw.capabilities) : undefined
   if (!isRecord(raw) || !isRecord(raw.hooks)) {
     diagnostics.push({
       code: 'plugin_hook_invalid',
       severity: 'error',
       message: 'Plugin hooks file must contain a hooks object'
     })
-    return { entries, diagnostics }
+    return { entries, diagnostics, ...(declared !== undefined ? { capabilities: declared } : {}) }
   }
   const hooksRoot = raw.hooks
   for (const [event, groups] of Object.entries(hooksRoot)) {
@@ -214,7 +222,19 @@ export function extractHookEntries(raw: unknown, sourcePath: string): HookParseR
       }
     }
   }
-  return { entries, diagnostics }
+  return { entries, diagnostics, ...(declared !== undefined ? { capabilities: declared } : {}) }
+}
+
+/**
+ * Read a declared capability block. Unknown values are dropped rather than
+ * guessed: a declaration that cannot be read means "baseline", not "whatever".
+ */
+function readCapabilities(raw: Record<string, unknown>): Partial<PluginCapabilities> | undefined {
+  const out: Partial<PluginCapabilities> = {}
+  if (raw.fs === 'none' || raw.fs === 'plugin-data' || raw.fs === 'workspace') out.fs = raw.fs
+  if (raw.env === 'minimal' || raw.env === 'inherit') out.env = raw.env
+  if (raw.network === true) out.network = true
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function parseHookConfig(

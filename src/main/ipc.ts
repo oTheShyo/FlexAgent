@@ -16,6 +16,7 @@ import {
   type InstallPluginInput,
   type PermissionMode,
   type PermissionRuleSet,
+  type PluginCapabilities,
   type PromptInput,
   type WorkspaceFileQuery,
   type SessionContextQuery,
@@ -931,6 +932,31 @@ function recallForPrompt(text: string, currentSessionId: string): SessionSearchH
       }
       return plugins.install(input)
     })
+  )
+
+  ipcMain.handle(
+    IPC.setPluginCapabilities,
+    (_e, input: { id?: unknown; capabilities?: unknown }) =>
+      guard(async () => {
+        if (!input || typeof input.id !== 'string' || !input.id) {
+          throw new ContractError('INVALID_INPUT', 'id is required')
+        }
+        const capabilities = input.capabilities as PluginCapabilities | null
+        if (capabilities !== null) {
+          const valid =
+            capabilities !== undefined &&
+            typeof capabilities === 'object' &&
+            (capabilities.fs === 'none' ||
+              capabilities.fs === 'plugin-data' ||
+              capabilities.fs === 'workspace') &&
+            (capabilities.env === 'minimal' || capabilities.env === 'inherit') &&
+            typeof capabilities.network === 'boolean'
+          if (!valid) {
+            throw new ContractError('INVALID_INPUT', 'capabilities must be a full capability set or null')
+          }
+        }
+        return plugins.setCapabilities(input.id, capabilities)
+      })
   )
 
   ipcMain.handle(IPC.uninstallPlugin, (_e, id: unknown) =>

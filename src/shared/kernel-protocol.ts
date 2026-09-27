@@ -2,6 +2,8 @@ import type {
   ContractErrorCode,
   ImageAttachment,
   KernelEvent,
+  PluginCapabilities,
+  PluginSourceKind,
   McpServerStatusEntry,
   PermissionMode,
   PromptDisposition,
@@ -37,6 +39,16 @@ export interface PluginHookContext {
   userConfig: Record<string, string | number | boolean>
   /** userConfig keys marked sensitive — rejected inside hook command templates. */
   sensitiveKeys: string[]
+  /**
+   * Ticket 22 (additive): where the plugin came from. Marketplace plugins get
+   * least privilege by default; local and bundled ones start with the workspace.
+   */
+  sourceKind?: PluginSourceKind
+  /**
+   * Ticket 22 (additive): what the plugin's manifest asks for. Anything beyond
+   * its source's baseline needs a grant, and without one the baseline is used.
+   */
+  declaredCapabilities?: Partial<PluginCapabilities>
 }
 
 /**

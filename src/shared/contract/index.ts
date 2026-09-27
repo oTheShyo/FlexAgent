@@ -964,6 +964,27 @@ export type PluginId = string
 /** Where an installed plugin came from. */
 export type PluginSourceKind = 'bundled' | 'local' | 'marketplace'
 
+/** Where a plugin's file access ends (ticket 22). */
+export type FsScope = 'none' | 'plugin-data' | 'workspace'
+
+export interface PluginCapabilities {
+  fs: FsScope
+  /** `minimal` = a narrow allowlist; `inherit` = everything this process has. */
+  env: 'minimal' | 'inherit'
+  network: boolean
+}
+
+/**
+ * What a plugin gets with nobody's blessing (ticket 22). A marketplace plugin
+ * has not been read by the person installing it, so it starts with its own data
+ * directory and nothing else.
+ */
+export const LEAST_PRIVILEGE: PluginCapabilities = {
+  fs: 'plugin-data',
+  env: 'minimal',
+  network: false
+}
+
 /** Component kinds a plugin may bundle. Only `extension`/`skill` run in P1. */
 export type PluginComponentKind = 'extension' | 'skill' | 'command' | 'hook' | 'mcp'
 
@@ -1009,6 +1030,28 @@ export interface PluginDiagnostic {
   pluginId?: PluginId
 }
 
+/**
+ * What a plugin may reach, as the UI shows it (ticket 22).
+ *
+ * `effective` is what the plugin runs with *now*; `requested` is what it would
+ * run with if its declared request were granted. When they differ and
+ * `needsGrant` is true, a person has not agreed yet — which is the normal state
+ * for anything installed from a marketplace.
+ */
+export interface PluginCapabilityView {
+  /** What it runs with today: its grant, or its source's baseline. */
+  effective: PluginCapabilities
+  /** Its baseline merged with what it declared. */
+  requested: PluginCapabilities
+  declared?: Partial<PluginCapabilities>
+  /** `requested` is more than its source already gives it. */
+  needsGrant: boolean
+  /** A person has explicitly granted this. */
+  granted: boolean
+  /** One plain line per capability, in `requested` terms. */
+  lines: string[]
+}
+
 export interface PluginDetail extends PluginSummary {
   author?: string | { name: string; email?: string; url?: string }
   homepage?: string
@@ -1019,6 +1062,14 @@ export interface PluginDetail extends PluginSummary {
   userConfig?: PluginUserConfigSpec[]
   configuredOptions?: Record<string, string | number | boolean>
   diagnostics?: PluginDiagnostic[]
+  /** Ticket 22: what this plugin may reach, and whether anyone agreed to it. */
+  capabilities?: PluginCapabilityView
+}
+
+export interface SetPluginCapabilitiesInput {
+  id: PluginId
+  /** `null` revokes the grant — back to the baseline for its source. */
+  capabilities: PluginCapabilities | null
 }
 
 export interface InstallPluginInput {
@@ -1827,6 +1878,12 @@ export interface CodexApi {
   /** Uninstall (delete dir; bundled plugins get a suppressed marker). */
   uninstallPlugin(id: PluginId): Promise<void>
   /**
+   * Grant a plugin its declared capabilities, or take the grant back with
+   * `null` (ticket 22). Reloads the kernel so hooks re-register under the new
+   * capability set. Returns the resulting view.
+   */
+  setPluginCapabilities(input: SetPluginCapabilitiesInput): Promise<PluginCapabilityView>
+  /**
    * Subscribe to plugin changes (global, not session-scoped). Delivered on a
    * dedicated channel outside `KernelEvent`/`seq`. Returns unsubscribe.
    */
@@ -1980,6 +2037,8 @@ export const IPC = {
   setPluginEnabled: 'codex:setPluginEnabled',
   installPlugin: 'codex:installPlugin',
   uninstallPlugin: 'codex:uninstallPlugin',
+  /** Ticket 22: grant or revoke a plugin's capabilities. */
+  setPluginCapabilities: 'codex:setPluginCapabilities',
   listSlashCommands: 'codex:listSlashCommands',
   /** main → renderer push for PluginChangeEvent (global, per webContents). */
   pluginsChanged: 'codex:pluginsChanged',

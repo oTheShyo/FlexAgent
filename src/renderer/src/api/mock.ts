@@ -34,6 +34,9 @@ import {
   type PermissionRuleSet,
   type RemovePermissionRuleInput,
   type SavePermissionRuleInput,
+  type SetPluginCapabilitiesInput,
+  type PluginCapabilities,
+  type PluginCapabilityView,
   type PluginChangeEvent,
   type PluginDetail,
   type PluginId,
@@ -1346,6 +1349,42 @@ export class MockCodexApi implements CodexApi {
       throw new ContractError('PLUGIN_NOT_FOUND', `Unknown plugin: ${id}`)
     }
     this.pushPluginsChanged()
+  }
+
+  /**
+   * Ticket 22. Fixture: there is no grant file behind the mock, so a grant is
+   * echoed back and a revoke returns the documented marketplace minimum.
+   */
+  async setPluginCapabilities(input: SetPluginCapabilitiesInput): Promise<PluginCapabilityView> {
+    const id = typeof input?.id === 'string' ? input.id : ''
+    const detail = this.pluginDetails.get(id)
+    if (detail === undefined) {
+      throw new ContractError('PLUGIN_NOT_FOUND', `Unknown plugin: ${id}`)
+    }
+    const requested: PluginCapabilities = { fs: 'workspace', env: 'inherit', network: false }
+    const minimum: PluginCapabilities = { fs: 'plugin-data', env: 'minimal', network: false }
+    const granted = input.capabilities !== null
+    const effective = granted ? (input.capabilities ?? minimum) : minimum
+    const view: PluginCapabilityView = {
+      effective,
+      requested,
+      declared: { fs: 'workspace', env: 'inherit' },
+      needsGrant: true,
+      granted,
+      lines: granted
+        ? [
+            'Read and write files in this project',
+            'Sees the full environment, including credentials',
+            'No network access'
+          ]
+        : [
+            'Read and write only its own data directory',
+            'Sees a minimal environment (no credentials)',
+            'No network access'
+          ]
+    }
+    this.pluginDetails.set(id, { ...detail, capabilities: view })
+    return view
   }
 
   subscribePlugins(listener: (event: PluginChangeEvent) => void): () => void {

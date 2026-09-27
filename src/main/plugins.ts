@@ -3,6 +3,8 @@ import { join } from 'path'
 import { ContractError } from '../shared/contract'
 import type {
   InstallPluginInput,
+  PluginCapabilityView,
+  PluginCapabilities,
   PluginDetail,
   PluginId,
   PluginSummary,
@@ -18,7 +20,21 @@ import {
   tryReadManifest
 } from './pluginManifest'
 import { pluginInstallDir, type PluginRecord, type PluginRegistry } from './pluginRegistry'
+import { capabilityRequest, setCapabilities, type CapabilityRequest } from './sandbox'
 import { mergeUserMcpIntoSpec } from './userMcp'
+
+function toCapabilityView(
+  request: CapabilityRequest
+): PluginCapabilityView {
+  return {
+    effective: request.capabilities,
+    requested: request.requested,
+    ...(request.declared !== undefined ? { declared: request.declared } : {}),
+    needsGrant: request.needsGrant,
+    granted: request.granted,
+    lines: request.lines
+  }
+}
 
 const COPY_SKIP = new Set(['node_modules', '.git'])
 
@@ -139,7 +155,10 @@ export class PluginService {
       components: enumeration.components,
       ...(userConfig !== undefined ? { userConfig } : {}),
       ...(rec.configuredOptions !== undefined ? { configuredOptions: rec.configuredOptions } : {}),
-      diagnostics
+      diagnostics,
+      capabilities: toCapabilityView(
+        capabilityRequest(rec.id, rec.sourceKind, manifest.capabilities)
+      )
     }
   }
 
@@ -204,9 +223,30 @@ export class PluginService {
     return this.toSummary(rec)
   }
 
+  /**
+   * Ticket 22: grant or revoke. A marketplace plugin that asks for more than
+   * its baseline stays at the baseline until somebody says yes here — the
+   * install itself is not agreement.
+   */
+  async setCapabilities(
+    id: PluginId,
+    capabilities: PluginCapabilities | null
+  ): Promise<PluginCapabilityView> {
+    const rec = this.registry.require(id)
+    const { manifest } = tryReadManifest(rec.rootPath)
+    setCapabilities(rec.id, rec.sourceKind, capabilities)
+    this.notify()
+    await this.reloadKernel()
+    return toCapabilityView(
+      capabilityRequest(rec.id, rec.sourceKind, manifest?.capabilities)
+    )
+  }
+
   async uninstall(id: PluginId): Promise<void> {
     const rec = this.registry.require(id)
     this.registry.remove(id)
+    // Ticket 22: a grant outliving its plugin is only confusion.
+    setCapabilities(rec.id, rec.sourceKind, null)
     if ((rec.sourceKind === 'local' || rec.sourceKind === 'marketplace') && existsSync(rec.rootPath)) {
       rmSync(rec.rootPath, { recursive: true, force: true })
     }
